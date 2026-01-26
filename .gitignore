@@ -34,3 +34,7 @@ Thumbs.db
 
 # Reference documents
 *.pdf
+
+# Generated output images
+pipeline_visualization.png
+cross_section_comparison.png

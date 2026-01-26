@@ -40,7 +40,9 @@ class SimulationSource:
         self.config = config or SimulationConfig()
         self._surface: Optional[np.ndarray] = None
         self._current_pattern: Optional[np.ndarray] = None
+        self._current_pattern_phase: Optional[np.ndarray] = None  # Store phase directly
         self._rng = np.random.default_rng()
+        self.height_sensitivity = 2.0 * np.pi  # radians per unit height
 
     def set_surface(self, height_map: np.ndarray) -> None:
         """Set the virtual test surface.
@@ -126,6 +128,18 @@ class SimulationSource:
             )
         self._current_pattern = pattern.copy()
 
+        # Extract phase from the pattern: I = 0.5 * (1 + cos(phi))
+        # So cos(phi) = 2*I - 1, and phi = arccos(2*I - 1)
+        # But arccos only gives [0, pi], we need to determine sign from gradient
+        cos_phi = np.clip(2.0 * pattern - 1.0, -1.0, 1.0)
+        phase = np.arccos(cos_phi)
+
+        # Use gradient to determine sign: where pattern is increasing, phase is negative
+        grad_x = np.gradient(pattern, axis=1)
+        phase = np.where(grad_x > 0, -phase, phase)
+
+        self._current_pattern_phase = phase
+
     def capture_frame(self) -> np.ndarray:
         """Capture a simulated frame of the deformed fringes.
 
@@ -156,26 +170,19 @@ class SimulationSource:
 
         The surface height causes a phase shift in the observed fringes.
         For a surface height h, the phase shift is:
-            Delta_phi = 2*pi * h / lambda_eq
+            Delta_phi = height_sensitivity * h
 
-        For simplicity in simulation, we model this as a direct
-        intensity modulation based on the pattern and surface.
+        The height_sensitivity parameter controls the relationship between
+        surface height and phase shift. For proper reconstruction, it should
+        match the calibration's equivalent_wavelength.
         """
-        # The pattern intensity at each point is affected by the local height
-        # This is a simplified model - real optics are more complex
+        # Use the pre-computed pattern phase
+        pattern_phase = self._current_pattern_phase
 
-        # Assume the pattern has a certain "sensitivity" to height
-        # This creates phase-shifted fringes based on the surface
-        sensitivity = 2.0 * np.pi  # radians per unit height
+        # Add phase shift from surface height: Delta_phi = sensitivity * h
+        deformed_phase = pattern_phase + self.height_sensitivity * self._surface
 
-        # Convert pattern intensity to phase (assuming sinusoidal)
-        # I = 0.5 * (1 + cos(phi)) -> phi = acos(2I - 1)
-        pattern_phase = np.arccos(np.clip(2.0 * self._current_pattern - 1.0, -1, 1))
-
-        # Add phase shift from surface height
-        deformed_phase = pattern_phase + sensitivity * self._surface
-
-        # Convert back to intensity
+        # Convert back to intensity: I = 0.5 * (1 + cos(phi))
         deformed_intensity = 0.5 * (1.0 + np.cos(deformed_phase))
 
         return deformed_intensity
@@ -232,3 +239,4 @@ class SimulationSource:
         """Reset the simulation state."""
         self._surface = None
         self._current_pattern = None
+        self._current_pattern_phase = None
