@@ -38,3 +38,6 @@ Thumbs.db
 # Generated output files
 *.gif
 *.png
+*.stl
+*.obj
+output/

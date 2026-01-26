@@ -1,6 +1,13 @@
-"""3D Animation using PyVista for GPU-accelerated rendering."""
+"""3D Animation using PyVista for GPU-accelerated rendering.
 
+Supports importing 3D models and exporting recovered surfaces.
+"""
+
+import argparse
+import os
 import time
+from pathlib import Path
+
 import numpy as np
 import pyvista as pv
 
@@ -9,21 +16,61 @@ from micro_projection.patterns import generate_phase_sequence
 from micro_projection.processing import extract_phase, unwrap_phase, phase_to_height, remove_plane
 
 
-def create_3d_animation():
-    total_start = time.time()
+def load_surface_from_model(model_path: str, resolution: tuple[int, int]) -> np.ndarray:
+    """Load a 3D model and convert to height map.
 
-    # Setup
-    resolution = (1024, 1024)
-    period = 160
-    n_steps = 128
+    Supports STL, OBJ, PLY formats.
+    """
+    print(f"Loading model: {model_path}")
+    mesh = pv.read(model_path)
 
-    # Create simulation with a complex surface
-    print("Setting up simulation...")
-    t0 = time.time()
-    config = SimulationConfig(resolution=resolution, noise_level=0.003)
-    source = SimulationSource(config)
+    # Get bounds
+    bounds = mesh.bounds  # (xmin, xmax, ymin, ymax, zmin, zmax)
 
-    # Create a complex surface: multiple gaussians + sinusoidal ripples
+    # Create a grid for sampling
+    x = np.linspace(bounds[0], bounds[1], resolution[1])
+    y = np.linspace(bounds[2], bounds[3], resolution[0])
+    X, Y = np.meshgrid(x, y)
+
+    # Sample Z values by ray casting from above
+    # Create points above the mesh
+    z_top = bounds[5] + 1
+    points = np.column_stack([X.ravel(), Y.ravel(), np.full(X.size, z_top)])
+
+    # Ray cast downward
+    directions = np.zeros_like(points)
+    directions[:, 2] = -1
+
+    # Use ray tracing to find surface intersections
+    intersection_points, ray_indices, _ = mesh.multi_ray_trace(points, directions)
+
+    # Create height map
+    height_map = np.full(resolution, np.nan)
+
+    if len(intersection_points) > 0:
+        # Get Z values at intersections
+        for i, idx in enumerate(ray_indices):
+            row = idx // resolution[1]
+            col = idx % resolution[1]
+            z_val = intersection_points[i, 2]
+            # Keep the highest intersection (closest to ray origin)
+            if np.isnan(height_map[row, col]) or z_val > height_map[row, col]:
+                height_map[row, col] = z_val
+
+    # Fill NaN values with minimum
+    min_z = np.nanmin(height_map) if not np.all(np.isnan(height_map)) else 0
+    height_map = np.nan_to_num(height_map, nan=min_z)
+
+    # Normalize to 0-1 range and scale
+    height_map = height_map - height_map.min()
+    if height_map.max() > 0:
+        height_map = height_map / height_map.max() * 0.2  # Scale to reasonable height
+
+    return height_map
+
+
+def create_procedural_surface(resolution: tuple[int, int]) -> np.ndarray:
+    """Create a complex procedural surface for demonstration."""
     y, x = np.mgrid[0:resolution[0], 0:resolution[1]].astype(np.float64)
     cx, cy = resolution[1] / 2, resolution[0] / 2
 
@@ -47,11 +94,79 @@ def create_3d_animation():
     ripples = 0.02 * np.sin(8 * np.pi * x_norm) * np.exp(-2 * r2)
 
     # Combine
-    input_surface = dome + bump + bump2 + ripples
-    input_surface = input_surface - input_surface.min()  # Ensure positive
+    surface = dome + bump + bump2 + ripples
+    surface = surface - surface.min()
+
+    return surface
+
+
+def export_surface_as_mesh(surface: np.ndarray, filepath: str, z_scale: float = 1.0):
+    """Export a height map as a 3D mesh file (STL, OBJ, or PLY)."""
+    resolution = surface.shape
+    x_coords = np.arange(resolution[1])
+    y_coords = np.arange(resolution[0])
+    X, Y = np.meshgrid(x_coords, y_coords)
+
+    # Create structured grid
+    grid = pv.StructuredGrid(
+        X.astype(np.float32),
+        Y.astype(np.float32),
+        (surface * z_scale).astype(np.float32)
+    )
+
+    # Convert to triangulated surface for export
+    surface_mesh = grid.extract_surface().triangulate()
+
+    # Save based on extension
+    surface_mesh.save(filepath)
+    print(f"Exported: {filepath}")
+
+
+def create_3d_animation(
+    input_model: str = None,
+    output_dir: str = "output",
+    resolution: tuple[int, int] = (1024, 1024),
+    n_steps: int = 128,
+    period: int = 160,
+):
+    """Create 3D animation of fringe projection process.
+
+    Args:
+        input_model: Path to input 3D model (STL, OBJ, PLY). If None, uses procedural surface.
+        output_dir: Directory for output files.
+        resolution: Resolution for processing.
+        n_steps: Number of phase-shifting steps.
+        period: Fringe period in pixels.
+    """
+    total_start = time.time()
+
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_path.absolute()}")
+
+    # Setup simulation
+    print("\nSetting up simulation...")
+    t0 = time.time()
+    config = SimulationConfig(resolution=resolution, noise_level=0.003)
+    source = SimulationSource(config)
+
+    # Load or create surface
+    if input_model and os.path.exists(input_model):
+        input_surface = load_surface_from_model(input_model, resolution)
+    else:
+        if input_model:
+            print(f"Warning: Model file not found: {input_model}")
+            print("Using procedural surface instead.")
+        input_surface = create_procedural_surface(resolution)
 
     source.set_surface(input_surface)
     print(f"  Surface setup: {time.time() - t0:.2f}s")
+
+    # Export input surface as 3D model
+    z_scale = resolution[0] * 2  # Scale for visualization
+    input_mesh_path = output_path / "input_surface.stl"
+    export_surface_as_mesh(input_surface, str(input_mesh_path), z_scale)
 
     # Generate all patterns
     t0 = time.time()
@@ -67,7 +182,7 @@ def create_3d_animation():
     print(f"  Frame capture: {time.time() - t0:.2f}s")
 
     # Process to get final result
-    print("Processing...")
+    print("\nProcessing...")
     t0 = time.time()
     phase_map = extract_phase(frames, n_steps=n_steps)
     print(f"  Phase extraction: {time.time() - t0:.2f}s")
@@ -90,17 +205,21 @@ def create_3d_animation():
     recovered_surface = recovered_surface * scale
     recovered_surface = recovered_surface - recovered_surface.min()
 
-    # Create coordinate grids
+    # Export recovered surface as 3D model
+    recovered_mesh_path = output_path / "recovered_surface.stl"
+    export_surface_as_mesh(recovered_surface, str(recovered_mesh_path), z_scale)
+
+    # Also export as OBJ for compatibility
+    recovered_obj_path = output_path / "recovered_surface.obj"
+    export_surface_as_mesh(recovered_surface, str(recovered_obj_path), z_scale)
+
+    # Create coordinate grids for visualization
     x_coords = np.arange(resolution[1])
     y_coords = np.arange(resolution[0])
     X, Y = np.meshgrid(x_coords, y_coords)
 
-    # Scale Z for better visualization (make height more visible)
-    z_scale = resolution[0] * 2
-
     def create_mesh(surface, texture=None):
         """Create a PyVista StructuredGrid from surface data."""
-        # Use float32 to avoid warning and improve GPU performance
         grid = pv.StructuredGrid(
             X.astype(np.float32),
             Y.astype(np.float32),
@@ -109,15 +228,13 @@ def create_3d_animation():
         if texture is not None:
             grid.point_data['texture'] = texture.flatten(order='F').astype(np.float32)
         else:
-            # Use height as scalars for coloring
             grid.point_data['height'] = surface.flatten(order='F').astype(np.float32)
         return grid
 
     # Setup PyVista plotter for offscreen rendering
-    print("Rendering animation...")
+    print("\nRendering animation...")
     t0 = time.time()
 
-    # Create plotter with two viewports
     plotter = pv.Plotter(shape=(1, 2), off_screen=True, window_size=(1400, 600))
 
     # Camera setup
@@ -126,51 +243,43 @@ def create_3d_animation():
     camera_height = resolution[0] * 1.2
 
     def get_camera_position(angle_deg):
-        """Get camera position for a given angle (in degrees)."""
         angle_rad = np.radians(angle_deg)
         cam_x = center_x + camera_distance * np.cos(angle_rad)
         cam_y = center_y + camera_distance * np.sin(angle_rad)
         return [
-            (cam_x, cam_y, camera_height),  # position
-            (center_x, center_y, 0),  # focal point
-            (0, 0, 1)  # up vector
+            (cam_x, cam_y, camera_height),
+            (center_x, center_y, 0),
+            (0, 0, 1)
         ]
 
-    # Starting angle
     start_angle = -45
 
-    # Open GIF writer
-    plotter.open_gif('fringe_projection_3d_pyvista.gif', fps=20)
+    # Output GIF path
+    gif_path = output_path / "animation.gif"
+    plotter.open_gif(str(gif_path), fps=20)
 
     total_frames = n_steps + 20 + 20  # fringe + recovery + hold
 
     for frame_num in range(total_frames):
         plotter.clear()
-
-        # Left subplot
         plotter.subplot(0, 0)
-
-        # Right subplot
         plotter.subplot(0, 1)
 
-        # Calculate camera angle - rotate 90 degrees during recovery+hold phases
+        # Calculate camera angle - rotate 90 degrees during fringe projection phase
         if frame_num < n_steps:
-            angle = start_angle  # Fixed during fringe projection
-        else:
-            # Rotate from start_angle to start_angle+90 over recovery+hold frames
-            rotation_progress = (frame_num - n_steps) / 40  # 40 frames for rotation
-            rotation_progress = min(1.0, rotation_progress)  # Cap at 1.0
+            rotation_progress = frame_num / n_steps
             angle = start_angle + 90 * rotation_progress
+        else:
+            angle = start_angle + 90  # Hold final angle during recovery
 
         camera_pos = get_camera_position(angle)
 
-        # Phase 1: Fringe projection (frames 0 to n_steps-1)
+        # Phase 1: Fringe projection
         if frame_num < n_steps:
             step_idx = frame_num
             pattern = patterns[step_idx]
             captured = frames[step_idx]
 
-            # Left: Surface with projected pattern
             plotter.subplot(0, 0)
             mesh_left = create_mesh(input_surface, pattern)
             plotter.add_mesh(mesh_left, scalars='texture', cmap='gray',
@@ -178,7 +287,6 @@ def create_3d_animation():
             plotter.add_title(f'Projecting Pattern {step_idx+1}/{n_steps}', font_size=12)
             plotter.camera_position = camera_pos
 
-            # Right: Surface with captured (deformed) fringes
             plotter.subplot(0, 1)
             mesh_right = create_mesh(input_surface, captured)
             plotter.add_mesh(mesh_right, scalars='texture', cmap='gray',
@@ -186,47 +294,42 @@ def create_3d_animation():
             plotter.add_title(f'Captured Fringes {step_idx+1}/{n_steps}', font_size=12)
             plotter.camera_position = camera_pos
 
-        # Phase 2: Recovery animation (frames n_steps to n_steps+19)
+        # Phase 2: Recovery animation
         elif frame_num < n_steps + 20:
             progress = (frame_num - n_steps + 1) / 20
 
-            # Left: Ground truth (static)
             plotter.subplot(0, 0)
             mesh_left = create_mesh(input_surface)
-            plotter.add_mesh(mesh_left, scalars='height', cmap='viridis', show_scalar_bar=False,
-                           smooth_shading=True)
+            plotter.add_mesh(mesh_left, scalars='height', cmap='viridis',
+                           show_scalar_bar=False, smooth_shading=True)
             plotter.add_title('Input Surface (Ground Truth)', font_size=12)
             plotter.camera_position = camera_pos
 
-            # Right: Surface emerging from flat
             plotter.subplot(0, 1)
             flat_level = np.mean(recovered_surface)
             emerging = flat_level + (recovered_surface - flat_level) * progress
             mesh_right = create_mesh(emerging)
-            plotter.add_mesh(mesh_right, scalars='height', cmap='plasma', show_scalar_bar=False,
-                           smooth_shading=True)
+            plotter.add_mesh(mesh_right, scalars='height', cmap='plasma',
+                           show_scalar_bar=False, smooth_shading=True)
             plotter.add_title(f'Recovering Surface... {int(progress*100)}%', font_size=12)
             plotter.camera_position = camera_pos
 
-        # Phase 3: Final comparison (frames n_steps+20 to end)
+        # Phase 3: Final comparison
         else:
-            # Left: Ground truth
             plotter.subplot(0, 0)
             mesh_left = create_mesh(input_surface)
-            plotter.add_mesh(mesh_left, scalars='height', cmap='viridis', show_scalar_bar=False,
-                           smooth_shading=True)
+            plotter.add_mesh(mesh_left, scalars='height', cmap='viridis',
+                           show_scalar_bar=False, smooth_shading=True)
             plotter.add_title('Input Surface (Ground Truth)', font_size=12)
             plotter.camera_position = camera_pos
 
-            # Right: Recovered surface
             plotter.subplot(0, 1)
             mesh_right = create_mesh(recovered_surface)
-            plotter.add_mesh(mesh_right, scalars='height', cmap='plasma', show_scalar_bar=False,
-                           smooth_shading=True)
+            plotter.add_mesh(mesh_right, scalars='height', cmap='plasma',
+                           show_scalar_bar=False, smooth_shading=True)
             plotter.add_title('Recovered Surface (Result)', font_size=12)
             plotter.camera_position = camera_pos
 
-        # Write frame
         plotter.write_frame()
 
         if (frame_num + 1) % 10 == 0:
@@ -235,9 +338,57 @@ def create_3d_animation():
     plotter.close()
     print(f"  Rendering: {time.time() - t0:.2f}s")
 
-    print(f"\nTotal time: {time.time() - total_start:.2f}s")
-    print("Saved: fringe_projection_3d_pyvista.gif")
+    print(f"\n{'='*50}")
+    print(f"Total time: {time.time() - total_start:.2f}s")
+    print(f"\nOutput files in '{output_path.absolute()}':")
+    print(f"  - input_surface.stl     (input 3D model)")
+    print(f"  - recovered_surface.stl (recovered 3D model)")
+    print(f"  - recovered_surface.obj (recovered 3D model)")
+    print(f"  - animation.gif         (animation)")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="3D Fringe Projection Animation with model import/export"
+    )
+    parser.add_argument(
+        "-i", "--input",
+        help="Input 3D model file (STL, OBJ, PLY). If not provided, uses procedural surface."
+    )
+    parser.add_argument(
+        "-o", "--output",
+        default="output",
+        help="Output directory for results (default: output)"
+    )
+    parser.add_argument(
+        "-r", "--resolution",
+        type=int,
+        default=1024,
+        help="Resolution (square, default: 1024)"
+    )
+    parser.add_argument(
+        "-n", "--n-steps",
+        type=int,
+        default=128,
+        help="Number of phase-shifting steps (default: 128)"
+    )
+    parser.add_argument(
+        "-p", "--period",
+        type=int,
+        default=160,
+        help="Fringe period in pixels (default: 160)"
+    )
+
+    args = parser.parse_args()
+
+    create_3d_animation(
+        input_model=args.input,
+        output_dir=args.output,
+        resolution=(args.resolution, args.resolution),
+        n_steps=args.n_steps,
+        period=args.period,
+    )
 
 
 if __name__ == "__main__":
-    create_3d_animation()
+    main()
