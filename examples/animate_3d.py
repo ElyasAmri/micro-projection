@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """3D Animation of the fringe projection simulation process."""
 
 import time

@@ -7,7 +7,6 @@ Actual implementations would depend on the specific camera SDK being used
 
 import numpy as np
 from typing import Optional, Protocol, Any
-from abc import ABC, abstractmethod
 
 from ..core.exceptions import AcquisitionError, ConfigurationError
 

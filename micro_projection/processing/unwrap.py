@@ -182,14 +182,34 @@ def _compute_edge_quality(quality: np.ndarray) -> np.ndarray:
     edge_quality = np.zeros((height, width, 2), dtype=quality.dtype)
 
     # Horizontal edges: min of adjacent pixels
-    edge_quality[:-1, :-1, 0] = np.minimum(quality[:-1, :-1], quality[:-1, 1:])
+    edge_quality[:, :-1, 0] = np.minimum(quality[:, :-1], quality[:, 1:])
 
     # Vertical edges: min of adjacent pixels
-    edge_quality[:-1, :-1, 1] = np.minimum(quality[:-1, :-1], quality[1:, :-1])
+    edge_quality[:-1, :, 1] = np.minimum(quality[:-1, :], quality[1:, :])
 
     return edge_quality
 
 
 def _wrap_to_pi(phase: float | np.ndarray) -> float | np.ndarray:
-    """Wrap phase values to (-pi, pi] range."""
+    """Wrap phase values to (-pi, pi] range.
+
+    This function wraps phase values to the principal value range of (-pi, pi].
+    This is the standard range for wrapped phase in interferometry and fringe projection.
+
+    The mathematical operation is:
+        wrapped = ((phase + pi) mod 2*pi) - pi
+
+    This ensures that phase differences are normalized to the smallest equivalent angle,
+    which is essential for phase unwrapping algorithms to correctly detect 2*pi jumps.
+
+    Args:
+        phase: Phase value(s) in radians (scalar or array)
+
+    Returns:
+        Phase value(s) wrapped to (-pi, pi] range
+
+    Example:
+        >>> _wrap_to_pi(3.5 * np.pi)  # Returns ~-0.5*pi
+        >>> _wrap_to_pi(np.array([0, np.pi, 2*np.pi]))  # [0, pi, 0]
+    """
     return np.mod(phase + np.pi, 2 * np.pi) - np.pi

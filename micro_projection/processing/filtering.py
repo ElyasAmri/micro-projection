@@ -191,7 +191,10 @@ def apply_bandpass_filter(
         Filtered HeightMap containing only the specified wavelength range
     """
     if low_cutoff <= high_cutoff:
-        raise ValueError("low_cutoff must be greater than high_cutoff")
+        raise ValueError(
+            "low_cutoff (larger wavelength) must be greater than high_cutoff (smaller wavelength). "
+            "low_cutoff removes larger features, high_cutoff removes smaller features."
+        )
 
     # Convert to pixels
     low_sigma = low_cutoff / (height_map.pixel_pitch * 2.0 * np.pi)

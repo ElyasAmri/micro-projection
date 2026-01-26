@@ -42,6 +42,7 @@ class SimulationSource:
         self._current_pattern: Optional[np.ndarray] = None
         self._current_pattern_phase: Optional[np.ndarray] = None  # Store phase directly
         self._rng = np.random.default_rng()
+        # Height sensitivity: 1 unit of height produces 1 fringe cycle (2*pi radians of phase)
         self.height_sensitivity = 2.0 * np.pi  # radians per unit height
 
     def set_surface(self, height_map: np.ndarray) -> None:
@@ -126,6 +127,8 @@ class SimulationSource:
                 f"Pattern shape {pattern.shape} doesn't match "
                 f"resolution {self.config.resolution}"
             )
+        if pattern.min() < 0 or pattern.max() > 1:
+            raise ConfigurationError("Pattern values must be in [0, 1] range")
         self._current_pattern = pattern.copy()
 
         # Extract phase from the pattern: I = 0.5 * (1 + cos(phi))

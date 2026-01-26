@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """3D Animation using PyVista for GPU-accelerated rendering.
 
 Supports importing 3D models and exporting recovered surfaces.
@@ -14,59 +15,7 @@ import pyvista as pv
 from micro_projection import SimulationSource, SimulationConfig, CalibrationParams
 from micro_projection.patterns import generate_phase_sequence
 from micro_projection.processing import extract_phase, unwrap_phase, phase_to_height, remove_plane
-
-
-def load_surface_from_model(model_path: str, resolution: tuple[int, int]) -> np.ndarray:
-    """Load a 3D model and convert to height map.
-
-    Supports STL, OBJ, PLY formats.
-    """
-    print(f"Loading model: {model_path}")
-    mesh = pv.read(model_path)
-
-    # Get bounds
-    bounds = mesh.bounds  # (xmin, xmax, ymin, ymax, zmin, zmax)
-
-    # Create a grid for sampling
-    x = np.linspace(bounds[0], bounds[1], resolution[1])
-    y = np.linspace(bounds[2], bounds[3], resolution[0])
-    X, Y = np.meshgrid(x, y)
-
-    # Sample Z values by ray casting from above
-    # Create points above the mesh
-    z_top = bounds[5] + 1
-    points = np.column_stack([X.ravel(), Y.ravel(), np.full(X.size, z_top)])
-
-    # Ray cast downward
-    directions = np.zeros_like(points)
-    directions[:, 2] = -1
-
-    # Use ray tracing to find surface intersections
-    intersection_points, ray_indices, _ = mesh.multi_ray_trace(points, directions)
-
-    # Create height map
-    height_map = np.full(resolution, np.nan)
-
-    if len(intersection_points) > 0:
-        # Get Z values at intersections
-        for i, idx in enumerate(ray_indices):
-            row = idx // resolution[1]
-            col = idx % resolution[1]
-            z_val = intersection_points[i, 2]
-            # Keep the highest intersection (closest to ray origin)
-            if np.isnan(height_map[row, col]) or z_val > height_map[row, col]:
-                height_map[row, col] = z_val
-
-    # Fill NaN values with minimum
-    min_z = np.nanmin(height_map) if not np.all(np.isnan(height_map)) else 0
-    height_map = np.nan_to_num(height_map, nan=min_z)
-
-    # Normalize to 0-1 range and scale
-    height_map = height_map - height_map.min()
-    if height_map.max() > 0:
-        height_map = height_map / height_map.max() * 0.2  # Scale to reasonable height
-
-    return height_map
+from micro_projection.utils import load_surface_from_model
 
 
 def create_procedural_surface(resolution: tuple[int, int]) -> np.ndarray:
@@ -231,13 +180,32 @@ def create_3d_animation(
             grid.point_data['height'] = surface.flatten(order='F').astype(np.float32)
         return grid
 
+    def create_flat_image(image_data):
+        """Create a flat 2D plane for displaying captured camera image."""
+        flat_z = np.zeros_like(image_data)
+        grid = pv.StructuredGrid(
+            X.astype(np.float32),
+            Y.astype(np.float32),
+            flat_z.astype(np.float32)
+        )
+        grid.point_data['intensity'] = image_data.flatten(order='F').astype(np.float32)
+        return grid
+
+    def get_topdown_camera():
+        """Get camera position for top-down 2D view."""
+        return [
+            (center_x, center_y, resolution[0] * 2),  # position above
+            (center_x, center_y, 0),  # look at center
+            (0, 1, 0)  # up vector
+        ]
+
     # Setup PyVista plotter for offscreen rendering
     print("\nRendering animation...")
     t0 = time.time()
 
-    plotter = pv.Plotter(shape=(1, 2), off_screen=True, window_size=(1400, 600))
+    plotter = pv.Plotter(shape=(1, 4), off_screen=True, window_size=(1800, 450))
 
-    # Camera setup
+    # Camera setup for 3D views
     center_x, center_y = resolution[1] / 2, resolution[0] / 2
     camera_distance = resolution[0] * 2.5
     camera_height = resolution[0] * 1.2
@@ -254,83 +222,64 @@ def create_3d_animation(
 
     start_angle = -45
 
-    # Output GIF path
-    gif_path = output_path / "animation.gif"
-    plotter.open_gif(str(gif_path), fps=20)
+    # Output video path
+    video_path = output_path / "animation.mp4"
+    plotter.open_movie(str(video_path), framerate=30, quality=9)
 
-    recovery_frames = n_steps  # Match projection phase for smooth recovery
     hold_frames = 20
-    total_frames = n_steps + recovery_frames + hold_frames
+    total_frames = n_steps + hold_frames
 
     for frame_num in range(total_frames):
         plotter.clear()
-        plotter.subplot(0, 0)
-        plotter.subplot(0, 1)
 
-        # Calculate camera angle - rotate 90 degrees during fringe projection phase
+        # Calculate camera angle - rotate 90 degrees during projection
         if frame_num < n_steps:
             rotation_progress = frame_num / n_steps
             angle = start_angle + 90 * rotation_progress
+            step_idx = frame_num
+            recovery_progress = (frame_num + 1) / n_steps
         else:
-            angle = start_angle + 90  # Hold final angle during recovery
+            angle = start_angle + 90
+            step_idx = n_steps - 1
+            recovery_progress = 1.0
 
         camera_pos = get_camera_position(angle)
+        pattern = patterns[step_idx]
+        captured = frames[step_idx]
 
-        # Phase 1: Fringe projection
-        if frame_num < n_steps:
-            step_idx = frame_num
-            pattern = patterns[step_idx]
-            captured = frames[step_idx]
+        # Panel 1: Input model (ground truth)
+        plotter.subplot(0, 0)
+        mesh_model = create_mesh(input_surface)
+        plotter.add_mesh(mesh_model, scalars='height', cmap='viridis',
+                        show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title('Input Model', font_size=10)
+        plotter.camera_position = camera_pos
 
-            plotter.subplot(0, 0)
-            mesh_left = create_mesh(input_surface, pattern)
-            plotter.add_mesh(mesh_left, scalars='texture', cmap='gray',
-                           show_scalar_bar=False, smooth_shading=True)
-            plotter.add_title(f'Projecting Pattern {step_idx+1}/{n_steps}', font_size=12)
-            plotter.camera_position = camera_pos
+        # Panel 2: Projected pattern on surface
+        plotter.subplot(0, 1)
+        mesh_projected = create_mesh(input_surface, pattern)
+        plotter.add_mesh(mesh_projected, scalars='texture', cmap='gray',
+                        show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title(f'Projected {step_idx+1}/{n_steps}', font_size=10)
+        plotter.camera_position = camera_pos
 
-            plotter.subplot(0, 1)
-            mesh_right = create_mesh(input_surface, captured)
-            plotter.add_mesh(mesh_right, scalars='texture', cmap='gray',
-                           show_scalar_bar=False, smooth_shading=True)
-            plotter.add_title(f'Captured Fringes {step_idx+1}/{n_steps}', font_size=12)
-            plotter.camera_position = camera_pos
+        # Panel 3: Camera view (2D captured image)
+        plotter.subplot(0, 2)
+        flat_image = create_flat_image(captured)
+        plotter.add_mesh(flat_image, scalars='intensity', cmap='gray',
+                        show_scalar_bar=False)
+        plotter.add_title(f'Camera View', font_size=10)
+        plotter.camera_position = get_topdown_camera()
 
-        # Phase 2: Recovery animation
-        elif frame_num < n_steps + recovery_frames:
-            progress = (frame_num - n_steps + 1) / recovery_frames
-
-            plotter.subplot(0, 0)
-            mesh_left = create_mesh(input_surface)
-            plotter.add_mesh(mesh_left, scalars='height', cmap='viridis',
-                           show_scalar_bar=False, smooth_shading=True)
-            plotter.add_title('Input Surface (Ground Truth)', font_size=12)
-            plotter.camera_position = camera_pos
-
-            plotter.subplot(0, 1)
-            flat_level = np.mean(recovered_surface)
-            emerging = flat_level + (recovered_surface - flat_level) * progress
-            mesh_right = create_mesh(emerging)
-            plotter.add_mesh(mesh_right, scalars='height', cmap='plasma',
-                           show_scalar_bar=False, smooth_shading=True)
-            plotter.add_title(f'Recovering Surface... {int(progress*100)}%', font_size=12)
-            plotter.camera_position = camera_pos
-
-        # Phase 3: Final comparison
-        else:
-            plotter.subplot(0, 0)
-            mesh_left = create_mesh(input_surface)
-            plotter.add_mesh(mesh_left, scalars='height', cmap='viridis',
-                           show_scalar_bar=False, smooth_shading=True)
-            plotter.add_title('Input Surface (Ground Truth)', font_size=12)
-            plotter.camera_position = camera_pos
-
-            plotter.subplot(0, 1)
-            mesh_right = create_mesh(recovered_surface)
-            plotter.add_mesh(mesh_right, scalars='height', cmap='plasma',
-                           show_scalar_bar=False, smooth_shading=True)
-            plotter.add_title('Recovered Surface (Result)', font_size=12)
-            plotter.camera_position = camera_pos
+        # Panel 4: Recovered surface (building up)
+        plotter.subplot(0, 3)
+        flat_level = np.mean(recovered_surface)
+        emerging = flat_level + (recovered_surface - flat_level) * recovery_progress
+        mesh_recovered = create_mesh(emerging)
+        plotter.add_mesh(mesh_recovered, scalars='height', cmap='plasma',
+                        show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title(f'Recovered {int(recovery_progress*100)}%', font_size=10)
+        plotter.camera_position = camera_pos
 
         plotter.write_frame()
 
@@ -346,7 +295,7 @@ def create_3d_animation(
     print(f"  - input_surface.stl     (input 3D model)")
     print(f"  - recovered_surface.stl (recovered 3D model)")
     print(f"  - recovered_surface.obj (recovered 3D model)")
-    print(f"  - animation.gif         (animation)")
+    print(f"  - animation.mp4         (video)")
 
 
 def main():

@@ -59,18 +59,29 @@ def extract_phase(
     # phi = atan2(sum(In*sin(2*pi*n/N)), sum(In*cos(2*pi*n/N)))
     sin_sum = np.zeros(shape, dtype=np.float64)
     cos_sum = np.zeros(shape, dtype=np.float64)
+    intensity_sum = np.zeros(shape, dtype=np.float64)
 
     for n, frame in enumerate(frames):
         delta_n = 2.0 * np.pi * n / n_steps
         sin_sum += frame * np.sin(delta_n)
         cos_sum += frame * np.cos(delta_n)
+        intensity_sum += frame
 
     # Calculate wrapped phase
     wrapped_phase = np.arctan2(sin_sum, cos_sum)
 
-    # Calculate modulation/quality map
+    # Calculate modulation/quality map (reuse computed sums)
     # Quality based on fringe contrast (modulation depth)
-    quality = compute_modulation(frames, n_steps)
+    avg_intensity = intensity_sum / n_steps
+    amplitude = 2.0 * np.sqrt(sin_sum**2 + cos_sum**2) / n_steps
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        quality = np.where(
+            avg_intensity > 1e-10,
+            amplitude / avg_intensity,
+            0.0
+        )
+    quality = np.clip(quality, 0.0, 1.0)
 
     return PhaseMap(wrapped=wrapped_phase, quality=quality)
 

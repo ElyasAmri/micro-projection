@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Animation of the fringe projection simulation process."""
 
 import numpy as np

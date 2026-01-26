@@ -22,6 +22,10 @@ class PhaseMap:
         if self.quality is None:
             self.quality = np.ones_like(self.wrapped)
 
+    def __repr__(self) -> str:
+        has_unwrapped = self.unwrapped is not None
+        return f"PhaseMap(shape={self.wrapped.shape}, unwrapped={has_unwrapped})"
+
 
 @dataclass
 class HeightMap:
@@ -51,6 +55,9 @@ class HeightMap:
         h, w = self.shape
         return (h * self.pixel_pitch, w * self.pixel_pitch)
 
+    def __repr__(self) -> str:
+        return f"HeightMap(shape={self.shape}, unit='{self.unit}', pixel_pitch={self.pixel_pitch})"
+
 
 @dataclass
 class SurfaceAnalysis:
@@ -64,6 +71,11 @@ class SurfaceAnalysis:
     total: HeightMap
     form: Optional[HeightMap] = None
     finish: Optional[HeightMap] = None
+
+    def __repr__(self) -> str:
+        has_form = self.form is not None
+        has_finish = self.finish is not None
+        return f"SurfaceAnalysis(total={self.total.shape}, form={has_form}, finish={has_finish})"
 
 
 @dataclass

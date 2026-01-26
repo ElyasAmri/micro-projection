@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Visualization of the fringe projection pipeline."""
 
 import numpy as np

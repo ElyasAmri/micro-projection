@@ -92,7 +92,7 @@ class FileSource:
             return frame.astype(np.float64)
 
         except Exception as e:
-            raise AcquisitionError(f"Failed to load image {path}: {e}")
+            raise AcquisitionError(f"Failed to load image {path}: {e}") from e
 
     def load_files(self, paths: Sequence[str | Path]) -> None:
         """Load multiple image files as a sequence.

@@ -133,15 +133,22 @@ def apply_perspective_correction(
     x_phys = x * height_map.pixel_pitch
     y_phys = y * height_map.pixel_pitch
 
-    # Radial distance from center
-    r = np.sqrt(x_phys**2 + y_phys**2)
-
     # Perspective correction factor (simplified model)
     # For telecentric systems, this factor is 1.0 everywhere
     theta = np.radians(projection_angle)
 
-    # Correction becomes more significant for larger r and smaller reference_distance
-    correction_factor = 1.0 / (1.0 - height_map.data * np.tan(theta) / reference_distance)
+    # Correction becomes more significant for smaller reference_distance
+    # Check for potential singularities in the denominator
+    denominator = 1.0 - height_map.data * np.tan(theta) / reference_distance
+
+    # Warn if values are too close to zero (potential instability)
+    import warnings
+    if np.any(np.abs(denominator) < 1e-10):
+        warnings.warn("Perspective correction may be unstable near singularity. "
+                     "Consider adjusting reference_distance or projection_angle.")
+
+    # Apply correction with safeguard against division by zero
+    correction_factor = np.where(np.abs(denominator) > 1e-10, 1.0 / denominator, np.nan)
 
     # Apply correction
     corrected_data = height_map.data * correction_factor

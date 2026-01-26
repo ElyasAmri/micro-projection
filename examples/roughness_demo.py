@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Surface roughness measurement demonstration.
 
 Demonstrates the separation of form (low-frequency) from roughness (high-frequency)
@@ -32,69 +33,7 @@ from micro_projection.processing import (
     compute_roughness_parameters,
 )
 from micro_projection.core.datatypes import HeightMap
-
-
-def load_surface_from_model(model_path: str, resolution: tuple[int, int]) -> np.ndarray:
-    """Load a 3D model and convert to height map.
-
-    Supports STL, OBJ, PLY formats using PyVista.
-
-    Args:
-        model_path: Path to the 3D model file
-        resolution: Target resolution (height, width)
-
-    Returns:
-        Height map as numpy array
-    """
-    if not HAS_PYVISTA:
-        raise ImportError("PyVista is required to load 3D models. Install with: pip install pyvista")
-
-    print(f"Loading model: {model_path}")
-    mesh = pv.read(model_path)
-
-    # Get bounds
-    bounds = mesh.bounds  # (xmin, xmax, ymin, ymax, zmin, zmax)
-
-    # Create a grid for sampling
-    x = np.linspace(bounds[0], bounds[1], resolution[1])
-    y = np.linspace(bounds[2], bounds[3], resolution[0])
-    X, Y = np.meshgrid(x, y)
-
-    # Sample Z values by ray casting from above
-    # Create points above the mesh
-    z_top = bounds[5] + 1
-    points = np.column_stack([X.ravel(), Y.ravel(), np.full(X.size, z_top)])
-
-    # Ray cast downward
-    directions = np.zeros_like(points)
-    directions[:, 2] = -1
-
-    # Use ray tracing to find surface intersections
-    intersection_points, ray_indices, _ = mesh.multi_ray_trace(points, directions)
-
-    # Create height map
-    height_map = np.full(resolution, np.nan)
-
-    if len(intersection_points) > 0:
-        # Get Z values at intersections
-        for i, idx in enumerate(ray_indices):
-            row = idx // resolution[1]
-            col = idx % resolution[1]
-            z_val = intersection_points[i, 2]
-            # Keep the highest intersection (closest to ray origin)
-            if np.isnan(height_map[row, col]) or z_val > height_map[row, col]:
-                height_map[row, col] = z_val
-
-    # Fill NaN values with minimum
-    min_z = np.nanmin(height_map) if not np.all(np.isnan(height_map)) else 0
-    height_map = np.nan_to_num(height_map, nan=min_z)
-
-    # Normalize to 0-1 range and scale to appropriate height
-    height_map = height_map - height_map.min()
-    if height_map.max() > 0:
-        height_map = height_map / height_map.max() * 0.1  # Scale to reasonable height
-
-    return height_map
+from micro_projection.utils import load_surface_from_model
 
 
 def create_test_surface(resolution: tuple[int, int], roughness_amplitude: float = 0.005):
@@ -120,8 +59,8 @@ def create_test_surface(resolution: tuple[int, int], roughness_amplitude: float 
     form = 0.1 * np.exp(-2 * r2)
 
     # Roughness (h2): High-frequency random noise
-    np.random.seed(42)  # For reproducibility
-    roughness = roughness_amplitude * np.random.randn(h, w)
+    rng = np.random.default_rng(42)  # For reproducibility
+    roughness = roughness_amplitude * rng.standard_normal((h, w))
 
     # Add some periodic texture for visual interest
     periodic = 0.002 * np.sin(20 * np.pi * x_norm) * np.sin(20 * np.pi * y_norm)
@@ -148,7 +87,7 @@ def run_fringe_projection_recovery(
         n_steps: Number of phase-shifting steps
 
     Returns:
-        Recovered surface as numpy array
+        tuple: (recovered_surface, patterns, frames) for animation support
     """
     # Setup simulation
     config = SimulationConfig(resolution=resolution, noise_level=0.003)
@@ -182,7 +121,205 @@ def run_fringe_projection_recovery(
     scale = np.std(input_centered) / (np.std(recovered) + 1e-10)
     recovered = recovered * scale
 
-    return recovered
+    return recovered, patterns, frames
+
+
+def create_mesh(surface: np.ndarray, X: np.ndarray, Y: np.ndarray, z_scale: float, texture=None):
+    """Create a PyVista StructuredGrid from surface data."""
+    grid = pv.StructuredGrid(
+        X.astype(np.float32),
+        Y.astype(np.float32),
+        (surface * z_scale).astype(np.float32)
+    )
+    if texture is not None:
+        grid.point_data['texture'] = texture.flatten(order='F').astype(np.float32)
+    else:
+        grid.point_data['height'] = surface.flatten(order='F').astype(np.float32)
+    return grid
+
+
+def create_flat_image(image_data: np.ndarray, X: np.ndarray, Y: np.ndarray):
+    """Create a flat 2D plane for displaying captured camera image."""
+    flat_z = np.zeros_like(image_data)
+    grid = pv.StructuredGrid(
+        X.astype(np.float32),
+        Y.astype(np.float32),
+        flat_z.astype(np.float32)
+    )
+    grid.point_data['intensity'] = image_data.flatten(order='F').astype(np.float32)
+    return grid
+
+
+def get_camera_position(angle_deg: float, center_x: float, center_y: float,
+                       camera_distance: float, camera_height: float):
+    """Get camera position for 3D view at given angle."""
+    angle_rad = np.radians(angle_deg)
+    cam_x = center_x + camera_distance * np.cos(angle_rad)
+    cam_y = center_y + camera_distance * np.sin(angle_rad)
+    return [
+        (cam_x, cam_y, camera_height),
+        (center_x, center_y, 0),
+        (0, 0, 1)
+    ]
+
+
+def get_topdown_camera(center_x: float, center_y: float, height: float):
+    """Get camera position for top-down 2D view."""
+    return [
+        (center_x, center_y, height),  # position above
+        (center_x, center_y, 0),  # look at center
+        (0, 1, 0)  # up vector
+    ]
+
+
+def create_animation(
+    input_combined: np.ndarray,
+    input_form: np.ndarray,
+    input_roughness: np.ndarray,
+    recovered_combined: np.ndarray,
+    recovered_form: np.ndarray,
+    recovered_roughness: np.ndarray,
+    patterns: list,
+    frames: list,
+    input_params: dict,
+    recovered_params: dict,
+    output_path: str,
+    resolution: tuple[int, int],
+    n_steps: int,
+):
+    """Create PyVista animation showing roughness measurement process.
+
+    Args:
+        input_combined: Input combined surface
+        input_form: Input form component
+        input_roughness: Input roughness component
+        recovered_combined: Recovered combined surface
+        recovered_form: Recovered form component
+        recovered_roughness: Recovered roughness component
+        patterns: List of projected patterns
+        frames: List of captured frames
+        input_params: Roughness parameters for input
+        recovered_params: Roughness parameters for recovered
+        output_path: Path to save animation
+        resolution: Surface resolution
+        n_steps: Number of phase-shifting steps
+    """
+    if not HAS_PYVISTA:
+        print("  Warning: PyVista not available. Skipping animation.")
+        return
+
+    print("  Creating animation...")
+    t0 = time.time()
+
+    # Create coordinate grids
+    x_coords = np.arange(resolution[1])
+    y_coords = np.arange(resolution[0])
+    X, Y = np.meshgrid(x_coords, y_coords)
+
+    # Z scale for visualization
+    z_scale = resolution[0] * 2
+
+    # Fixed camera position (no rotation)
+    center_x, center_y = resolution[1] / 2, resolution[0] / 2
+    camera_distance = resolution[0] * 2.5
+    camera_height = resolution[0] * 1.2
+    camera_pos = get_camera_position(30, center_x, center_y, camera_distance, camera_height)
+    topdown_pos = get_topdown_camera(center_x, center_y, resolution[0] * 2)
+
+    # Setup plotter for 2x4 layout (top: projection, bottom: form/roughness)
+    plotter = pv.Plotter(shape=(2, 4), off_screen=True, window_size=(1800, 900))
+    plotter.open_movie(str(output_path), framerate=30, quality=9)
+
+    # Animation frames
+    total_frames = n_steps + 20  # projection + hold
+
+    for frame_num in range(total_frames):
+        plotter.clear()
+
+        step_idx = min(frame_num, n_steps - 1)
+        recovery_progress = min((frame_num + 1) / n_steps, 1.0)
+        pattern = patterns[step_idx]
+        captured = frames[step_idx]
+
+        # === TOP ROW: Fringe projection process ===
+        # Panel (0,0): Input surface
+        plotter.subplot(0, 0)
+        mesh = create_mesh(input_combined, X, Y, z_scale)
+        plotter.add_mesh(mesh, scalars='height', cmap='viridis',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title('Input Surface', font_size=10)
+        plotter.camera_position = camera_pos
+
+        # Panel (0,1): Projected fringes
+        plotter.subplot(0, 1)
+        mesh = create_mesh(input_combined, X, Y, z_scale, texture=pattern)
+        plotter.add_mesh(mesh, scalars='texture', cmap='gray',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title(f'Projected {step_idx+1}/{n_steps}', font_size=10)
+        plotter.camera_position = camera_pos
+
+        # Panel (0,2): Camera view (2D)
+        plotter.subplot(0, 2)
+        flat_image = create_flat_image(captured, X, Y)
+        plotter.add_mesh(flat_image, scalars='intensity', cmap='gray',
+                       show_scalar_bar=False)
+        plotter.add_title('Camera View', font_size=10)
+        plotter.camera_position = topdown_pos
+
+        # Panel (0,3): Recovered surface emerging
+        plotter.subplot(0, 3)
+        flat_level = np.mean(recovered_combined)
+        emerging = flat_level + (recovered_combined - flat_level) * recovery_progress
+        mesh = create_mesh(emerging, X, Y, z_scale)
+        plotter.add_mesh(mesh, scalars='height', cmap='plasma',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title(f'Recovered {int(recovery_progress*100)}%', font_size=10)
+        plotter.camera_position = camera_pos
+
+        # === BOTTOM ROW: Form/Roughness separation ===
+        # Panel (1,0): Input form
+        plotter.subplot(1, 0)
+        mesh = create_mesh(input_form, X, Y, z_scale)
+        plotter.add_mesh(mesh, scalars='height', cmap='viridis',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title('Input Form', font_size=10)
+        plotter.camera_position = camera_pos
+
+        # Panel (1,1): Input roughness (exaggerated)
+        plotter.subplot(1, 1)
+        mesh = create_mesh(input_roughness, X, Y, z_scale * 10)
+        plotter.add_mesh(mesh, scalars='height', cmap='RdBu_r',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title('Input Roughness', font_size=10)
+        plotter.camera_position = camera_pos
+
+        # Panel (1,2): Recovered form (emerging)
+        plotter.subplot(1, 2)
+        form_flat = np.mean(recovered_form)
+        emerging_form = form_flat + (recovered_form - form_flat) * recovery_progress
+        mesh = create_mesh(emerging_form, X, Y, z_scale)
+        plotter.add_mesh(mesh, scalars='height', cmap='plasma',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title(f'Recovered Form', font_size=10)
+        plotter.camera_position = camera_pos
+
+        # Panel (1,3): Recovered roughness (emerging, exaggerated)
+        plotter.subplot(1, 3)
+        rough_flat = np.mean(recovered_roughness)
+        emerging_rough = rough_flat + (recovered_roughness - rough_flat) * recovery_progress
+        mesh = create_mesh(emerging_rough, X, Y, z_scale * 10)
+        plotter.add_mesh(mesh, scalars='height', cmap='RdBu_r',
+                       show_scalar_bar=False, smooth_shading=True)
+        plotter.add_title(f'Recovered Roughness', font_size=10)
+        plotter.camera_position = camera_pos
+
+        plotter.write_frame()
+
+        if (frame_num + 1) % 10 == 0:
+            print(f"    Frame {frame_num + 1}/{total_frames}")
+
+    plotter.close()
+    print(f"  Animation time: {time.time() - t0:.2f}s")
 
 
 def visualize_results(
@@ -389,6 +526,17 @@ def main():
         default=30.0,
         help="Cutoff wavelength for filtering in pixels (default: 30)"
     )
+    parser.add_argument(
+        "-a", "--animate",
+        action="store_true",
+        help="Generate animation video (requires PyVista, increases processing time)"
+    )
+    parser.add_argument(
+        "-n", "--n-steps",
+        type=int,
+        default=256,
+        help="Number of phase-shifting steps (default: 256)"
+    )
 
     args = parser.parse_args()
 
@@ -400,7 +548,7 @@ def main():
     # Configuration
     resolution = (args.resolution, args.resolution)
     period = 64
-    n_steps = 8
+    n_steps = args.n_steps
     cutoff_wavelength = args.cutoff
     roughness_amplitude = 0.005
 
@@ -439,7 +587,7 @@ def main():
     # Step 2: Run fringe projection simulation
     print("\n2. Running fringe projection simulation...")
     t0 = time.time()
-    recovered_combined = run_fringe_projection_recovery(
+    recovered_combined, patterns, frames = run_fringe_projection_recovery(
         input_combined, resolution, period=period, n_steps=n_steps
     )
     print(f"   Time: {time.time() - t0:.2f}s")
@@ -513,7 +661,7 @@ def main():
     print("\n6. Creating visualization...")
     t0 = time.time()
 
-    output_path = output_dir / "roughness_comparison.png"
+    png_output_path = output_dir / "roughness_comparison.png"
     visualize_results(
         input_form=input_form,
         input_roughness=input_roughness,
@@ -523,15 +671,42 @@ def main():
         recovered_combined=recovered_combined,
         input_params=input_params,
         recovered_params=recovered_params,
-        output_path=str(output_path),
+        output_path=str(png_output_path),
         has_ground_truth=has_ground_truth,
     )
     print(f"   Time: {time.time() - t0:.2f}s")
 
+    # Step 7: Create animation (if requested)
+    if args.animate:
+        if not HAS_PYVISTA:
+            print("\n7. Animation requested but PyVista not installed.")
+            print("   Install with: pip install pyvista")
+        else:
+            print("\n7. Creating animation...")
+            video_output_path = output_dir / "roughness_animation.mp4"
+            create_animation(
+                input_combined=input_combined,
+                input_form=input_form,
+                input_roughness=input_roughness,
+                recovered_combined=recovered_combined,
+                recovered_form=recovered_analysis.form.data,
+                recovered_roughness=recovered_analysis.finish.data,
+                patterns=patterns,
+                frames=frames,
+                input_params=input_params,
+                recovered_params=recovered_params,
+                output_path=str(video_output_path),
+                resolution=resolution,
+                n_steps=n_steps,
+            )
+
     print(f"\n{'='*60}")
     print(f"Total time: {time.time() - total_start:.2f}s")
     print(f"\nOutput files:")
-    print(f"  - {output_path}")
+    print(f"  - {png_output_path}")
+    if args.animate and HAS_PYVISTA:
+        video_output_path = output_dir / "roughness_animation.mp4"
+        print(f"  - {video_output_path}")
     if use_external_model:
         print(f"\nNote: External model loaded from: {args.input}")
         print("      Comparison based on filtered components (no ground-truth separation)")
