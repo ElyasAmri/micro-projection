@@ -258,7 +258,9 @@ def create_3d_animation(
     gif_path = output_path / "animation.gif"
     plotter.open_gif(str(gif_path), fps=20)
 
-    total_frames = n_steps + 20 + 20  # fringe + recovery + hold
+    recovery_frames = n_steps  # Match projection phase for smooth recovery
+    hold_frames = 20
+    total_frames = n_steps + recovery_frames + hold_frames
 
     for frame_num in range(total_frames):
         plotter.clear()
@@ -295,8 +297,8 @@ def create_3d_animation(
             plotter.camera_position = camera_pos
 
         # Phase 2: Recovery animation
-        elif frame_num < n_steps + 20:
-            progress = (frame_num - n_steps + 1) / 20
+        elif frame_num < n_steps + recovery_frames:
+            progress = (frame_num - n_steps + 1) / recovery_frames
 
             plotter.subplot(0, 0)
             mesh_left = create_mesh(input_surface)
