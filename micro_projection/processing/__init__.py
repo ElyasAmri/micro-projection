@@ -19,6 +19,15 @@ from .filtering import (
     compute_roughness_parameters,
     apply_bandpass_filter,
 )
+from .multifreq import (
+    MultiFreqConfig,
+    MultiFreqResult,
+    process_multifreq,
+    hierarchical_unwrap,
+    generate_multifreq_patterns,
+    compute_equivalent_period,
+    estimate_optimal_periods,
+)
 
 __all__ = [
     # Phase extraction
@@ -36,4 +45,12 @@ __all__ = [
     "separate_surface",
     "compute_roughness_parameters",
     "apply_bandpass_filter",
+    # Multi-frequency
+    "MultiFreqConfig",
+    "MultiFreqResult",
+    "process_multifreq",
+    "hierarchical_unwrap",
+    "generate_multifreq_patterns",
+    "compute_equivalent_period",
+    "estimate_optimal_periods",
 ]

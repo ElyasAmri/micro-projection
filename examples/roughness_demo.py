@@ -537,6 +537,19 @@ def main():
         default=256,
         help="Number of phase-shifting steps (default: 256)"
     )
+    parser.add_argument(
+        "-f", "--filter",
+        choices=["gaussian", "butterworth", "ideal"],
+        default="gaussian",
+        help="Filter method for form/roughness separation (default: gaussian). "
+             "WARNING: 'ideal' causes ringing artifacts."
+    )
+    parser.add_argument(
+        "--filter-order",
+        type=int,
+        default=2,
+        help="Butterworth filter order (default: 2). Higher = sharper cutoff."
+    )
 
     args = parser.parse_args()
 
@@ -612,14 +625,24 @@ def main():
     )
 
     # Apply filtering
-    input_analysis = separate_surface(input_height_map, cutoff_wavelength, method="gaussian")
-    recovered_analysis = separate_surface(recovered_height_map, cutoff_wavelength, method="gaussian")
+    filter_method = args.filter
+    filter_order = args.filter_order
+    input_analysis = separate_surface(
+        input_height_map, cutoff_wavelength, method=filter_method, order=filter_order
+    )
+    recovered_analysis = separate_surface(
+        recovered_height_map, cutoff_wavelength, method=filter_method, order=filter_order
+    )
 
     # For external models, we now have the separated components
     if use_external_model:
         input_form = input_analysis.form.data
         input_roughness = input_analysis.finish.data
 
+    filter_info = f"{filter_method}"
+    if filter_method == "butterworth":
+        filter_info += f" (order={filter_order})"
+    print(f"   Filter method: {filter_info}")
     print(f"   Cutoff wavelength: {cutoff_wavelength} pixels")
     print(f"   Time: {time.time() - t0:.2f}s")
 

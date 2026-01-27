@@ -143,6 +143,16 @@ class SimulationSource:
 
         self._current_pattern_phase = phase
 
+        # Estimate the fringe period from the pattern for multi-frequency support
+        # Count zero crossings in the middle row to estimate period
+        mid_row = pattern[pattern.shape[0] // 2, :]
+        zero_crossings = np.where(np.diff(np.sign(mid_row - 0.5)))[0]
+        if len(zero_crossings) > 1:
+            avg_half_period = np.mean(np.diff(zero_crossings))
+            self._current_period = avg_half_period * 2
+        else:
+            self._current_period = pattern.shape[1]  # Default to image width
+
     def capture_frame(self) -> np.ndarray:
         """Capture a simulated frame of the deformed fringes.
 
@@ -172,18 +182,28 @@ class SimulationSource:
         """Compute the deformed fringe pattern based on surface height.
 
         The surface height causes a phase shift in the observed fringes.
-        For a surface height h, the phase shift is:
-            Delta_phi = height_sensitivity * h
+        For multi-frequency support, the phase shift scales inversely with
+        the fringe period:
+            Delta_phi = (2*pi / period) * height_scale * h
 
-        The height_sensitivity parameter controls the relationship between
-        surface height and phase shift. For proper reconstruction, it should
-        match the calibration's equivalent_wavelength.
+        This ensures that different fringe periods produce properly related
+        phase measurements for hierarchical unwrapping.
         """
         # Use the pre-computed pattern phase
         pattern_phase = self._current_pattern_phase
 
-        # Add phase shift from surface height: Delta_phi = sensitivity * h
-        deformed_phase = pattern_phase + self.height_sensitivity * self._surface
+        # Get the current period (estimated from pattern)
+        period = getattr(self, '_current_period', self.config.resolution[1])
+
+        # Height scale factor: controls how much height causes phase shift
+        # A height equal to period/(2*pi*height_scale) causes one fringe shift
+        height_scale = 50.0  # Tuned for typical surface heights of 0.1-0.5
+
+        # Phase shift scales inversely with period (like real fringe projection)
+        # This is key for multi-frequency: fine fringes = more phase per height
+        phase_shift = (2.0 * np.pi / period) * height_scale * self._surface
+
+        deformed_phase = pattern_phase + phase_shift
 
         # Convert back to intensity: I = 0.5 * (1 + cos(phi))
         deformed_intensity = 0.5 * (1.0 + np.cos(deformed_phase))
