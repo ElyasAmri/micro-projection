@@ -62,7 +62,7 @@ def create_simple_step_surface(resolution: tuple[int, int]):
     return form, roughness, form + roughness
 
 
-def create_challenging_surface(resolution: tuple[int, int]):
+def create_complex_surface(resolution: tuple[int, int]):
     """Multiple steps and isolated features + roughness.
 
     The form has sharp discontinuities that cause phase unwrapping errors.

@@ -214,6 +214,64 @@ def process_multifreq(
     )
 
 
+def temporal_unwrap(
+    wrapped_phases: list[np.ndarray],
+    periods: list[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Purely temporal (pixel-by-pixel) phase unwrapping.
+
+    Unlike hierarchical_unwrap which uses spatial unwrapping on the coarsest
+    frequency, this method works entirely per-pixel using the relationship
+    between frequencies. No spatial error propagation.
+
+    Algorithm per pixel:
+        1. Coarsest frequency: phase is assumed unambiguous (period large enough)
+        2. For each finer frequency: use coarser phase to determine fringe order
+
+    Args:
+        wrapped_phases: List of wrapped phase maps, coarse to fine
+        periods: Corresponding fringe periods, coarse to fine
+
+    Returns:
+        (unwrapped_phase, quality_map) tuple.
+        Quality map indicates reliability (0-1) based on consistency between
+        frequency levels.
+    """
+    if len(wrapped_phases) != len(periods):
+        raise ValueError("Number of phases must match number of periods")
+
+    # Start with coarsest frequency - assume unambiguous (no spatial unwrap)
+    current_unwrapped = wrapped_phases[0].copy()
+    current_period = periods[0]
+
+    # Quality: track consistency between levels
+    quality = np.ones_like(wrapped_phases[0])
+
+    for i in range(1, len(wrapped_phases)):
+        fine_wrapped = wrapped_phases[i]
+        fine_period = periods[i]
+
+        # Scale current unwrapped phase to fine frequency
+        scaled_phase = current_unwrapped * (current_period / fine_period)
+
+        # Compute fringe order per pixel
+        fringe_order = np.round((scaled_phase - fine_wrapped) / (2 * np.pi))
+
+        # Unwrap fine phase
+        fine_unwrapped = fine_wrapped + fringe_order * 2 * np.pi
+
+        # Quality: measure consistency (fractional part of fringe order)
+        # Perfect consistency = integer fringe order, poor = 0.5 fractional
+        fractional = np.abs((scaled_phase - fine_wrapped) / (2 * np.pi) - fringe_order)
+        quality *= (1.0 - 2.0 * fractional)  # 1.0 = perfect, 0.0 = ambiguous
+
+        current_unwrapped = fine_unwrapped
+        current_period = fine_period
+
+    quality = np.clip(quality, 0, 1)
+    return current_unwrapped, quality
+
+
 def generate_multifreq_patterns(
     resolution: tuple[int, int],
     periods: list[float],

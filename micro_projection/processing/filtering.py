@@ -11,7 +11,7 @@ from ..core.datatypes import HeightMap, SurfaceAnalysis
 def separate_surface(
     height_map: HeightMap,
     cutoff_wavelength: float,
-    method: Literal["gaussian", "lowpass", "highpass", "butterworth", "ideal"] = "gaussian",
+    method: Literal["gaussian", "lowpass", "highpass", "butterworth", "ideal", "morphological"] = "gaussian",
     order: int = 2,
 ) -> SurfaceAnalysis:
     """Separate surface into form (low-frequency) and finish (high-frequency) components.
@@ -34,6 +34,7 @@ def separate_surface(
             - "highpass": Complement of lowpass
             - "butterworth": Butterworth filter (sharper cutoff than Gaussian)
             - "ideal": Brick-wall filter (WARNING: causes ringing artifacts)
+            - "morphological": Opening/closing average (robust at step edges)
         order: Filter order for Butterworth filter (default 2).
                Higher order = sharper cutoff but may cause ringing.
                Typical values: 2-6.
@@ -52,6 +53,8 @@ def separate_surface(
         form_data = _butterworth_filter(height_map.data, cutoff_pixels, order)
     elif method == "ideal":
         form_data = _ideal_filter(height_map.data, cutoff_pixels)
+    elif method == "morphological":
+        form_data = _morphological_filter(height_map.data, cutoff_pixels)
     else:  # highpass - compute form as complement
         form_data = _gaussian_filter(height_map.data, cutoff_pixels)
 
@@ -211,6 +214,29 @@ def _butterworth_filter(data: np.ndarray, cutoff_pixels: float, order: int = 2) 
     filtered_data = fft.ifft2(filtered_fft_unshifted)
 
     return np.real(filtered_data)
+
+
+def _morphological_filter(data: np.ndarray, cutoff_pixels: float) -> np.ndarray:
+    """Extract form using morphological opening + closing average.
+
+    This is robust at step discontinuities because morphological operations
+    follow the surface shape without bleeding across edges (unlike Gaussian).
+
+    The form is computed as: (opening + closing) / 2
+    - Opening (erode then dilate) removes peaks
+    - Closing (dilate then erode) fills valleys
+    - Average gives a robust envelope estimate
+    """
+    from scipy.ndimage import grey_opening, grey_closing
+
+    # Structuring element size from cutoff wavelength
+    size = max(3, int(cutoff_pixels / (2 * np.pi)))
+    if size % 2 == 0:
+        size += 1
+
+    opened = grey_opening(data, size=(size, size))
+    closed = grey_closing(data, size=(size, size))
+    return (opened + closed) / 2.0
 
 
 def compute_roughness_parameters(height_map: HeightMap) -> dict:

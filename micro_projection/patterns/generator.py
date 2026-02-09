@@ -129,3 +129,34 @@ def generate_multi_frequency_sequence(
             orientation=orientation,
         )
     return sequences
+
+
+def compute_carrier_phase(
+    resolution: tuple[int, int],
+    period: float,
+    orientation: float = 0.0,
+) -> np.ndarray:
+    """Compute the wrapped carrier phase for a fringe pattern.
+
+    The carrier phase is the spatial phase of the fringe pattern without
+    any surface deformation or phase-shifting offset. This is useful for
+    removing the carrier contribution from measured phase maps before
+    temporal unwrapping.
+
+    Args:
+        resolution: Image resolution as (height, width)
+        period: Fringe period in pixels
+        orientation: Pattern orientation in degrees (0 = vertical fringes)
+
+    Returns:
+        2D array of carrier phase values wrapped to [-pi, pi].
+    """
+    height, width = resolution
+    y, x = np.mgrid[0:height, 0:width].astype(np.float64)
+
+    theta = np.radians(orientation)
+    coord = x * np.cos(theta) + y * np.sin(theta)
+    phase = 2.0 * np.pi * coord / period
+
+    # Wrap to [-pi, pi]
+    return np.arctan2(np.sin(phase), np.cos(phase))
