@@ -45,6 +45,7 @@ from .core.exceptions import (
 from .sources.simulation import SimulationSource
 from .sources.file import FileSource
 from .sources.camera import CameraSource
+from .sources.physical import PhysicalSource
 
 __version__ = "0.1.0"
 __all__ = [
@@ -66,4 +67,5 @@ __all__ = [
     "SimulationSource",
     "FileSource",
     "CameraSource",
+    "PhysicalSource",
 ]

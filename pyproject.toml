@@ -20,6 +20,9 @@ viz = [
 dev = [
     "pytest",
 ]
+camera = [
+    "opencv-python",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

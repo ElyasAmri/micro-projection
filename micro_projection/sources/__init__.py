@@ -3,6 +3,8 @@
 from .simulation import SimulationSource
 from .camera import CameraSource, CameraBackend, DummyBackend
 from .file import FileSource, save_frames
+from .projector import CVProjector, ProjectorConfig
+from .physical import PhysicalSource, PhysicalConfig
 
 __all__ = [
     "SimulationSource",
@@ -11,4 +13,8 @@ __all__ = [
     "DummyBackend",
     "FileSource",
     "save_frames",
+    "CVProjector",
+    "ProjectorConfig",
+    "PhysicalSource",
+    "PhysicalConfig",
 ]

@@ -105,9 +105,7 @@ class CameraSource:
         self._current_pattern = pattern.copy()
 
         if self._projector is not None:
-            # Real implementation would send pattern to projector
-            # self._projector.display(pattern)
-            pass
+            self._projector.display(pattern)
         else:
             # Without a projector, we just store the pattern
             # User must manually display/project it
