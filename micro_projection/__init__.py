@@ -43,6 +43,7 @@ from .core.exceptions import (
     ConfigurationError,
 )
 from .sources.simulation import SimulationSource
+from .sources.angled import AngledSimulationSource, AngledSimulationConfig
 from .sources.file import FileSource
 from .sources.camera import CameraSource
 
@@ -64,6 +65,8 @@ __all__ = [
     "ConfigurationError",
     # Sources
     "SimulationSource",
+    "AngledSimulationSource",
+    "AngledSimulationConfig",
     "FileSource",
     "CameraSource",
 ]
