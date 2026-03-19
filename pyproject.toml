@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "microprojection"
 version = "0.1.0"
 description = "Fringe projection profilometry instrument GUI"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "PySide6>=6.6",
-    "opencv-python>=4.9",
-    "numpy",
+    "opencv-python>=4.9,<4.12",
+    "numpy>=1.24,<2",
 ]
 
 [project.scripts]

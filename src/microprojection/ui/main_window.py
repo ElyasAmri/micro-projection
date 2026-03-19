@@ -1,8 +1,10 @@
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -11,6 +13,7 @@ from microprojection.acquisition.camera import CameraThread, enumerate_cameras
 from microprojection.processing.pipeline import PipelineThread
 from microprojection.ui.camera_view import CameraView
 from microprojection.ui.parameter_panel import ParameterPanel
+from microprojection.ui.projection_view import ProjectionView
 from microprojection.ui.result_view import ResultView
 from microprojection.ui.results_panel import ResultsPanel
 
@@ -22,18 +25,18 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         # -- Widgets --
+        self._projection_view = ProjectionView()
         self._camera_view = CameraView()
         self._result_view = ResultView()
         self._parameter_panel = ParameterPanel()
         self._results_panel = ResultsPanel()
 
         # -- Layout --
-        # Left: camera (top) + results (bottom)
-        left_splitter = QSplitter(Qt.Orientation.Vertical)
-        left_splitter.addWidget(self._camera_view)
-        left_splitter.addWidget(self._result_view)
-        left_splitter.setStretchFactor(0, 3)
-        left_splitter.setStretchFactor(1, 2)
+        # Left: top-level workflow tabs
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._projection_view, "Projected Fringe")
+        self._tabs.addTab(self._camera_view, "Received Fringe")
+        self._tabs.addTab(self._result_view, "Reconstruction")
 
         # Right: parameters (top) + roughness (bottom)
         right_widget = QWidget()
@@ -42,9 +45,9 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self._parameter_panel, stretch=3)
         right_layout.addWidget(self._results_panel, stretch=1)
 
-        # Outer: left + right
+        # Outer: tabs + right panel
         outer_splitter = QSplitter(Qt.Orientation.Horizontal)
-        outer_splitter.addWidget(left_splitter)
+        outer_splitter.addWidget(self._tabs)
         outer_splitter.addWidget(right_widget)
         outer_splitter.setStretchFactor(0, 3)
         outer_splitter.setStretchFactor(1, 1)
@@ -74,6 +77,7 @@ class MainWindow(QMainWindow):
         self._parameter_panel.parameters_changed.connect(
             self._pipeline_thread.update_params
         )
+        self._parameter_panel.parameters_changed.connect(self._update_fringe_pattern)
 
         # -- Menu bar --
         self._build_menus()
@@ -118,7 +122,26 @@ class MainWindow(QMainWindow):
         if was_running:
             self._start_camera()
 
+    def _generate_fringe(self, params: dict) -> np.ndarray:
+        """Generate a sinusoidal fringe pattern from current parameters."""
+        w, h = 640, 480
+        period = params.get("period", 16.0)
+        n_steps = params.get("n_steps", 4)
+        step = params.get("current_step", 0)
+        shift = 2 * np.pi * step / n_steps
+        x = np.arange(w, dtype=np.float64)
+        pattern = 127.5 + 127.5 * np.cos(2 * np.pi * x / period + shift)
+        pattern_2d = np.tile(pattern.astype(np.uint8), (h, 1))
+        return pattern_2d
+
+    def _update_fringe_pattern(self, params: dict = None):
+        if params is None:
+            params = self._parameter_panel.get_params()
+        pattern = self._generate_fringe(params)
+        self._projection_view.update_pattern(pattern)
+
     def _start_camera(self):
+        self._update_fringe_pattern()
         if not self._camera_thread.isRunning():
             self._camera_thread.start()
         if not self._pipeline_thread.isRunning():
