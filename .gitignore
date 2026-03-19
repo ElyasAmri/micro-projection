@@ -7,3 +7,6 @@ videos/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
