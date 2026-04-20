@@ -1,7 +1,9 @@
 .omc
+.archive/
 .idea/
 FringeProjection-Method.pdf
 method summary.md
+docs/timesheet-*.md
 venv
 videos/
 __pycache__/
