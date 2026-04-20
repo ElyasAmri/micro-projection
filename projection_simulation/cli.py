@@ -250,7 +250,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--projector-box",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Show projector and surface-camera wireframe boxes in 3D mode.",
+        help="Show projector body and surface-camera mount geometry in 3D mode.",
     )
     parser.add_argument(
         "--projector-width",

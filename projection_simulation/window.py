@@ -27,6 +27,19 @@ PROJECTOR_LENS_WINDOW_WIDTH_CM = 1.4
 PROJECTOR_LENS_WINDOW_HEIGHT_CM = 1.0
 PROJECTOR_LENS_FACE_EPS = 0.01
 
+# Edmund Optics 56027 drawing dimensions (mm converted to scene cm).
+SURFACE_CLAMP_BODY_WIDTH_CM = 5.0  # 50.00mm
+SURFACE_CLAMP_BODY_HEIGHT_CM = 3.0  # 30.00mm
+SURFACE_CLAMP_BODY_DEPTH_CM = 8.1  # 81.00mm
+SURFACE_CLAMP_ARM_WIDTH_CM = 1.125  # 11.25mm
+SURFACE_CLAMP_ARM_HEIGHT_CM = 1.8  # 18.00mm
+SURFACE_CLAMP_ARM_DEPTH_CM = 13.4  # 134.00mm
+SURFACE_CLAMP_TOTAL_DEPTH_CM = 14.8  # 148.00mm
+SURFACE_CLAMP_RING_OUTER_DIAMETER_CM = 5.08  # 50.80mm
+SURFACE_CLAMP_RING_INNER_DIAMETER_CM = 3.0  # 30.00mm
+SURFACE_CLAMP_RING_DEPTH_CM = 0.71  # 7.10mm
+SURFACE_CLAMP_TAPPED_HOLE_DEPTH_CM = 1.6  # 16.00mm
+
 
 class ProjectionWindow(QWidget):
     def __init__(
@@ -597,9 +610,21 @@ class ProjectionWindow(QWidget):
         tan_half_fov = math.tan(math.radians(effective_fov_deg) / 2.0)
         return (origin, right, up, forward, tan_half_fov, aspect)
 
+    def _projector_horizontal_target(self, origin: Vec3) -> Vec3:
+        target = self._look_target()
+        horizontal_target = (target[0], target[1], origin[2])
+        if (
+            abs(horizontal_target[0] - origin[0]) <= 1e-9
+            and abs(horizontal_target[1] - origin[1]) <= 1e-9
+        ):
+            return target
+        return horizontal_target
+
     def _projector_chassis_axes(self) -> tuple[Vec3, Vec3, Vec3, Vec3] | None:
         chassis_origin = self._projector_pos
-        forward = vec_normalize(vec_subtract(self._look_target(), chassis_origin))
+        forward = vec_normalize(
+            vec_subtract(self._projector_horizontal_target(chassis_origin), chassis_origin)
+        )
         if forward is None:
             return None
         world_up: Vec3 = (0.0, 0.0, 1.0)
@@ -647,7 +672,9 @@ class ProjectionWindow(QWidget):
         if lens_data is None:
             return None
         _, lens_origin = lens_data
-        lens_forward = vec_normalize(vec_subtract(self._look_target(), lens_origin))
+        lens_forward = vec_normalize(
+            vec_subtract(self._projector_horizontal_target(lens_origin), lens_origin)
+        )
         if lens_forward is None:
             return None
         world_up: Vec3 = (0.0, 0.0, 1.0)
@@ -787,7 +814,7 @@ class ProjectionWindow(QWidget):
         lens_data = self._projector_lens_rectangle_world()
         if lens_data is None:
             return
-        lens_corners_world, _ = lens_data
+        lens_corners_world, lens_center_world = lens_data
 
         for i in range(len(lens_corners_world)):
             segment = self._project_segment_clipped(
@@ -826,6 +853,23 @@ class ProjectionWindow(QWidget):
                     continue
                 pa, pb = segment
                 painter.drawLine(pa, pb)
+
+            if hit_world_points:
+                hit_count = float(len(hit_world_points))
+                projected_center_world: Vec3 = (
+                    sum(p[0] for p in hit_world_points) / hit_count,
+                    sum(p[1] for p in hit_world_points) / hit_count,
+                    sum(p[2] for p in hit_world_points) / hit_count,
+                )
+                center_line = self._project_segment_clipped(
+                    lens_center_world, projected_center_world, view_context
+                )
+                if center_line is not None:
+                    painter.save()
+                    painter.setPen(QPen(QColor(255, 190, 90, 210), 1.5))
+                    pa, pb = center_line
+                    painter.drawLine(pa, pb)
+                    painter.restore()
 
         projection_surface = self._primary_projection_surface()
         if projection_surface is None:
@@ -1241,6 +1285,241 @@ class ProjectionWindow(QWidget):
             painter.drawText(label_anchor + QPointF(6.0, -6.0), label)
             painter.restore()
 
+    def _draw_surface_camera_mount(
+        self,
+        painter: QPainter,
+        context: CameraContext,
+        origin: Vec3,
+        look_target: Vec3,
+        mount_color: QColor,
+        label: str,
+    ) -> None:
+        forward = vec_normalize(vec_subtract(look_target, origin))
+        if forward is None:
+            return
+        world_up: Vec3 = (0.0, 0.0, 1.0)
+        if abs(vec_dot(forward, world_up)) > 0.98:
+            world_up = (0.0, 1.0, 0.0)
+        right = vec_normalize(vec_cross(world_up, forward))
+        if right is None:
+            return
+        up = vec_cross(forward, right)
+
+        def local_to_world(lx: float, ly: float, lz: float) -> Vec3:
+            return (
+                origin[0] + right[0] * lx + up[0] * ly + forward[0] * lz,
+                origin[1] + right[1] * lx + up[1] * ly + forward[1] * lz,
+                origin[2] + right[2] * lx + up[2] * ly + forward[2] * lz,
+            )
+
+        def draw_prism(
+            local_corners: list[tuple[float, float, float]],
+            faces: list[tuple[int, int, int, int]],
+            edges: list[tuple[int, int]],
+            color: QColor,
+            fill_alpha: int,
+        ) -> list[Vec3]:
+            world_corners = [local_to_world(*corner) for corner in local_corners]
+            face_polygons: list[tuple[float, QPolygonF]] = []
+            for face in faces:
+                world_face = [world_corners[i] for i in face]
+                projected_face: list[QPointF] = []
+                for point in world_face:
+                    projected_point = self._project_world_point(point, context)
+                    if projected_point is None:
+                        projected_face = []
+                        break
+                    projected_face.append(projected_point)
+                if len(projected_face) != 4:
+                    continue
+                avg_depth = sum(self._world_to_camera(p, context)[2] for p in world_face) / 4.0
+                face_polygons.append((avg_depth, QPolygonF(projected_face)))
+            face_polygons.sort(key=lambda item: item[0], reverse=True)
+
+            painter.save()
+            fill = QColor(color)
+            fill.setAlpha(fill_alpha)
+            painter.setBrush(fill)
+            painter.setPen(QPen(color, 1))
+            for _, polygon in face_polygons:
+                painter.drawPolygon(polygon)
+            painter.restore()
+
+            painter.save()
+            painter.setPen(QPen(color, 1.5))
+            for i0, i1 in edges:
+                projected_segment = self._project_segment_clipped(
+                    world_corners[i0], world_corners[i1], context
+                )
+                if projected_segment is None:
+                    continue
+                pa, pb = projected_segment
+                painter.drawLine(pa, pb)
+            painter.restore()
+            return world_corners
+
+        def draw_ring(
+            center_z: float,
+            depth: float,
+            outer_radius: float,
+            inner_radius: float,
+            color: QColor,
+        ) -> Vec3:
+            segment_count = 24
+            front_z = center_z + depth * 0.5
+            back_z = center_z - depth * 0.5
+            front_outer: list[Vec3] = []
+            front_inner: list[Vec3] = []
+            back_outer: list[Vec3] = []
+            back_inner: list[Vec3] = []
+            for i in range(segment_count):
+                theta = 2.0 * math.pi * i / segment_count
+                cx = math.cos(theta)
+                cy = math.sin(theta)
+                front_outer.append(local_to_world(cx * outer_radius, cy * outer_radius, front_z))
+                front_inner.append(local_to_world(cx * inner_radius, cy * inner_radius, front_z))
+                back_outer.append(local_to_world(cx * outer_radius, cy * outer_radius, back_z))
+                back_inner.append(local_to_world(cx * inner_radius, cy * inner_radius, back_z))
+
+            front_outer_2d = [self._project_world_point(point, context) for point in front_outer]
+            front_inner_2d = [self._project_world_point(point, context) for point in front_inner]
+            if all(point is not None for point in front_outer_2d) and all(
+                point is not None for point in front_inner_2d
+            ):
+                front_outer_poly = [point for point in front_outer_2d if point is not None]
+                front_inner_poly = [point for point in front_inner_2d if point is not None]
+                painter.save()
+                ring_path = QPainterPath()
+                ring_path.setFillRule(Qt.FillRule.OddEvenFill)
+                ring_path.addPolygon(QPolygonF(front_outer_poly))
+                ring_path.addPolygon(QPolygonF(list(reversed(front_inner_poly))))
+                fill = QColor(color)
+                fill.setAlpha(130)
+                painter.fillPath(ring_path, fill)
+                painter.restore()
+
+            painter.save()
+            painter.setPen(QPen(color, 2))
+            loops = (front_outer, front_inner, back_outer, back_inner)
+            for points in loops:
+                for i in range(segment_count):
+                    projected_segment = self._project_segment_clipped(
+                        points[i], points[(i + 1) % segment_count], context
+                    )
+                    if projected_segment is None:
+                        continue
+                    pa, pb = projected_segment
+                    painter.drawLine(pa, pb)
+
+            connector_indices = (0, 6, 12, 18)
+            for i in connector_indices:
+                for front, back in ((front_outer, back_outer), (front_inner, back_inner)):
+                    projected_segment = self._project_segment_clipped(front[i], back[i], context)
+                    if projected_segment is None:
+                        continue
+                    pa, pb = projected_segment
+                    painter.drawLine(pa, pb)
+            painter.restore()
+            return local_to_world(0.0, outer_radius, center_z)
+
+        body_w = SURFACE_CLAMP_BODY_WIDTH_CM
+        body_h = SURFACE_CLAMP_BODY_HEIGHT_CM
+        body_d = SURFACE_CLAMP_BODY_DEPTH_CM
+        body_z0 = -SURFACE_CLAMP_TOTAL_DEPTH_CM * 0.5
+        body_color = QColor(92, 136, 170)
+        body_corners = [
+            (-body_w / 2, -body_h / 2, body_z0),
+            (body_w / 2, -body_h / 2, body_z0),
+            (body_w / 2, body_h / 2, body_z0),
+            (-body_w / 2, body_h / 2, body_z0),
+            (-body_w / 2, -body_h / 2, body_z0 + body_d),
+            (body_w / 2, -body_h / 2, body_z0 + body_d),
+            (body_w / 2, body_h / 2, body_z0 + body_d),
+            (-body_w / 2, body_h / 2, body_z0 + body_d),
+        ]
+        box_faces = [
+            (0, 1, 2, 3),
+            (4, 5, 6, 7),
+            (0, 1, 5, 4),
+            (1, 2, 6, 5),
+            (2, 3, 7, 6),
+            (3, 0, 4, 7),
+        ]
+        box_edges = [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ]
+        draw_prism(body_corners, box_faces, box_edges, body_color, 140)
+
+        arm_w = SURFACE_CLAMP_ARM_WIDTH_CM
+        arm_h = SURFACE_CLAMP_ARM_HEIGHT_CM
+        arm_d = SURFACE_CLAMP_ARM_DEPTH_CM
+        arm_x = -body_w * 0.26
+        arm_y = -SURFACE_CLAMP_ARM_WIDTH_CM
+        arm_z0 = -arm_d * 0.5
+        arm_corners = [
+            (arm_x - arm_w / 2, arm_y - arm_h / 2, arm_z0),
+            (arm_x + arm_w / 2, arm_y - arm_h / 2, arm_z0),
+            (arm_x + arm_w / 2, arm_y + arm_h / 2, arm_z0),
+            (arm_x - arm_w / 2, arm_y + arm_h / 2, arm_z0),
+            (arm_x - arm_w / 2, arm_y - arm_h / 2, arm_z0 + arm_d),
+            (arm_x + arm_w / 2, arm_y - arm_h / 2, arm_z0 + arm_d),
+            (arm_x + arm_w / 2, arm_y + arm_h / 2, arm_z0 + arm_d),
+            (arm_x - arm_w / 2, arm_y + arm_h / 2, arm_z0 + arm_d),
+        ]
+        draw_prism(arm_corners, box_faces, box_edges, QColor(78, 116, 146), 145)
+
+        ring_depth = SURFACE_CLAMP_RING_DEPTH_CM
+        ring_center_z = SURFACE_CLAMP_TOTAL_DEPTH_CM * 0.5 - ring_depth * 0.5
+        outer_radius = SURFACE_CLAMP_RING_OUTER_DIAMETER_CM * 0.5
+        inner_radius = SURFACE_CLAMP_RING_INNER_DIAMETER_CM * 0.5
+        label_point_world = draw_ring(
+            ring_center_z,
+            ring_depth,
+            outer_radius,
+            inner_radius,
+            mount_color,
+        )
+
+        # Mark the 1/4"-20 UN-2B tapped hole location/depth from the drawing.
+        tapped_start = local_to_world(0.0, body_h * 0.5, body_z0 + body_d * 0.5)
+        tapped_end = local_to_world(
+            0.0,
+            body_h * 0.5 - SURFACE_CLAMP_TAPPED_HOLE_DEPTH_CM,
+            body_z0 + body_d * 0.5,
+        )
+        tapped_segment = self._project_segment_clipped(tapped_start, tapped_end, context)
+        if tapped_segment is not None:
+            painter.save()
+            painter.setPen(QPen(QColor(176, 210, 235), 1.5))
+            pa, pb = tapped_segment
+            painter.drawLine(pa, pb)
+            painter.restore()
+
+        label_anchor = self._project_world_point(label_point_world, context)
+        if label_anchor is None:
+            label_anchor = self._project_world_point(origin, context)
+        if label_anchor is not None:
+            painter.save()
+            font = painter.font()
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.setPen(QColor(0, 0, 0, 220))
+            painter.drawText(label_anchor + QPointF(7.0, -5.0), label)
+            painter.setPen(mount_color)
+            painter.drawText(label_anchor + QPointF(6.0, -6.0), label)
+            painter.restore()
+
     def _draw_device_boxes(
         self, painter: QPainter, viewport_width: int, viewport_height: int
     ) -> None:
@@ -1265,20 +1544,21 @@ class ProjectionWindow(QWidget):
             self._surface_camera_pos[2],
         )
         look_target = self._look_target()
+        projector_look_target = self._projector_horizontal_target(projector_origin)
         self._draw_oriented_box(
             painter,
             context,
             projector_origin,
-            look_target,
+            projector_look_target,
             QColor(255, 146, 56),
             "Projector",
             solid=True,
         )
-        self._draw_oriented_box(
+        self._draw_surface_camera_mount(
             painter,
             context,
             surface_camera_origin,
             look_target,
             QColor(56, 180, 255),
-            "Surface Camera",
+            "56027 Clamp",
         )
