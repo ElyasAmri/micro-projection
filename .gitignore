@@ -2,3 +2,5 @@
 .archive/
 .artifacts/
 *.local*
+__pycache__/
+*.pyc
