@@ -64,13 +64,22 @@ def parse_args() -> argparse.Namespace:
         "--fov-deg",
         type=float,
         default=59.4,
-        help="Vertical FOV in degrees for 3D mode. Default: 59.4.",
+        help="User-view camera vertical FOV in degrees for 3D mode. Default: 59.4.",
+    )
+    parser.add_argument(
+        "--projector-fov-deg",
+        type=float,
+        default=None,
+        help=(
+            "Projector vertical FOV in degrees. "
+            "If omitted, it is auto-fitted to active projection surfaces."
+        ),
     )
     parser.add_argument(
         "--distance-m",
         type=float,
-        default=10.0,
-        help="Projector-to-plane distance (units) in 3D mode. Default: 10.",
+        default=15.0,
+        help="Projector-to-plane distance in 3D world units (assumed cm). Default: 15.",
     )
     parser.add_argument(
         "--use-axis-distance",
@@ -144,14 +153,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plane-width-m",
         type=float,
-        default=10.0,
-        help="Physical plane width in units for 3D mode. Default: 10.",
+        default=20.0,
+        help="Physical plane width in world units (cm) for 3D mode. Default: 20.",
     )
     parser.add_argument(
         "--plane-height-m",
         type=float,
         default=10.0,
-        help="Physical plane height in units for 3D mode. Default: 10.0.",
+        help="Physical plane height in world units (cm) for 3D mode. Default: 10.0.",
     )
     parser.add_argument(
         "--project-projection-plane",
@@ -246,20 +255,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--projector-width",
         type=float,
-        default=1.6,
-        help="Wireframe box width in world units. Default: 1.6.",
+        default=5.5,
+        help="Wireframe box width in world units (cm). Default: 5.5.",
     )
     parser.add_argument(
         "--projector-height",
         type=float,
-        default=0.9,
-        help="Wireframe box height in world units. Default: 0.9.",
+        default=5.5,
+        help="Wireframe box height in world units (cm). Default: 5.5.",
     )
     parser.add_argument(
         "--projector-depth",
         type=float,
+        default=5.5,
+        help="Wireframe box depth in forward-axis units (cm). Default: 5.5.",
+    )
+    parser.add_argument(
+        "--projector-lens-offset-x",
+        type=float,
+        default=1.0,
+        help="Projector lens offset along local right axis from chassis center (cm). Default: 1.0.",
+    )
+    parser.add_argument(
+        "--projector-lens-offset-y",
+        type=float,
         default=2.0,
-        help="Wireframe box depth in forward-axis units. Default: 2.0.",
+        help="Projector lens offset along local up axis from chassis center (cm). Default: 2.0.",
+    )
+    parser.add_argument(
+        "--projector-lens-offset-z",
+        type=float,
+        default=0.0,
+        help="Projector lens offset along local forward axis from chassis center (cm).",
     )
     parser.add_argument(
         "--yaw-deg",

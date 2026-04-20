@@ -41,6 +41,8 @@ def _validate_args(args: argparse.Namespace) -> str | None:
         return None
     if not (1.0 < args.fov_deg < 179.0):
         return "--fov-deg must be between 1 and 179."
+    if args.projector_fov_deg is not None and not (1.0 < args.projector_fov_deg < 179.0):
+        return "--projector-fov-deg must be between 1 and 179."
     if args.use_axis_distance and args.distance_m <= 0:
         return "--distance-m must be > 0."
     if args.plane_width_m <= 0:
@@ -134,6 +136,7 @@ def main() -> int:
         force_landscape=not args.no_force_landscape,
         mirror_horizontal=args.mirror_horizontal,
         fov_deg=args.fov_deg,
+        projector_fov_deg=args.projector_fov_deg,
         distance_m=args.distance_m,
         use_axis_distance=args.use_axis_distance,
         projector_x=args.projector_x,
@@ -166,6 +169,9 @@ def main() -> int:
         projector_width=args.projector_width,
         projector_height=args.projector_height,
         projector_depth=args.projector_depth,
+        projector_lens_offset_x=args.projector_lens_offset_x,
+        projector_lens_offset_y=args.projector_lens_offset_y,
+        projector_lens_offset_z=args.projector_lens_offset_z,
         yaw_deg=args.yaw_deg,
         pitch_deg=args.pitch_deg,
         roll_deg=args.roll_deg,
@@ -186,6 +192,6 @@ def main() -> int:
 
     print(
         f"Projection window open in {args.mode} mode (source: {args.source}). "
-        "Use left-drag to orbit, mouse wheel to zoom, and Esc/Q to close."
+        "Use left-drag to orbit, mouse wheel to zoom, sliders for projector angle/plane distance/FOV, and Esc/Q to close."
     )
     return app.exec()
