@@ -1,71 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import subprocess
 import sys
-import time
-from collections import deque
-from pathlib import Path
-
-WATCHED_SUFFIXES = {".py"}
-EXCLUDED_DIRS = {".git", ".archive", "__pycache__", ".idea"}
+import traceback
 
 
 def _build_command(app_args: list[str]) -> list[str]:
     return [sys.executable, "-m", "projection_simulation", *app_args]
-
-
-def _launch(app_args: list[str]) -> subprocess.Popen[bytes]:
-    command = _build_command(app_args)
-    return subprocess.Popen(command)
-
-
-def _stop_process(process: subprocess.Popen[bytes], timeout: float = 5.0) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=timeout)
-
-
-def _collect_snapshot(root: Path) -> dict[Path, tuple[int, int]]:
-    snapshot: dict[Path, tuple[int, int]] = {}
-    for path in root.rglob("*"):
-        if any(part in EXCLUDED_DIRS for part in path.parts):
-            continue
-        if not path.is_file() or path.suffix.lower() not in WATCHED_SUFFIXES:
-            continue
-        try:
-            stat = path.stat()
-        except (FileNotFoundError, PermissionError, OSError):
-            continue
-        snapshot[path] = (stat.st_mtime_ns, stat.st_size)
-    return snapshot
-
-
-def _detect_changes(
-    previous: dict[Path, tuple[int, int]],
-    current: dict[Path, tuple[int, int]],
-) -> list[Path]:
-    changed_paths: list[Path] = []
-    all_paths = set(previous.keys()) | set(current.keys())
-    for path in sorted(all_paths):
-        if previous.get(path) != current.get(path):
-            changed_paths.append(path)
-    return changed_paths
-
-
-def _guard_restart_rate(restart_times: deque[float]) -> None:
-    now = time.monotonic()
-    restart_times.append(now)
-    while restart_times and now - restart_times[0] > 10.0:
-        restart_times.popleft()
-    if len(restart_times) >= 6:
-        print("[runner] Too many rapid restarts, pausing briefly...")
-        time.sleep(2.0)
 
 
 def _run_once(app_args: list[str]) -> int:
@@ -78,73 +21,34 @@ def _run_once(app_args: list[str]) -> int:
 
 
 def _run_debug(app_args: list[str], interval: float) -> int:
-    root = Path(__file__).resolve().parent
-    snapshot = _collect_snapshot(root)
-    restart_times: deque[float] = deque()
-
     try:
-        process = _launch(app_args)
-    except OSError as exc:
-        print(f"[runner] Failed to launch app: {exc}", file=sys.stderr)
-        return 1
-
-    print("[runner] Debug mode enabled. Watching for source changes...")
-
-    try:
-        while True:
-            time.sleep(interval)
-            current = _collect_snapshot(root)
-            changed = _detect_changes(snapshot, current)
-            snapshot = current
-
-            if changed:
-                preview = ", ".join(str(p.relative_to(root)) for p in changed[:3])
-                suffix = "" if len(changed) <= 3 else ", ..."
-                print(f"[runner] Change detected: {preview}{suffix}")
-                _guard_restart_rate(restart_times)
-                _stop_process(process)
-                try:
-                    process = _launch(app_args)
-                except OSError as exc:
-                    print(f"[runner] Failed to relaunch app: {exc}", file=sys.stderr)
-                    return 1
-                continue
-
-            exit_code = process.poll()
-            if exit_code is None:
-                continue
-            print(f"[runner] App exited with code {exit_code}. Waiting for changes to relaunch...")
-            while True:
-                time.sleep(interval)
-                current = _collect_snapshot(root)
-                changed = _detect_changes(snapshot, current)
-                snapshot = current
-                if not changed:
-                    continue
-                preview = ", ".join(str(p.relative_to(root)) for p in changed[:3])
-                suffix = "" if len(changed) <= 3 else ", ..."
-                print(f"[runner] Change detected: {preview}{suffix}")
-                _guard_restart_rate(restart_times)
-                try:
-                    process = _launch(app_args)
-                except OSError as exc:
-                    print(f"[runner] Failed to relaunch app: {exc}", file=sys.stderr)
-                    return 1
-                break
+        app_module = importlib.import_module("projection_simulation.app")
+        app_main = getattr(app_module, "main", None)
+        if not callable(app_main):
+            print("[runner] projection_simulation.app.main is not callable.", file=sys.stderr)
+            return 1
+        result = app_main(app_args, hot_reload_interval=interval)
     except KeyboardInterrupt:
         print("\n[runner] Stopping...")
-        _stop_process(process)
         return 130
+    except Exception:
+        print("[runner] Debug launch failed:", file=sys.stderr)
+        traceback.print_exc()
+        return 1
+
+    if result is None:
+        return 0
+    return int(result)
 
 
 def _parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
-        description="Launch projection_simulation with optional auto-reload debug mode."
+        description="Launch projection_simulation with optional in-place hot-reload debug mode."
     )
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Watch source files and restart the app when changes are detected.",
+        help="Watch source files and hot-reload window code in place.",
     )
     parser.add_argument(
         "--interval",

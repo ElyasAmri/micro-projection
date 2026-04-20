@@ -1,7 +1,7 @@
 import argparse
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Open a projection window for an image or generated fringe."
     )
@@ -348,4 +348,4 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="Fringe brightness bias in [0,1]. Default: 0.5.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
