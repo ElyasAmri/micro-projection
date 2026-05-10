@@ -232,6 +232,7 @@ def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
         surface_format.setRenderableType(QSurfaceFormat.OpenGL)
         surface_format.setProfile(QSurfaceFormat.CompatibilityProfile)
         surface_format.setVersion(2, 1)
+        surface_format.setDepthBufferSize(24)
         surface_format.setSamples(4)
         QSurfaceFormat.setDefaultFormat(surface_format)
         app = QApplication(qt_argv)

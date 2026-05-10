@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QPixmap,
     QPolygonF,
     QShortcut,
+    QSurfaceFormat,
     QTransform,
     QWheelEvent,
 )
@@ -28,6 +29,18 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButto
 
 from .fringe import generate_fringe_image
 from .math3d import vec_cross, vec_dot, vec_normalize, vec_subtract
+from .opengl_renderer import OpenGLProjectionRenderer
+from .profiling import FrameProfiler
+from .render_scene import (
+    CameraView,
+    FringeRect,
+    ProjectionScene,
+    ProjectorView,
+    RenderLine,
+    RenderSurface,
+    TelecentricScan,
+    ViewportRect,
+)
 from .types import CameraContext, Vec3
 
 PROJECTOR_THROW_RATIO = 1.2
@@ -112,6 +125,14 @@ class ProjectionWindow(RenderWidgetBase):
         roll_deg: float,
     ) -> None:
         super().__init__()
+        if isinstance(self, QOpenGLWidget):
+            surface_format = QSurfaceFormat()
+            surface_format.setRenderableType(QSurfaceFormat.OpenGL)
+            surface_format.setProfile(QSurfaceFormat.CompatibilityProfile)
+            surface_format.setVersion(2, 1)
+            surface_format.setDepthBufferSize(24)
+            surface_format.setSamples(4)
+            self.setFormat(surface_format)
         self.mode = mode
         self.fill = fill
         self.fullscreen = fullscreen
@@ -162,6 +183,9 @@ class ProjectionWindow(RenderWidgetBase):
         self._device_lateral_sign = -1.0 if self._projection_angle_deg < 0.0 else 1.0
         self._device_spacing_cm = DEFAULT_DEVICE_SPACING_CM
         self._base_distance_m = self.distance_m
+        self._default_device_spacing_cm = self._device_spacing_cm
+        self._default_distance_m = self.distance_m
+        self._default_projector_fov_setting = self.projector_fov_deg
         self._projector_pos: Vec3 = (self.projector_x, self.projector_y, self.projector_z)
         self._surface_camera_pos: Vec3 = (
             self.main_camera_x,
@@ -186,6 +210,10 @@ class ProjectionWindow(RenderWidgetBase):
         self.fringe_bias = 0.5
         self._reload_handler: Callable[[], None] | None = None
         self._recording_video = False
+        self._profiler = FrameProfiler(
+            Path(os.environ.get("PROJECTION_SIM_PERF_LOG", "projection-sim-performance.log"))
+        )
+        self._gpu_renderer: OpenGLProjectionRenderer | None = None
         self._orbit_target: Vec3 = (0.0, 0.0, 0.0)
         self._orbit_dragging = False
         self._orbit_last_pos: QPointF | None = None
@@ -251,6 +279,18 @@ class ProjectionWindow(RenderWidgetBase):
 
     def _log_reload_debug(self, message: str) -> None:
         print(f"[reload-debug] {message}", flush=True)
+
+    def _begin_perf_frame(self, label: str) -> None:
+        self._profiler.begin_frame(label)
+
+    def _record_perf(self, name: str, duration_s: float) -> None:
+        self._profiler.record(name, duration_s)
+
+    def _profile_section(self, name: str):
+        return self._profiler.section(name)
+
+    def _end_perf_frame(self) -> None:
+        self._profiler.end_frame()
 
     @Slot()
     def _trigger_reload(self, source: str = "unknown") -> None:
@@ -515,17 +555,8 @@ class ProjectionWindow(RenderWidgetBase):
         self._projector_fov_slider.setValue(int(round(initial_fov)))
         self._projector_fov_slider.valueChanged.connect(self._on_projector_fov_changed)
 
-        self._lens_offset_x_label = QLabel(self._controls_frame)
-        self._lens_offset_x_slider = QSlider(Qt.Horizontal, self._controls_frame)
-        self._lens_offset_x_slider.setRange(-200, 200)
-        self._lens_offset_x_slider.setValue(int(round(self.projector_lens_offset_x * 10.0)))
-        self._lens_offset_x_slider.valueChanged.connect(self._on_lens_offset_x_changed)
-
-        self._lens_offset_y_label = QLabel(self._controls_frame)
-        self._lens_offset_y_slider = QSlider(Qt.Horizontal, self._controls_frame)
-        self._lens_offset_y_slider.setRange(-200, 200)
-        self._lens_offset_y_slider.setValue(int(round(self.projector_lens_offset_y * 10.0)))
-        self._lens_offset_y_slider.valueChanged.connect(self._on_lens_offset_y_changed)
+        self._reset_controls_button = QPushButton("Reset controls to default", self._controls_frame)
+        self._reset_controls_button.clicked.connect(self._on_reset_controls_clicked)
 
         self._record_sweep_button = QPushButton("Record surface camera sweep", self._controls_frame)
         self._record_sweep_button.setEnabled(self.projection_source == "fringe")
@@ -537,10 +568,7 @@ class ProjectionWindow(RenderWidgetBase):
         layout.addWidget(self._distance_slider)
         layout.addWidget(self._projector_fov_label)
         layout.addWidget(self._projector_fov_slider)
-        layout.addWidget(self._lens_offset_x_label)
-        layout.addWidget(self._lens_offset_x_slider)
-        layout.addWidget(self._lens_offset_y_label)
-        layout.addWidget(self._lens_offset_y_slider)
+        layout.addWidget(self._reset_controls_button)
         layout.addWidget(self._record_sweep_button)
         self._refresh_control_labels()
         self._controls_frame.setVisible(self.mode == "plane3d")
@@ -572,12 +600,6 @@ class ProjectionWindow(RenderWidgetBase):
             self._projector_fov_slider.blockSignals(True)
             self._projector_fov_slider.setValue(int(round(self.projector_fov_deg)))
             self._projector_fov_slider.blockSignals(False)
-        self._lens_offset_x_label.setText(
-            f"Lens offset X (right): {self.projector_lens_offset_x:.1f} cm"
-        )
-        self._lens_offset_y_label.setText(
-            f"Lens offset Y (up): {self.projector_lens_offset_y:.1f} cm"
-        )
         if hasattr(self, "_record_sweep_button"):
             self._record_sweep_button.setEnabled(
                 self.mode == "plane3d"
@@ -608,15 +630,12 @@ class ProjectionWindow(RenderWidgetBase):
         self._refresh_control_labels()
         self.update()
 
-    @Slot(int)
-    def _on_lens_offset_x_changed(self, value: int) -> None:
-        self.projector_lens_offset_x = float(value) / 10.0
-        self._refresh_control_labels()
-        self.update()
-
-    @Slot(int)
-    def _on_lens_offset_y_changed(self, value: int) -> None:
-        self.projector_lens_offset_y = float(value) / 10.0
+    @Slot()
+    def _on_reset_controls_clicked(self) -> None:
+        self._device_spacing_cm = self._default_device_spacing_cm
+        self.distance_m = self._default_distance_m
+        self.projector_fov_deg = self._default_projector_fov_setting
+        self._update_reflected_devices()
         self._refresh_control_labels()
         self.update()
 
@@ -667,7 +686,7 @@ class ProjectionWindow(RenderWidgetBase):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         if hasattr(self, "_controls_frame"):
-            self._controls_frame.setGeometry(12, 12, 280, 300)
+            self._controls_frame.setGeometry(12, 12, 280, 235)
         super().resizeEvent(event)
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
@@ -687,6 +706,11 @@ class ProjectionWindow(RenderWidgetBase):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         self._log_reload_debug("closeEvent received")
+        if isinstance(self, QOpenGLWidget) and self._gpu_renderer is not None:
+            self.makeCurrent()
+            self._gpu_renderer.dispose()
+            self._gpu_renderer = None
+            self.doneCurrent()
         super().closeEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
@@ -739,40 +763,261 @@ class ProjectionWindow(RenderWidgetBase):
             return
         super().wheelEvent(event)
 
-    def paintEvent(self, event) -> None:  # type: ignore[override]
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), Qt.black)
+    def initializeGL(self) -> None:  # type: ignore[override]
+        self._gpu_renderer = OpenGLProjectionRenderer()
+        self._gpu_renderer.initialize()
 
-        pixmap = QPixmap.fromImage(self._processed)
-        if self.mode == "plane3d":
-            projector_context = self._projector_projection_context(pixmap.width(), pixmap.height())
-            scene_surfaces = self._scene_surfaces()
-            if self.show_ground_grid:
-                self._draw_ground_grid(painter, self.width(), self.height())
-            drew_projection = self._draw_plane3d_projection(
-                painter,
-                pixmap,
-                projector_context=projector_context,
-                scene_surfaces=scene_surfaces,
-            )
-            self._draw_projector_contours(
-                painter,
-                pixmap,
-                self.width(),
-                self.height(),
-            )
-            self._draw_surface_camera_minimap(
-                painter,
-                pixmap,
-                projector_context=projector_context,
-                scene_surfaces=scene_surfaces,
-            )
-            if drew_projection:
+    def paintGL(self) -> None:  # type: ignore[override]
+        self._begin_perf_frame("paintGL")
+        try:
+            with self._profile_section("gpu_scene_build"):
+                scene = self._build_projection_scene(self.width(), self.height(), include_minimap=True)
+            if scene is None:
                 return
+            if self._gpu_renderer is None:
+                self._gpu_renderer = OpenGLProjectionRenderer()
+                self._gpu_renderer.initialize()
+            with self._profile_section("gpu_render"):
+                self._gpu_renderer.render(
+                    scene,
+                    self.width(),
+                    self.height(),
+                    device_pixel_ratio=self.devicePixelRatioF(),
+                )
+            with self._profile_section("gpu_qpainter_overlay"):
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                pixmap = QPixmap.fromImage(self._processed)
+                self._draw_scene_surface_wireframes(painter, self.width(), self.height())
+                self._draw_projector_contours(
+                    painter,
+                    pixmap,
+                    self.width(),
+                    self.height(),
+                )
+                self._draw_surface_camera_minimap_chrome(painter)
+                painter.end()
+        finally:
+            self._end_perf_frame()
 
-        self._draw_scaled_fit(painter, pixmap)
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        if isinstance(self, QOpenGLWidget):
+            super().paintEvent(event)
+            return
+        self._begin_perf_frame("paintEvent")
+        try:
+            with self._profile_section("paintEvent"):
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.fillRect(self.rect(), Qt.black)
+
+                pixmap = QPixmap.fromImage(self._processed)
+                if self.mode == "plane3d":
+                    projector_context = self._projector_projection_context(
+                        pixmap.width(),
+                        pixmap.height(),
+                    )
+                    scene_surfaces = self._scene_surfaces()
+                    if self.show_ground_grid:
+                        with self._profile_section("_draw_ground_grid"):
+                            self._draw_ground_grid(painter, self.width(), self.height())
+                    with self._profile_section("_draw_plane3d_projection"):
+                        drew_projection = self._draw_plane3d_projection(
+                            painter,
+                            pixmap,
+                            projector_context=projector_context,
+                            scene_surfaces=scene_surfaces,
+                        )
+                    with self._profile_section("_draw_projector_contours"):
+                        self._draw_projector_contours(
+                            painter,
+                            pixmap,
+                            self.width(),
+                            self.height(),
+                        )
+                    with self._profile_section("_draw_surface_camera_minimap"):
+                        self._draw_surface_camera_minimap(
+                            painter,
+                            pixmap,
+                            projector_context=projector_context,
+                            scene_surfaces=scene_surfaces,
+                        )
+                    if drew_projection:
+                        return
+
+                with self._profile_section("_draw_scaled_fit"):
+                    self._draw_scaled_fit(painter, pixmap)
+        finally:
+            self._end_perf_frame()
+
+    def _build_projection_scene(
+        self,
+        viewport_width: int,
+        viewport_height: int,
+        *,
+        include_minimap: bool,
+    ) -> ProjectionScene | None:
+        if self.mode != "plane3d":
+            return None
+        if self._processed.width() <= 0 or self._processed.height() <= 0:
+            return None
+        main_context = self._camera_projection_context(viewport_width, viewport_height)
+        projector_context = self._projector_projection_context(
+            self._processed.width(),
+            self._processed.height(),
+        )
+        if main_context is None or projector_context is None:
+            return None
+
+        surfaces = tuple(
+            RenderSurface(name, tuple(corners[:4]), color)
+            for name, corners, color in self._scene_surfaces()
+            if len(corners) >= 4
+        )
+        if not surfaces:
+            return None
+
+        scan_context = self._surface_camera_telecentric_scan_context(
+            self._processed.width(),
+            self._processed.height(),
+        )
+        fringe_context = (
+            self._primary_surface_fringe_context(
+                self._processed.width(),
+                self._processed.height(),
+                scan_context,
+            )
+            if self.projection_source == "fringe"
+            else None
+        )
+
+        minimap_view: CameraView | None = None
+        minimap_viewport: ViewportRect | None = None
+        if include_minimap:
+            minimap_viewport = self._surface_camera_minimap_viewport(
+                viewport_width,
+                viewport_height,
+            )
+            minimap_context = self._surface_camera_view_context(
+                minimap_viewport.width,
+                minimap_viewport.height,
+            )
+            if minimap_context is not None:
+                minimap_view = self._camera_view_from_context(
+                    minimap_context,
+                    self._effective_projector_fov_deg(),
+                )
+
+        return ProjectionScene(
+            source_image=self._processed,
+            source_is_fringe=self.projection_source == "fringe",
+            surfaces=surfaces,
+            lines=self._ground_grid_render_lines() if self.show_ground_grid else (),
+            main_view=self._camera_view_from_context(main_context, self.fov_deg),
+            projector=self._projector_view_from_context(projector_context),
+            scan=(
+                self._telecentric_scan_from_context(scan_context)
+                if scan_context is not None
+                else None
+            ),
+            fringe_rect=(
+                self._fringe_rect_from_context(fringe_context)
+                if fringe_context is not None
+                else None
+            ),
+            minimap_view=minimap_view,
+            minimap_viewport=minimap_viewport if minimap_view is not None else None,
+        )
+
+    def _ground_grid_render_lines(self) -> tuple[RenderLine, ...]:
+        steps = int(self.grid_extent / self.grid_step)
+        if steps <= 0:
+            return ()
+
+        lines: list[RenderLine] = []
+        minor = QColor(55, 55, 55)
+        major = QColor(95, 95, 95)
+        axis = QColor(150, 150, 150)
+        for i in range(-steps, steps + 1):
+            coord = i * self.grid_step
+            color = minor
+            if i == 0:
+                color = axis
+            elif i % self.grid_major_every == 0:
+                color = major
+            lines.append(
+                RenderLine(
+                    (coord, -self.grid_extent, 0.0),
+                    (coord, self.grid_extent, 0.0),
+                    color,
+                )
+            )
+            lines.append(
+                RenderLine(
+                    (-self.grid_extent, coord, 0.0),
+                    (self.grid_extent, coord, 0.0),
+                    color,
+                )
+            )
+        return tuple(lines)
+
+    def _surface_camera_minimap_viewport(
+        self,
+        viewport_width: int,
+        viewport_height: int,
+    ) -> ViewportRect:
+        inset_margin = 12
+        inset_width = max(220, min(360, int(viewport_width * 0.30)))
+        inset_height = max(140, int(inset_width * 9.0 / 16.0))
+        if inset_height > viewport_height - inset_margin * 2:
+            inset_height = max(120, viewport_height - inset_margin * 2)
+            inset_width = max(180, int(inset_height * 16.0 / 9.0))
+        return ViewportRect(
+            viewport_width - inset_width - inset_margin,
+            inset_margin,
+            inset_width,
+            inset_height,
+        )
+
+    def _draw_surface_camera_minimap_chrome(self, painter: QPainter) -> None:
+        viewport = self._surface_camera_minimap_viewport(self.width(), self.height())
+        painter.save()
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(190, 200, 220, 220), 1))
+        painter.drawRect(viewport.x, viewport.y, viewport.width, viewport.height)
+        painter.setPen(QColor(220, 230, 245, 220))
+        painter.drawText(viewport.x + 8, viewport.y + 16, "Surface Camera Capture")
+        painter.restore()
+
+    def _camera_view_from_context(
+        self,
+        context: CameraContext,
+        fov_deg: float,
+    ) -> CameraView:
+        camera, right, up, forward, _, _, _ = context
+        return CameraView(camera, right, up, forward, fov_deg)
+
+    def _projector_view_from_context(
+        self,
+        context: tuple[Vec3, Vec3, Vec3, Vec3, float, float],
+    ) -> ProjectorView:
+        origin, right, up, forward, tan_half_fov, aspect = context
+        return ProjectorView(origin, right, up, forward, tan_half_fov, aspect)
+
+    def _telecentric_scan_from_context(
+        self,
+        context: TelecentricScanContext,
+    ) -> TelecentricScan:
+        origin, right, up, forward, half_width, half_height = context
+        return TelecentricScan(origin, right, up, forward, half_width, half_height)
+
+    def _fringe_rect_from_context(
+        self,
+        context: FringeRectContext,
+    ) -> FringeRect:
+        origin, normal, right, up, u_min, u_max, v_min, v_max = context
+        return FringeRect(origin, normal, right, up, u_min, u_max, v_min, v_max)
 
     def _draw_scaled_fit(self, painter: QPainter, pixmap: QPixmap) -> None:
         mode = Qt.KeepAspectRatioByExpanding if self.fill else Qt.KeepAspectRatio
@@ -807,17 +1052,18 @@ class ProjectionWindow(RenderWidgetBase):
         *,
         clip_quad: QPolygonF | None = None,
     ) -> None:
-        transform = QTransform.quadToQuad(source_quad, destination_quad)
-        if not isinstance(transform, QTransform):
-            return
+        with self._profile_section("_draw_projected_source_quad"):
+            transform = QTransform.quadToQuad(source_quad, destination_quad)
+            if not isinstance(transform, QTransform):
+                return
 
-        painter.save()
-        clip_path = QPainterPath()
-        clip_path.addPolygon(clip_quad if clip_quad is not None else destination_quad)
-        painter.setClipPath(clip_path)
-        painter.setTransform(transform, True)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.restore()
+            painter.save()
+            clip_path = QPainterPath()
+            clip_path.addPolygon(clip_quad if clip_quad is not None else destination_quad)
+            painter.setClipPath(clip_path)
+            painter.setTransform(transform, True)
+            painter.drawPixmap(0, 0, pixmap)
+            painter.restore()
 
     def _draw_solid_quad(
         self,
@@ -829,6 +1075,31 @@ class ProjectionWindow(RenderWidgetBase):
         painter.setPen(QPen(QColor(120, 130, 150), 1))
         painter.setBrush(color)
         painter.drawPolygon(destination_quad)
+        painter.restore()
+
+    def _draw_scene_surface_wireframes(
+        self,
+        painter: QPainter,
+        viewport_width: int,
+        viewport_height: int,
+    ) -> None:
+        context = self._camera_projection_context(viewport_width, viewport_height)
+        if context is None:
+            return
+        painter.save()
+        for name, corners, _ in self._scene_surfaces():
+            if len(corners) < 4:
+                continue
+            if name == "Projection Plane":
+                painter.setPen(QPen(QColor(120, 130, 150, 190), 1.0))
+            else:
+                painter.setPen(QPen(QColor(95, 132, 170, 220), 1.2))
+            for index, start in enumerate(corners):
+                end = corners[(index + 1) % len(corners)]
+                segment = self._project_segment_clipped(start, end, context)
+                if segment is None:
+                    continue
+                painter.drawLine(*segment)
         painter.restore()
 
     def _draw_field_object_3d(
@@ -978,39 +1249,40 @@ class ProjectionWindow(RenderWidgetBase):
         ray_direction: Vec3,
         surface: list[Vec3],
     ) -> tuple[float, Vec3] | None:
-        if len(surface) < 3:
-            return None
-        edge_u = vec_subtract(surface[1], surface[0])
-        edge_v = vec_subtract(surface[-1], surface[0])
-        normal = vec_normalize(vec_cross(edge_u, edge_v))
-        if normal is None:
-            return None
+        with self._profile_section("_ray_surface_intersection"):
+            if len(surface) < 3:
+                return None
+            edge_u = vec_subtract(surface[1], surface[0])
+            edge_v = vec_subtract(surface[-1], surface[0])
+            normal = vec_normalize(vec_cross(edge_u, edge_v))
+            if normal is None:
+                return None
 
-        denominator = vec_dot(ray_direction, normal)
-        if abs(denominator) <= 1e-8:
-            return None
-        ray_to_plane = vec_subtract(surface[0], ray_origin)
-        distance = vec_dot(ray_to_plane, normal) / denominator
-        if distance <= 1e-5:
-            return None
+            denominator = vec_dot(ray_direction, normal)
+            if abs(denominator) <= 1e-8:
+                return None
+            ray_to_plane = vec_subtract(surface[0], ray_origin)
+            distance = vec_dot(ray_to_plane, normal) / denominator
+            if distance <= 1e-5:
+                return None
 
-        hit = (
-            ray_origin[0] + ray_direction[0] * distance,
-            ray_origin[1] + ray_direction[1] * distance,
-            ray_origin[2] + ray_direction[2] * distance,
-        )
-        edge_signs: list[float] = []
-        for index, corner in enumerate(surface):
-            next_corner = surface[(index + 1) % len(surface)]
-            edge = vec_subtract(next_corner, corner)
-            to_hit = vec_subtract(hit, corner)
-            edge_signs.append(vec_dot(vec_cross(edge, to_hit), normal))
-        if not (
-            all(sign >= -1e-6 for sign in edge_signs)
-            or all(sign <= 1e-6 for sign in edge_signs)
-        ):
-            return None
-        return (distance, hit)
+            hit = (
+                ray_origin[0] + ray_direction[0] * distance,
+                ray_origin[1] + ray_direction[1] * distance,
+                ray_origin[2] + ray_direction[2] * distance,
+            )
+            edge_signs: list[float] = []
+            for index, corner in enumerate(surface):
+                next_corner = surface[(index + 1) % len(surface)]
+                edge = vec_subtract(next_corner, corner)
+                to_hit = vec_subtract(hit, corner)
+                edge_signs.append(vec_dot(vec_cross(edge, to_hit), normal))
+            if not (
+                all(sign >= -1e-6 for sign in edge_signs)
+                or all(sign <= 1e-6 for sign in edge_signs)
+            ):
+                return None
+            return (distance, hit)
 
     def _first_projector_hit(
         self,
@@ -1021,32 +1293,33 @@ class ProjectionWindow(RenderWidgetBase):
         projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float],
         surfaces: list[SceneSurface],
     ) -> tuple[int, Vec3] | None:
-        ray_direction = self._projector_ray_direction(
-            x_pixel,
-            y_pixel,
-            image_width,
-            image_height,
-            projector_context,
-        )
-        if ray_direction is None:
-            return None
-
-        projector_origin = projector_context[0]
-        nearest: tuple[float, int, Vec3] | None = None
-        for surface_index, (_, corners, _) in enumerate(surfaces):
-            intersection = self._ray_surface_intersection(
-                projector_origin,
-                ray_direction,
-                corners,
+        with self._profile_section("_first_projector_hit"):
+            ray_direction = self._projector_ray_direction(
+                x_pixel,
+                y_pixel,
+                image_width,
+                image_height,
+                projector_context,
             )
-            if intersection is None:
-                continue
-            distance, hit = intersection
-            if nearest is None or distance < nearest[0]:
-                nearest = (distance, surface_index, hit)
-        if nearest is None:
-            return None
-        return (nearest[1], nearest[2])
+            if ray_direction is None:
+                return None
+
+            projector_origin = projector_context[0]
+            nearest: tuple[float, int, Vec3] | None = None
+            for surface_index, (_, corners, _) in enumerate(surfaces):
+                intersection = self._ray_surface_intersection(
+                    projector_origin,
+                    ray_direction,
+                    corners,
+                )
+                if intersection is None:
+                    continue
+                distance, hit = intersection
+                if nearest is None or distance < nearest[0]:
+                    nearest = (distance, surface_index, hit)
+            if nearest is None:
+                return None
+            return (nearest[1], nearest[2])
 
     def _first_telecentric_scan_hit(
         self,
@@ -1057,27 +1330,28 @@ class ProjectionWindow(RenderWidgetBase):
         scan_context: TelecentricScanContext,
         surfaces: list[SceneSurface],
     ) -> tuple[int, Vec3] | None:
-        if image_width <= 0 or image_height <= 0:
-            return None
-        origin, right, up, forward, half_w, half_h = scan_context
-        nx = (2.0 * x_pixel / float(image_width)) - 1.0
-        ny = 1.0 - (2.0 * y_pixel / float(image_height))
-        ray_origin = (
-            origin[0] + right[0] * (nx * half_w) + up[0] * (ny * half_h),
-            origin[1] + right[1] * (nx * half_w) + up[1] * (ny * half_h),
-            origin[2] + right[2] * (nx * half_w) + up[2] * (ny * half_h),
-        )
-        nearest: tuple[float, int, Vec3] | None = None
-        for surface_index, (_, corners, _) in enumerate(surfaces):
-            intersection = self._ray_surface_intersection(ray_origin, forward, corners)
-            if intersection is None:
-                continue
-            distance, hit = intersection
-            if nearest is None or distance < nearest[0]:
-                nearest = (distance, surface_index, hit)
-        if nearest is None:
-            return None
-        return (nearest[1], nearest[2])
+        with self._profile_section("_first_telecentric_scan_hit"):
+            if image_width <= 0 or image_height <= 0:
+                return None
+            origin, right, up, forward, half_w, half_h = scan_context
+            nx = (2.0 * x_pixel / float(image_width)) - 1.0
+            ny = 1.0 - (2.0 * y_pixel / float(image_height))
+            ray_origin = (
+                origin[0] + right[0] * (nx * half_w) + up[0] * (ny * half_h),
+                origin[1] + right[1] * (nx * half_w) + up[1] * (ny * half_h),
+                origin[2] + right[2] * (nx * half_w) + up[2] * (ny * half_h),
+            )
+            nearest: tuple[float, int, Vec3] | None = None
+            for surface_index, (_, corners, _) in enumerate(surfaces):
+                intersection = self._ray_surface_intersection(ray_origin, forward, corners)
+                if intersection is None:
+                    continue
+                distance, hit = intersection
+                if nearest is None or distance < nearest[0]:
+                    nearest = (distance, surface_index, hit)
+            if nearest is None:
+                return None
+            return (nearest[1], nearest[2])
 
     def _telecentric_ray_origin(
         self,
@@ -1175,24 +1449,25 @@ class ProjectionWindow(RenderWidgetBase):
         projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float],
         fringe_context: FringeRectContext | None,
     ) -> Vec3 | None:
-        if fringe_context is None:
-            return None
-        ray_direction = self._projector_ray_direction(
-            x_pixel,
-            y_pixel,
-            image_width,
-            image_height,
-            projector_context,
-        )
-        if ray_direction is None:
-            return None
-        plane_origin, plane_normal, _, _, _, _, _, _ = fringe_context
-        return self._intersect_ray_with_plane(
-            projector_context[0],
-            ray_direction,
-            plane_origin,
-            plane_normal,
-        )
+        with self._profile_section("_projector_hit_on_fringe_plane"):
+            if fringe_context is None:
+                return None
+            ray_direction = self._projector_ray_direction(
+                x_pixel,
+                y_pixel,
+                image_width,
+                image_height,
+                projector_context,
+            )
+            if ray_direction is None:
+                return None
+            plane_origin, plane_normal, _, _, _, _, _, _ = fringe_context
+            return self._intersect_ray_with_plane(
+                projector_context[0],
+                ray_direction,
+                plane_origin,
+                plane_normal,
+            )
 
     def _draw_projected_scene(
         self,
@@ -1208,90 +1483,93 @@ class ProjectionWindow(RenderWidgetBase):
         projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None = None,
         scene_surfaces: list[SceneSurface] | None = None,
     ) -> bool:
-        if pixmap.width() <= 0 or pixmap.height() <= 0:
-            return False
-        if view_context is None:
-            view_context = self._camera_projection_context(viewport_width, viewport_height)
-        if view_context is None:
-            return False
-        if projector_context is None:
-            projector_context = self._projector_projection_context(pixmap.width(), pixmap.height())
-        if projector_context is None:
-            return False
+        with self._profile_section("_draw_projected_scene"):
+            if pixmap.width() <= 0 or pixmap.height() <= 0:
+                return False
+            if view_context is None:
+                view_context = self._camera_projection_context(viewport_width, viewport_height)
+            if view_context is None:
+                return False
+            if projector_context is None:
+                projector_context = self._projector_projection_context(pixmap.width(), pixmap.height())
+            if projector_context is None:
+                return False
 
-        surfaces = scene_surfaces if scene_surfaces is not None else self._scene_surfaces()
-        if not surfaces:
-            return False
+            surfaces = scene_surfaces if scene_surfaces is not None else self._scene_surfaces()
+            if not surfaces:
+                return False
 
-        telecentric_scan_context = self._surface_camera_telecentric_scan_context(
-            pixmap.width(),
-            pixmap.height(),
-        )
-        fringe_rect_context = (
-            self._primary_surface_fringe_context(
+            telecentric_scan_context = self._surface_camera_telecentric_scan_context(
                 pixmap.width(),
                 pixmap.height(),
-                telecentric_scan_context,
             )
-            if self.projection_source == "fringe"
-            else None
-        )
-        surface_cells: list[list[tuple[QPolygonF, QPolygonF]]] = [
-            [] for _ in surfaces
-        ]
-        columns = max(2, columns)
-        rows = max(2, rows)
-        edge_subdivisions = max(0, edge_subdivisions)
-        for row in range(rows):
-            y0 = pixmap.height() * row / rows
-            y1 = pixmap.height() * (row + 1) / rows
-            for column in range(columns):
-                x0 = pixmap.width() * column / columns
-                x1 = pixmap.width() * (column + 1) / columns
-                self._add_projected_cell(
-                    surface_cells,
-                    surfaces,
-                    pixmap,
-                    view_context,
-                    projector_context,
+            fringe_rect_context = (
+                self._primary_surface_fringe_context(
+                    pixmap.width(),
+                    pixmap.height(),
                     telecentric_scan_context,
-                    fringe_rect_context,
-                    x0,
-                    y0,
-                    x1,
-                    y1,
-                    edge_subdivisions,
                 )
+                if self.projection_source == "fringe"
+                else None
+            )
+            surface_cells: list[list[tuple[QPolygonF, QPolygonF]]] = [
+                [] for _ in surfaces
+            ]
+            columns = max(2, columns)
+            rows = max(2, rows)
+            edge_subdivisions = max(0, edge_subdivisions)
+            for row in range(rows):
+                y0 = pixmap.height() * row / rows
+                y1 = pixmap.height() * (row + 1) / rows
+                for column in range(columns):
+                    x0 = pixmap.width() * column / columns
+                    x1 = pixmap.width() * (column + 1) / columns
+                    self._add_projected_cell(
+                        surface_cells,
+                        surfaces,
+                        pixmap,
+                        view_context,
+                        projector_context,
+                        telecentric_scan_context,
+                        fringe_rect_context,
+                        x0,
+                        y0,
+                        x1,
+                        y1,
+                        edge_subdivisions,
+                    )
 
-        surface_order: list[tuple[float, int, QPolygonF]] = []
-        for index, (_, corners, _) in enumerate(surfaces):
-            projected_surface: list[QPointF] = []
-            for corner in corners:
-                projected = self._project_world_point(corner, view_context)
-                if projected is None:
-                    projected_surface = []
-                    break
-                projected_surface.append(projected)
-            if len(projected_surface) != len(corners):
-                continue
-            avg_depth = sum(self._world_to_camera(corner, view_context)[2] for corner in corners) / len(corners)
-            surface_order.append((avg_depth, index, QPolygonF(projected_surface)))
+            surface_order: list[tuple[float, int, QPolygonF]] = []
+            for index, (_, corners, _) in enumerate(surfaces):
+                projected_surface: list[QPointF] = []
+                for corner in corners:
+                    projected = self._project_world_point(corner, view_context)
+                    if projected is None:
+                        projected_surface = []
+                        break
+                    projected_surface.append(projected)
+                if len(projected_surface) != len(corners):
+                    continue
+                avg_depth = sum(
+                    self._world_to_camera(corner, view_context)[2] for corner in corners
+                ) / len(corners)
+                surface_order.append((avg_depth, index, QPolygonF(projected_surface)))
 
-        if not surface_order:
-            return False
-        surface_order.sort(key=lambda item: item[0], reverse=True)
-        for _, surface_index, projected_surface in surface_order:
-            _, _, color = surfaces[surface_index]
-            self._draw_solid_quad(painter, projected_surface, color)
-            for source_quad, destination_quad in surface_cells[surface_index]:
-                self._draw_projected_source_quad(
-                    painter,
-                    pixmap,
-                    source_quad,
-                    destination_quad,
-                    clip_quad=projected_surface,
-                )
-        return True
+            if not surface_order:
+                return False
+            surface_order.sort(key=lambda item: item[0], reverse=True)
+            for _, surface_index, projected_surface in surface_order:
+                _, _, color = surfaces[surface_index]
+                self._draw_solid_quad(painter, projected_surface, color)
+                for source_quad, destination_quad in surface_cells[surface_index]:
+                    self._draw_projected_source_quad(
+                        painter,
+                        pixmap,
+                        source_quad,
+                        destination_quad,
+                        clip_quad=projected_surface,
+                    )
+            return True
 
     def _add_projected_cell(
         self,
@@ -1308,34 +1586,169 @@ class ProjectionWindow(RenderWidgetBase):
         y1: float,
         remaining_subdivisions: int,
     ) -> None:
-        sample_points = [
-            ((x0 + x1) * 0.5, (y0 + y1) * 0.5),
-            (x0, y0),
-            ((x0 + x1) * 0.5, y0),
-            (x1, y0),
-            (x1, (y0 + y1) * 0.5),
-            (x1, y1),
-            ((x0 + x1) * 0.5, y1),
-            (x0, y1),
-            (x0, (y0 + y1) * 0.5),
-        ]
-        sample_hits: list[tuple[int, bool]] = []
-        for sx, sy in sample_points:
-            hit = self._first_projector_hit(
-                sx,
-                sy,
-                pixmap.width(),
-                pixmap.height(),
-                projector_context,
-                surfaces,
-            )
-            if hit is not None:
-                mask_point = hit[1]
-                inside_mask = self._world_point_inside_projection_context(
-                    mask_point,
-                    scan_mask_context,
+        with self._profile_section("_add_projected_cell"):
+            sample_points = [
+                ((x0 + x1) * 0.5, (y0 + y1) * 0.5),
+                (x0, y0),
+                ((x0 + x1) * 0.5, y0),
+                (x1, y0),
+                (x1, (y0 + y1) * 0.5),
+                (x1, y1),
+                ((x0 + x1) * 0.5, y1),
+                (x0, y1),
+                (x0, (y0 + y1) * 0.5),
+            ]
+            sample_hits: list[tuple[int, bool]] = []
+            for sx, sy in sample_points:
+                hit = self._first_projector_hit(
+                    sx,
+                    sy,
+                    pixmap.width(),
+                    pixmap.height(),
+                    projector_context,
+                    surfaces,
                 )
-                if fringe_rect_context is not None:
+                if hit is not None:
+                    mask_point = hit[1]
+                    inside_mask = self._world_point_inside_projection_context(
+                        mask_point,
+                        scan_mask_context,
+                    )
+                    if fringe_rect_context is not None:
+                        plane_hit = self._projector_hit_on_fringe_plane(
+                            sx,
+                            sy,
+                            pixmap.width(),
+                            pixmap.height(),
+                            projector_context,
+                            fringe_rect_context,
+                        )
+                        if plane_hit is None:
+                            continue
+                        mask_point = plane_hit
+                        inside_mask = self._world_point_inside_fringe_rect(
+                            mask_point,
+                            fringe_rect_context,
+                        )
+                    sample_hits.append(
+                        (
+                            hit[0],
+                            inside_mask,
+                        )
+                    )
+
+            if not sample_hits:
+                return
+            center_surface_index, center_inside_mask = sample_hits[0]
+            if (
+                remaining_subdivisions > 0
+                and any(
+                    surface_index != center_surface_index or inside_mask != center_inside_mask
+                    for surface_index, inside_mask in sample_hits[1:]
+                )
+            ):
+                xm = (x0 + x1) * 0.5
+                ym = (y0 + y1) * 0.5
+                next_depth = remaining_subdivisions - 1
+                self._add_projected_cell(
+                    surface_cells,
+                    surfaces,
+                    pixmap,
+                    view_context,
+                    projector_context,
+                    scan_mask_context,
+                    fringe_rect_context,
+                    x0,
+                    y0,
+                    xm,
+                    ym,
+                    next_depth,
+                )
+                self._add_projected_cell(
+                    surface_cells,
+                    surfaces,
+                    pixmap,
+                    view_context,
+                    projector_context,
+                    scan_mask_context,
+                    fringe_rect_context,
+                    xm,
+                    y0,
+                    x1,
+                    ym,
+                    next_depth,
+                )
+                self._add_projected_cell(
+                    surface_cells,
+                    surfaces,
+                    pixmap,
+                    view_context,
+                    projector_context,
+                    scan_mask_context,
+                    fringe_rect_context,
+                    xm,
+                    ym,
+                    x1,
+                    y1,
+                    next_depth,
+                )
+                self._add_projected_cell(
+                    surface_cells,
+                    surfaces,
+                    pixmap,
+                    view_context,
+                    projector_context,
+                    scan_mask_context,
+                    fringe_rect_context,
+                    x0,
+                    ym,
+                    xm,
+                    y1,
+                    next_depth,
+                )
+                return
+            if not center_inside_mask:
+                return
+
+            source_points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+            surface_corners = surfaces[center_surface_index][1]
+            edge_u = vec_subtract(surface_corners[1], surface_corners[0])
+            edge_v = vec_subtract(surface_corners[-1], surface_corners[0])
+            surface_normal = vec_normalize(vec_cross(edge_u, edge_v))
+            if surface_normal is None:
+                return
+
+            hit_points: list[Vec3] = []
+            for sx, sy in source_points:
+                ray_direction = self._projector_ray_direction(
+                    sx,
+                    sy,
+                    pixmap.width(),
+                    pixmap.height(),
+                    projector_context,
+                )
+                if ray_direction is None:
+                    return
+                hit = self._intersect_ray_with_plane(
+                    projector_context[0],
+                    ray_direction,
+                    surface_corners[0],
+                    surface_normal,
+                )
+                if hit is None:
+                    return
+                hit_points.append(hit)
+
+            destination_points = [
+                self._project_world_point(hit, view_context)
+                for hit in hit_points
+            ]
+            if any(point is None for point in destination_points):
+                return
+
+            if fringe_rect_context is not None:
+                source_quad_points: list[QPointF] = []
+                for sx, sy in source_points:
                     plane_hit = self._projector_hit_on_fringe_plane(
                         sx,
                         sy,
@@ -1345,155 +1758,21 @@ class ProjectionWindow(RenderWidgetBase):
                         fringe_rect_context,
                     )
                     if plane_hit is None:
-                        continue
-                    mask_point = plane_hit
-                    inside_mask = self._world_point_inside_fringe_rect(
-                        mask_point,
+                        return
+                    source_point = self._fringe_source_point_for_world(
+                        plane_hit,
                         fringe_rect_context,
+                        pixmap.width(),
+                        pixmap.height(),
                     )
-                sample_hits.append(
-                    (
-                        hit[0],
-                        inside_mask,
-                    )
-                )
-
-        if not sample_hits:
-            return
-        center_surface_index, center_inside_mask = sample_hits[0]
-        if (
-            remaining_subdivisions > 0
-            and any(
-                surface_index != center_surface_index or inside_mask != center_inside_mask
-                for surface_index, inside_mask in sample_hits[1:]
-            )
-        ):
-            xm = (x0 + x1) * 0.5
-            ym = (y0 + y1) * 0.5
-            next_depth = remaining_subdivisions - 1
-            self._add_projected_cell(
-                surface_cells,
-                surfaces,
-                pixmap,
-                view_context,
-                projector_context,
-                scan_mask_context,
-                fringe_rect_context,
-                x0,
-                y0,
-                xm,
-                ym,
-                next_depth,
-            )
-            self._add_projected_cell(
-                surface_cells,
-                surfaces,
-                pixmap,
-                view_context,
-                projector_context,
-                scan_mask_context,
-                fringe_rect_context,
-                xm,
-                y0,
-                x1,
-                ym,
-                next_depth,
-            )
-            self._add_projected_cell(
-                surface_cells,
-                surfaces,
-                pixmap,
-                view_context,
-                projector_context,
-                scan_mask_context,
-                fringe_rect_context,
-                xm,
-                ym,
-                x1,
-                y1,
-                next_depth,
-            )
-            self._add_projected_cell(
-                surface_cells,
-                surfaces,
-                pixmap,
-                view_context,
-                projector_context,
-                scan_mask_context,
-                fringe_rect_context,
-                x0,
-                ym,
-                xm,
-                y1,
-                next_depth,
-            )
-            return
-        if not center_inside_mask:
-            return
-
-        source_points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-        surface_corners = surfaces[center_surface_index][1]
-        edge_u = vec_subtract(surface_corners[1], surface_corners[0])
-        edge_v = vec_subtract(surface_corners[-1], surface_corners[0])
-        surface_normal = vec_normalize(vec_cross(edge_u, edge_v))
-        if surface_normal is None:
-            return
-
-        hit_points: list[Vec3] = []
-        for sx, sy in source_points:
-            ray_direction = self._projector_ray_direction(
-                sx,
-                sy,
-                pixmap.width(),
-                pixmap.height(),
-                projector_context,
-            )
-            if ray_direction is None:
-                return
-            hit = self._intersect_ray_with_plane(
-                projector_context[0],
-                ray_direction,
-                surface_corners[0],
-                surface_normal,
-            )
-            if hit is None:
-                return
-            hit_points.append(hit)
-
-        destination_points = [
-            self._project_world_point(hit, view_context)
-            for hit in hit_points
-        ]
-        if any(point is None for point in destination_points):
-            return
-
-        if fringe_rect_context is not None:
-            source_quad_points: list[QPointF] = []
-            for sx, sy in source_points:
-                plane_hit = self._projector_hit_on_fringe_plane(
-                    sx,
-                    sy,
-                    pixmap.width(),
-                    pixmap.height(),
-                    projector_context,
-                    fringe_rect_context,
-                )
-                if plane_hit is None:
-                    return
-                source_point = self._fringe_source_point_for_world(
-                    plane_hit,
-                    fringe_rect_context,
-                    pixmap.width(),
-                    pixmap.height(),
-                )
-                if source_point is None:
-                    return
-                source_quad_points.append(source_point)
-            source_quad = QPolygonF(source_quad_points)
-        else:
-            source_quad = QPolygonF([QPointF(sx, sy) for sx, sy in source_points])
-        destination_quad = QPolygonF([point for point in destination_points if point is not None])
-        surface_cells[center_surface_index].append((source_quad, destination_quad))
+                    if source_point is None:
+                        return
+                    source_quad_points.append(source_point)
+                source_quad = QPolygonF(source_quad_points)
+            else:
+                source_quad = QPolygonF([QPointF(sx, sy) for sx, sy in source_points])
+            destination_quad = QPolygonF([point for point in destination_points if point is not None])
+            surface_cells[center_surface_index].append((source_quad, destination_quad))
 
     def _world_point_inside_projection_context(
         self,
