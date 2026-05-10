@@ -1,13 +1,8 @@
 import argparse
-import importlib
 import sys
-import time
-import traceback
 from collections.abc import Callable
-from collections import deque
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import QApplication
 
@@ -16,9 +11,8 @@ from .fringe import generate_fringe_image
 from .types import Vec3
 from .window import DEFAULT_DEVICE_SPACING_CM, ProjectionWindow
 
-WATCHED_SUFFIXES = {".py"}
-EXCLUDED_DIRS = {".git", ".archive", "__pycache__", ".idea"}
 _Transform = Callable[[object], object]
+RELOAD_EXIT_CODE = 75
 WINDOW_ARG_BINDINGS: tuple[tuple[str, str, _Transform | None], ...] = (
     ("mode", "mode", None),
     ("fill", "fill", None),
@@ -54,10 +48,6 @@ WINDOW_ARG_BINDINGS: tuple[tuple[str, str, _Transform | None], ...] = (
     ("grid_step", "grid_step", None),
     ("grid_extent", "grid_extent", None),
     ("grid_major_every", "grid_major_every", None),
-    ("show_projector", "projector_box", None),
-    ("projector_width", "projector_width", None),
-    ("projector_height", "projector_height", None),
-    ("projector_depth", "projector_depth", None),
     ("projector_lens_offset_x", "projector_lens_offset_x", None),
     ("projector_lens_offset_y", "projector_lens_offset_y", None),
     ("projector_lens_offset_z", "projector_lens_offset_z", None),
@@ -117,12 +107,6 @@ def _validate_args(args: argparse.Namespace) -> str | None:
         return "--grid-extent must be > 0."
     if args.grid_major_every <= 0:
         return "--grid-major-every must be > 0."
-    if args.projector_width <= 0:
-        return "--projector-width must be > 0."
-    if args.projector_height <= 0:
-        return "--projector-height must be > 0."
-    if args.projector_depth <= 0:
-        return "--projector-depth must be > 0."
 
     look_target = _resolve_look_target(args)
     if (
@@ -166,12 +150,30 @@ def _window_state_from_args(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _create_projection_window(args: argparse.Namespace, image: QImage) -> ProjectionWindow:
-    return ProjectionWindow(image, distance_m=args.distance_m, **_window_state_from_args(args))
+    window = ProjectionWindow(image, distance_m=args.distance_m, **_window_state_from_args(args))
+    _configure_window_projection_source(window, args)
+    return window
+
+
+def _configure_window_projection_source(
+    window: ProjectionWindow, args: argparse.Namespace
+) -> None:
+    window.configure_projection_source(
+        source=args.source,
+        fringe_width=args.fringe_width,
+        fringe_height=args.fringe_height,
+        fringe_period_px=args.fringe_period_px,
+        fringe_phase_deg=args.fringe_phase_deg,
+        fringe_orientation=args.fringe_orientation,
+        fringe_contrast=args.fringe_contrast,
+        fringe_bias=args.fringe_bias,
+    )
 
 
 def _apply_args_to_window(window: ProjectionWindow, args: argparse.Namespace) -> None:
     for attr, value in _window_state_from_args(args).items():
         setattr(window, attr, value)
+    _configure_window_projection_source(window, args)
 
     window._default_projector_fov_deg = window._compute_default_projector_fov_deg()
     window._base_plane_center = window._resolve_base_plane_center(args.distance_m)
@@ -194,127 +196,22 @@ def _apply_args_to_window(window: ProjectionWindow, args: argparse.Namespace) ->
     window._controls_frame.setVisible(window.mode == "plane3d")
 
 
-def _patch_window_class(window: ProjectionWindow) -> None:
-    module_names = (
-        "projection_simulation.math3d",
-        "projection_simulation.types",
-        "projection_simulation.fringe",
-        "projection_simulation.window",
-    )
-    for module_name in module_names:
-        module = sys.modules.get(module_name)
-        if module is None:
-            importlib.import_module(module_name)
-            continue
-        importlib.reload(module)
-
-    window_module = importlib.import_module("projection_simulation.window")
-    refreshed_window_cls = getattr(window_module, "ProjectionWindow")
-    current_window_cls = window.__class__
-    for name, value in refreshed_window_cls.__dict__.items():
-        if name in {"__dict__", "__weakref__"}:
-            continue
-        setattr(current_window_cls, name, value)
-
-    global ProjectionWindow
-    ProjectionWindow = refreshed_window_cls
-
-
-def _hot_reload_projection_window(window: ProjectionWindow, argv: list[str]) -> None:
-    importlib.invalidate_caches()
-    _patch_window_class(window)
-
-    cli_module = importlib.import_module("projection_simulation.cli")
-    reloaded_parse_args = getattr(cli_module, "parse_args")
-    reloaded_args = reloaded_parse_args(argv)
-
-    error = _validate_args(reloaded_args)
-    if error is not None:
-        raise ValueError(error)
-
-    image = _load_source_image(reloaded_args)
-    _apply_args_to_window(window, reloaded_args)
-    window._processed = window._process_image(image)
-    window.update()
-
-
-def _collect_snapshot(root: Path) -> dict[Path, tuple[int, int]]:
-    snapshot: dict[Path, tuple[int, int]] = {}
-    for path in root.rglob("*"):
-        if any(part in EXCLUDED_DIRS for part in path.parts):
-            continue
-        if not path.is_file() or path.suffix.lower() not in WATCHED_SUFFIXES:
-            continue
-        try:
-            stat = path.stat()
-        except (FileNotFoundError, PermissionError, OSError):
-            continue
-        snapshot[path] = (stat.st_mtime_ns, stat.st_size)
-    return snapshot
-
-
-def _detect_changes(
-    previous: dict[Path, tuple[int, int]],
-    current: dict[Path, tuple[int, int]],
-) -> list[Path]:
-    changed_paths: list[Path] = []
-    all_paths = set(previous.keys()) | set(current.keys())
-    for path in sorted(all_paths):
-        if previous.get(path) != current.get(path):
-            changed_paths.append(path)
-    return changed_paths
-
-
-def _guard_reload_rate(reload_times: deque[float]) -> None:
-    now = time.monotonic()
-    reload_times.append(now)
-    while reload_times and now - reload_times[0] > 10.0:
-        reload_times.popleft()
-    if len(reload_times) >= 6:
-        print("[runner] Too many rapid reloads, pausing briefly...", flush=True)
-        time.sleep(2.0)
-
-
-def _format_change_preview(root: Path, changed: list[Path]) -> str:
-    preview = ", ".join(str(p.relative_to(root)) for p in changed[:3])
-    suffix = "" if len(changed) <= 3 else ", ..."
-    return f"{preview}{suffix}"
-
-
-def _enable_hot_reload(
-    window: ProjectionWindow,
-    args_for_reload: list[str],
-    interval_seconds: float,
-) -> QTimer:
-    root = Path(__file__).resolve().parent.parent
-    snapshot = _collect_snapshot(root)
-    reload_times: deque[float] = deque()
-
-    timer = QTimer(window)
-    timer.setInterval(max(120, int(interval_seconds * 1000)))
-
-    def on_timeout() -> None:
-        nonlocal snapshot
-        current = _collect_snapshot(root)
-        changed = _detect_changes(snapshot, current)
-        snapshot = current
-        if not changed:
+def _enable_manual_reload(window: ProjectionWindow) -> None:
+    def on_reload() -> None:
+        print("[reload-debug] on_reload requested app restart", flush=True)
+        app = QApplication.instance()
+        if app is None:
+            print("[reload-debug] on_reload aborted (no QApplication instance)", flush=True)
             return
-        print(f"[runner] Change detected: {_format_change_preview(root, changed)}", flush=True)
-        _guard_reload_rate(reload_times)
-        try:
-            _hot_reload_projection_window(window, args_for_reload)
-            print("[runner] Reloaded window in place.", flush=True)
-        except Exception as exc:
-            print(f"[runner] Hot reload failed: {exc}", file=sys.stderr, flush=True)
-            traceback.print_exc()
+        app.setQuitOnLastWindowClosed(False)
+        app.closeAllWindows()
+        app.processEvents()
+        app.exit(RELOAD_EXIT_CODE)
 
-    timer.timeout.connect(on_timeout)
-    timer.start()
-    return timer
+    window.set_reload_handler(on_reload)
 
 
-def main(argv: list[str] | None = None, *, hot_reload_interval: float | None = None) -> int:
+def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
     args = parse_args(argv)
 
     try:
@@ -332,6 +229,11 @@ def main(argv: list[str] | None = None, *, hot_reload_interval: float | None = N
     app = QApplication.instance()
     if app is None:
         app = QApplication(qt_argv)
+    if debug_mode:
+        app.aboutToQuit.connect(
+            lambda: print("[reload-debug] QApplication.aboutToQuit emitted", flush=True)
+        )
+
     screens = QGuiApplication.screens()
     if not screens:
         print("No screens detected.", file=sys.stderr, flush=True)
@@ -360,14 +262,16 @@ def main(argv: list[str] | None = None, *, hot_reload_interval: float | None = N
         window.setGeometry(x, y, width, height)
         window.show()
 
-    if hot_reload_interval is not None:
-        args_for_reload = list(argv) if argv is not None else sys.argv[1:]
-        window._hot_reload_timer = _enable_hot_reload(window, args_for_reload, hot_reload_interval)
-        print("[runner] Debug mode enabled. Hot reloading in place...", flush=True)
+    if debug_mode:
+        _enable_manual_reload(window)
+        print("[runner] Debug mode enabled. Press R (or F5) to restart app.", flush=True)
 
     print(
         f"Projection window open in {args.mode} mode (source: {args.source}). "
-        "Use left-drag to orbit, mouse wheel to zoom, sliders for proj-clamp spacing/plane distance/FOV, and Esc/Q to close.",
+        "Use left-drag to orbit, mouse wheel to zoom, sliders for proj-clamp spacing/plane distance/FOV, and Esc to close.",
         flush=True,
     )
-    return app.exec()
+    exit_code = app.exec()
+    if debug_mode:
+        print(f"[reload-debug] app.exec returned {exit_code}", flush=True)
+    return exit_code

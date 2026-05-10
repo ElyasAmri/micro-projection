@@ -1,45 +1,53 @@
 import math
+from pathlib import Path
+from collections.abc import Callable
+
+import imageio.v2 as imageio
+import numpy as np
 
 from PySide6.QtCore import QPointF, Qt, Slot
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QImage,
+    QKeySequence,
     QMouseEvent,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
     QPolygonF,
+    QShortcut,
     QTransform,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QCheckBox, QFrame, QLabel, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton
 
+from .fringe import generate_fringe_image
 from .math3d import vec_cross, vec_dot, vec_normalize, vec_subtract
 from .types import CameraContext, Vec3
 
 PROJECTOR_THROW_RATIO = 1.2
 PROJECTOR_IMAGE_ASPECT = 16.0 / 9.0
-PROJECTOR_BODY_SIZE_CM = 5.5
 PROJECTOR_ANGLE_LIMIT_DEG = 45
 DEFAULT_PROJECTION_ANGLE_DEG = -20.0
 DEFAULT_DEVICE_SPACING_CM = 12.0
 PROJECTOR_LENS_WINDOW_WIDTH_CM = 1.4
 PROJECTOR_LENS_WINDOW_HEIGHT_CM = 1.0
 PROJECTOR_LENS_FACE_EPS = 0.01
-PROJECTOR_HOLDER_OUTER_SIZE_CM = 6.0  # 60mm
-PROJECTOR_HOLDER_OUTER_HEIGHT_CM = 4.1  # 41mm
-PROJECTOR_HOLDER_INNER_SIZE_CM = 5.5  # 55mm
-PROJECTOR_HOLDER_INNER_DROP_CM = 0.75  # 7.5mm pocket depth
-PROJECTOR_HOLDER_HEIGHT_CM = PROJECTOR_HOLDER_OUTER_HEIGHT_CM - PROJECTOR_HOLDER_INNER_DROP_CM  # 33.5mm seat height
-
-# Edmund Optics 56027 drawing dimensions (mm converted to scene cm).
-SURFACE_CLAMP_TOTAL_HEIGHT_CM = 14.8  # 148.00mm
-SURFACE_CLAMP_BOTTOM_RECT_HEIGHT_CM = 2.51  # 25.10mm
-SURFACE_CLAMP_CIRCLE_CENTER_HEIGHT_CM = 8.1  # 81.00mm from ground
-SURFACE_CLAMP_THICKNESS_CM = 5.0  # 50.00mm (Y thickness from drawing)
-SURFACE_CLAMP_OUTER_CIRCLE_DIAMETER_CM = 13.4  # 134.00mm
-SURFACE_CLAMP_INNER_CIRCLE_DIAMETER_CM = 11.18  # 111.8mm
+SURFACE_CAMERA_LENS_HEIGHT_CM = 8.1
+PROJECTOR_RAYCAST_COLUMNS = 12
+PROJECTOR_RAYCAST_ROWS = 8
+MINIMAP_RAYCAST_COLUMNS = 6
+MINIMAP_RAYCAST_ROWS = 4
+FIELD_OBJECT_PLANE_GAP_M = 0.2
+SWEEP_RECORD_FRAMES = 60
+SWEEP_RECORD_FPS = 20.0
+SWEEP_RECORD_WIDTH = 640
+SWEEP_RECORD_HEIGHT = 360
+SWEEP_RECORD_PHASE_SPAN_DEG = 360.0
+SceneSurface = tuple[str, list[Vec3], QColor]
 
 
 class ProjectionWindow(QWidget):
@@ -82,10 +90,6 @@ class ProjectionWindow(QWidget):
         grid_step: float,
         grid_extent: float,
         grid_major_every: int,
-        show_projector: bool,
-        projector_width: float,
-        projector_height: float,
-        projector_depth: float,
         projector_lens_offset_x: float,
         projector_lens_offset_y: float,
         projector_lens_offset_z: float,
@@ -128,10 +132,6 @@ class ProjectionWindow(QWidget):
         self.grid_step = grid_step
         self.grid_extent = grid_extent
         self.grid_major_every = grid_major_every
-        self.show_projector = show_projector
-        self.projector_width = projector_width
-        self.projector_height = projector_height
-        self.projector_depth = projector_depth
         self.projector_lens_offset_x = projector_lens_offset_x
         self.projector_lens_offset_y = projector_lens_offset_y
         self.projector_lens_offset_z = projector_lens_offset_z
@@ -139,7 +139,6 @@ class ProjectionWindow(QWidget):
         self.pitch_deg = pitch_deg
         self.roll_deg = roll_deg
         self.show_proj_hit_marker = True
-        self.show_clamp_hit_marker = True
         self._default_projector_fov_deg = self._compute_default_projector_fov_deg()
         self._base_plane_center = self._resolve_base_plane_center(distance_m)
         self._symmetry_normal, self._symmetry_tangent = self._derive_symmetry_basis()
@@ -164,6 +163,16 @@ class ProjectionWindow(QWidget):
         )
         self._update_reflected_devices()
         self._processed = self._process_image(image)
+        self.projection_source = "fringe"
+        self.fringe_width = self._processed.width()
+        self.fringe_height = self._processed.height()
+        self.fringe_period_px = 48.0
+        self.fringe_phase_deg = 0.0
+        self.fringe_orientation = "vertical"
+        self.fringe_contrast = 1.0
+        self.fringe_bias = 0.5
+        self._reload_handler: Callable[[], None] | None = None
+        self._recording_video = False
         self._orbit_target: Vec3 = (0.0, 0.0, 0.0)
         self._orbit_dragging = False
         self._orbit_last_pos: QPointF | None = None
@@ -178,6 +187,7 @@ class ProjectionWindow(QWidget):
         self.setStyleSheet("background-color: black;")
         self.setFocusPolicy(Qt.StrongFocus)
         self._init_controls()
+        self._init_shortcuts()
 
     def _process_image(self, image: QImage) -> QImage:
         processed = image
@@ -186,6 +196,56 @@ class ProjectionWindow(QWidget):
         if self.mirror_horizontal:
             processed = processed.mirrored(True, False)
         return processed
+
+    def configure_projection_source(
+        self,
+        *,
+        source: str,
+        fringe_width: int,
+        fringe_height: int,
+        fringe_period_px: float,
+        fringe_phase_deg: float,
+        fringe_orientation: str,
+        fringe_contrast: float,
+        fringe_bias: float,
+    ) -> None:
+        self.projection_source = source
+        self.fringe_width = fringe_width
+        self.fringe_height = fringe_height
+        self.fringe_period_px = fringe_period_px
+        self.fringe_phase_deg = fringe_phase_deg
+        self.fringe_orientation = fringe_orientation
+        self.fringe_contrast = fringe_contrast
+        self.fringe_bias = fringe_bias
+        if hasattr(self, "_record_sweep_button"):
+            self._refresh_control_labels()
+
+    def set_reload_handler(self, handler: Callable[[], None] | None) -> None:
+        self._reload_handler = handler
+
+    def _init_shortcuts(self) -> None:
+        self._reload_shortcut_r = QShortcut(QKeySequence("R"), self)
+        self._reload_shortcut_r.setContext(Qt.WidgetWithChildrenShortcut)
+        self._reload_shortcut_r.activated.connect(lambda: self._trigger_reload("shortcut:R"))
+        self._reload_shortcut_ctrl_r = QShortcut(QKeySequence("Ctrl+R"), self)
+        self._reload_shortcut_ctrl_r.setContext(Qt.WidgetWithChildrenShortcut)
+        self._reload_shortcut_ctrl_r.activated.connect(
+            lambda: self._trigger_reload("shortcut:Ctrl+R")
+        )
+        self._reload_shortcut_f5 = QShortcut(QKeySequence("F5"), self)
+        self._reload_shortcut_f5.setContext(Qt.WidgetWithChildrenShortcut)
+        self._reload_shortcut_f5.activated.connect(lambda: self._trigger_reload("shortcut:F5"))
+
+    def _log_reload_debug(self, message: str) -> None:
+        print(f"[reload-debug] {message}", flush=True)
+
+    @Slot()
+    def _trigger_reload(self, source: str = "unknown") -> None:
+        self._log_reload_debug(
+            f"reload trigger source={source}, handler={'set' if self._reload_handler else 'missing'}"
+        )
+        if self._reload_handler is not None:
+            self._reload_handler()
 
     def _resolve_base_plane_center(self, distance_m: float) -> Vec3:
         if self.use_axis_distance:
@@ -251,10 +311,7 @@ class ProjectionWindow(QWidget):
         return abs(2.0 * radius_cm * math.sin(math.radians(angle_deg)))
 
     def _clamp_aperture_center_world(self, origin: Vec3) -> Vec3 | None:
-        look_target = self._projector_horizontal_target(origin)
-        forward = vec_normalize(vec_subtract(look_target, origin))
-        if forward is None:
-            return None
+        forward = self._horizontal_forward_direction(origin)
         world_up: Vec3 = (0.0, 0.0, 1.0)
         if abs(vec_dot(forward, world_up)) > 0.98:
             world_up = (0.0, 1.0, 0.0)
@@ -265,7 +322,7 @@ class ProjectionWindow(QWidget):
         if abs(up[2]) <= 1e-6:
             return None
         ground_align_local_y = -origin[2] / up[2]
-        hole_center_y = SURFACE_CLAMP_CIRCLE_CENTER_HEIGHT_CM
+        hole_center_y = SURFACE_CAMERA_LENS_HEIGHT_CM
         return (
             origin[0] + up[0] * (hole_center_y + ground_align_local_y),
             origin[1] + up[1] * (hole_center_y + ground_align_local_y),
@@ -302,9 +359,7 @@ class ProjectionWindow(QWidget):
         clamp_origin = self._clamp_aperture_center_world(self._surface_camera_pos)
         if clamp_origin is None:
             return None
-        look_target = self._projector_horizontal_target(clamp_origin)
-        direction = vec_normalize(vec_subtract(look_target, clamp_origin))
-        return self._ray_angle_to_y_axis_deg(direction)
+        return self._ray_angle_to_y_axis_deg(self._horizontal_forward_direction(clamp_origin))
 
     def _update_reflected_devices(self) -> None:
         if not hasattr(self, "_device_lateral_sign"):
@@ -400,6 +455,8 @@ class ProjectionWindow(QWidget):
             "QFrame { background-color: rgba(20, 20, 20, 170); border: 1px solid #505050; border-radius: 6px; }"
             "QLabel { color: #E6E6E6; }"
             "QCheckBox { color: #E6E6E6; }"
+            "QPushButton { color: #E6E6E6; background-color: rgba(55, 55, 55, 210); border: 1px solid #6a6a6a; border-radius: 4px; padding: 6px; }"
+            "QPushButton:disabled { color: #A0A0A0; background-color: rgba(45, 45, 45, 180); border-color: #555555; }"
         )
         layout = QVBoxLayout(self._controls_frame)
         layout.setContentsMargins(10, 8, 10, 8)
@@ -446,9 +503,10 @@ class ProjectionWindow(QWidget):
         self._show_proj_hit_checkbox = QCheckBox("Show proj hit", self._controls_frame)
         self._show_proj_hit_checkbox.setChecked(self.show_proj_hit_marker)
         self._show_proj_hit_checkbox.toggled.connect(self._on_show_proj_hit_toggled)
-        self._show_clamp_hit_checkbox = QCheckBox("Show clamp hit", self._controls_frame)
-        self._show_clamp_hit_checkbox.setChecked(self.show_clamp_hit_marker)
-        self._show_clamp_hit_checkbox.toggled.connect(self._on_show_clamp_hit_toggled)
+
+        self._record_sweep_button = QPushButton("Record surface camera sweep", self._controls_frame)
+        self._record_sweep_button.setEnabled(self.projection_source == "fringe")
+        self._record_sweep_button.clicked.connect(self._on_record_sweep_clicked)
 
         layout.addWidget(self._spacing_label)
         layout.addWidget(self._spacing_slider)
@@ -462,7 +520,7 @@ class ProjectionWindow(QWidget):
         layout.addWidget(self._lens_offset_y_label)
         layout.addWidget(self._lens_offset_y_slider)
         layout.addWidget(self._show_proj_hit_checkbox)
-        layout.addWidget(self._show_clamp_hit_checkbox)
+        layout.addWidget(self._record_sweep_button)
         self._refresh_control_labels()
         self._controls_frame.setVisible(self.mode == "plane3d")
 
@@ -511,12 +569,12 @@ class ProjectionWindow(QWidget):
                 self._show_proj_hit_checkbox.blockSignals(True)
                 self._show_proj_hit_checkbox.setChecked(show_proj)
                 self._show_proj_hit_checkbox.blockSignals(False)
-        if hasattr(self, "_show_clamp_hit_checkbox"):
-            show_clamp = bool(getattr(self, "show_clamp_hit_marker", True))
-            if self._show_clamp_hit_checkbox.isChecked() != show_clamp:
-                self._show_clamp_hit_checkbox.blockSignals(True)
-                self._show_clamp_hit_checkbox.setChecked(show_clamp)
-                self._show_clamp_hit_checkbox.blockSignals(False)
+        if hasattr(self, "_record_sweep_button"):
+            self._record_sweep_button.setEnabled(
+                self.mode == "plane3d"
+                and self.projection_source == "fringe"
+                and not self._recording_video
+            )
 
     @Slot(int)
     def _on_spacing_changed(self, value: int) -> None:
@@ -558,21 +616,74 @@ class ProjectionWindow(QWidget):
         self.show_proj_hit_marker = bool(checked)
         self.update()
 
-    @Slot(bool)
-    def _on_show_clamp_hit_toggled(self, checked: bool) -> None:
-        self.show_clamp_hit_marker = bool(checked)
-        self.update()
+    @Slot()
+    def _on_record_sweep_clicked(self) -> None:
+        if self._recording_video:
+            return
+        if self.projection_source != "fringe":
+            QMessageBox.warning(
+                self,
+                "Recording unavailable",
+                "Surface-camera sweep recording requires fringe projection source.",
+            )
+            return
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save surface camera sweep video",
+            "surface-camera-sweep.mp4",
+            "MP4 Video (*.mp4);;All Files (*)",
+        )
+        if not output_path:
+            return
+        if Path(output_path).suffix == "":
+            output_path = f"{output_path}.mp4"
+
+        self._recording_video = True
+        self._record_sweep_button.setEnabled(False)
+        self._record_sweep_button.setText("Recording...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.record_surface_camera_sweep_video(output_path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Recording failed", str(exc))
+        else:
+            QMessageBox.information(
+                self,
+                "Recording complete",
+                f"Saved surface camera sweep video to:\n{output_path}",
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+            self._recording_video = False
+            self._record_sweep_button.setText("Record surface camera sweep")
+            self._record_sweep_button.setEnabled(
+                self.mode == "plane3d" and self.projection_source == "fringe"
+            )
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         if hasattr(self, "_controls_frame"):
-            self._controls_frame.setGeometry(12, 12, 280, 330)
+            self._controls_frame.setGeometry(12, 12, 280, 345)
         super().resizeEvent(event)
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
-        if event.key() in (Qt.Key_Escape, Qt.Key_Q):
+        self._log_reload_debug(
+            "keyPressEvent "
+            f"key={event.key()} text={event.text()!r} mods={int(event.modifiers())} "
+            f"focus={type(self.focusWidget()).__name__ if self.focusWidget() is not None else 'None'}"
+        )
+        if event.key() == Qt.Key_Escape:
+            self._log_reload_debug("closing window via Escape")
             self.close()
             return
+        if event.key() == Qt.Key_R:
+            self._trigger_reload("keyPressEvent:R")
+            return
         super().keyPressEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        self._log_reload_debug("closeEvent received")
+        super().closeEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if self.mode == "plane3d" and event.button() == Qt.LeftButton:
@@ -627,21 +738,33 @@ class ProjectionWindow(QWidget):
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         painter.fillRect(self.rect(), Qt.black)
 
         pixmap = QPixmap.fromImage(self._processed)
         if self.mode == "plane3d":
+            projector_context = self._projector_projection_context(pixmap.width(), pixmap.height())
+            scene_surfaces = self._scene_surfaces()
             if self.show_ground_grid:
                 self._draw_ground_grid(painter, self.width(), self.height())
-            drew_projection = self._draw_plane3d_projection(painter, pixmap)
-            if self.show_projector:
-                self._draw_device_boxes(painter, self.width(), self.height())
-                self._draw_projector_contours(
-                    painter,
-                    pixmap,
-                    self.width(),
-                    self.height(),
-                )
+            drew_projection = self._draw_plane3d_projection(
+                painter,
+                pixmap,
+                projector_context=projector_context,
+                scene_surfaces=scene_surfaces,
+            )
+            self._draw_projector_contours(
+                painter,
+                pixmap,
+                self.width(),
+                self.height(),
+            )
+            self._draw_surface_camera_minimap(
+                painter,
+                pixmap,
+                projector_context=projector_context,
+                scene_surfaces=scene_surfaces,
+            )
             if drew_projection:
                 return
 
@@ -654,89 +777,32 @@ class ProjectionWindow(QWidget):
         y = (self.height() - scaled.height()) // 2
         painter.drawPixmap(x, y, scaled.width(), scaled.height(), pixmap)
 
-    def _draw_plane3d_projection(self, painter: QPainter, pixmap: QPixmap) -> bool:
-        viewport_width = self.width()
-        viewport_height = self.height()
-        drew_any = False
-
-        if self.project_projection_plane:
-            projection_plane_quad = self._projected_surface_quad(
-                self._plane_center(),
-                self.plane_width_m,
-                self.plane_height_m,
-                viewport_width,
-                viewport_height,
-            )
-            if projection_plane_quad is not None:
-                self._draw_solid_quad(
-                    painter,
-                    projection_plane_quad,
-                    QColor(56, 64, 82),
-                )
-                drew_any = True
-
-        projection_surface = self._primary_projection_surface()
-        if projection_surface is not None:
-            center, width, height = projection_surface
-            if self._draw_surface_projection(
-                painter,
-                pixmap,
-                center,
-                width,
-                height,
-                viewport_width,
-                viewport_height,
-            ):
-                drew_any = True
-
-        return drew_any
-
-    def _draw_surface_projection(
+    def _draw_plane3d_projection(
         self,
         painter: QPainter,
         pixmap: QPixmap,
-        center: Vec3,
-        width: float,
-        height: float,
-        viewport_width: int,
-        viewport_height: int,
+        *,
+        projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None = None,
+        scene_surfaces: list[SceneSurface] | None = None,
     ) -> bool:
-        projected = self._projected_projection_footprint(
-            center,
-            width,
-            height,
-            pixmap.width(),
-            pixmap.height(),
-            viewport_width,
-            viewport_height,
-        )
-        if projected is None:
-            return False
-        projection_quad, surface_quad, _ = projected
-        self._draw_projected_quad(
+        return self._draw_projected_scene(
             painter,
             pixmap,
-            projection_quad,
-            clip_quad=surface_quad,
+            self.width(),
+            self.height(),
+            projector_context=projector_context,
+            scene_surfaces=scene_surfaces,
         )
-        return True
 
-    def _draw_projected_quad(
+    def _draw_projected_source_quad(
         self,
         painter: QPainter,
         pixmap: QPixmap,
+        source_quad: QPolygonF,
         destination_quad: QPolygonF,
         *,
         clip_quad: QPolygonF | None = None,
     ) -> None:
-        source_quad = QPolygonF(
-            [
-                QPointF(0.0, 0.0),
-                QPointF(float(pixmap.width()), 0.0),
-                QPointF(float(pixmap.width()), float(pixmap.height())),
-                QPointF(0.0, float(pixmap.height())),
-            ]
-        )
         transform = QTransform.quadToQuad(source_quad, destination_quad)
         if not isinstance(transform, QTransform):
             return
@@ -760,6 +826,350 @@ class ProjectionWindow(QWidget):
         painter.setBrush(color)
         painter.drawPolygon(destination_quad)
         painter.restore()
+
+    def _draw_field_object_3d(
+        self,
+        painter: QPainter,
+        viewport_width: int,
+        viewport_height: int,
+        *,
+        context: CameraContext | None = None,
+    ) -> bool:
+        if self.field_width_m <= 0 or self.field_height_m <= 0:
+            return False
+        if context is None:
+            context = self._camera_projection_context(viewport_width, viewport_height)
+        if context is None:
+            return False
+
+        face_polygons: list[tuple[float, QPolygonF]] = []
+        for face_world in self._field_object_faces():
+            projected_face: list[QPointF] = []
+            for point in face_world:
+                projected = self._project_world_point(point, context)
+                if projected is None:
+                    projected_face = []
+                    break
+                projected_face.append(projected)
+            if len(projected_face) != 4:
+                continue
+            avg_depth = sum(self._world_to_camera(p, context)[2] for p in face_world) / 4.0
+            face_polygons.append((avg_depth, QPolygonF(projected_face)))
+
+        if not face_polygons:
+            return False
+
+        face_polygons.sort(key=lambda item: item[0], reverse=True)
+        painter.save()
+        painter.setPen(QPen(QColor(95, 132, 170), 1.2))
+        painter.setBrush(QColor(70, 96, 124, 140))
+        for _, polygon in face_polygons:
+            painter.drawPolygon(polygon)
+        painter.restore()
+        return True
+
+    def _field_object_world_corners(self) -> list[Vec3]:
+        frame = self._field_object_frame()
+        if frame is None:
+            return []
+        plane_center, right, up, normal = frame
+        half_w = self.field_width_m * 0.5
+        half_h = self.field_height_m * 0.5
+        depth = self._field_object_depth()
+        gap = FIELD_OBJECT_PLANE_GAP_M
+        back_center = (
+            plane_center[0] + normal[0] * gap,
+            plane_center[1] + normal[1] * gap,
+            plane_center[2] + normal[2] * gap,
+        )
+        front_center = (
+            plane_center[0] + normal[0] * (gap + depth),
+            plane_center[1] + normal[1] * (gap + depth),
+            plane_center[2] + normal[2] * (gap + depth),
+        )
+
+        def rect(center: Vec3) -> list[Vec3]:
+            return [
+                (
+                    center[0] - right[0] * half_w + up[0] * half_h,
+                    center[1] - right[1] * half_w + up[1] * half_h,
+                    center[2] - right[2] * half_w + up[2] * half_h,
+                ),
+                (
+                    center[0] + right[0] * half_w + up[0] * half_h,
+                    center[1] + right[1] * half_w + up[1] * half_h,
+                    center[2] + right[2] * half_w + up[2] * half_h,
+                ),
+                (
+                    center[0] + right[0] * half_w - up[0] * half_h,
+                    center[1] + right[1] * half_w - up[1] * half_h,
+                    center[2] + right[2] * half_w - up[2] * half_h,
+                ),
+                (
+                    center[0] - right[0] * half_w - up[0] * half_h,
+                    center[1] - right[1] * half_w - up[1] * half_h,
+                    center[2] - right[2] * half_w - up[2] * half_h,
+                ),
+            ]
+
+        return [*rect(front_center), *rect(back_center)]
+
+    def _field_object_faces(self) -> list[list[Vec3]]:
+        world_corners = self._field_object_world_corners()
+        if len(world_corners) != 8:
+            return []
+        face_indices = [
+            (0, 1, 2, 3),
+            (4, 5, 6, 7),
+            (0, 1, 5, 4),
+            (1, 2, 6, 5),
+            (2, 3, 7, 6),
+            (3, 0, 4, 7),
+        ]
+        return [[world_corners[i] for i in face] for face in face_indices]
+
+    def _field_object_depth(self) -> float:
+        return max(0.25, min(self.field_width_m, self.field_height_m) * 0.6)
+
+    def _field_object_frame(self) -> tuple[Vec3, Vec3, Vec3, Vec3] | None:
+        plane_center = self._plane_center()
+        corners = self._surface_world_corners(
+            plane_center,
+            self.plane_width_m,
+            self.plane_height_m,
+        )
+        right = vec_normalize(vec_subtract(corners[1], corners[0]))
+        up = vec_normalize(vec_subtract(corners[0], corners[3]))
+        if right is None or up is None:
+            return None
+        normal = vec_normalize(vec_cross(right, up))
+        if normal is None:
+            return None
+        if vec_dot(normal, self._symmetry_normal) < 0.0:
+            normal = (-normal[0], -normal[1], -normal[2])
+        return (plane_center, right, up, normal)
+
+    def _scene_surfaces(self) -> list[SceneSurface]:
+        surfaces: list[SceneSurface] = []
+        if self.project_projection_plane:
+            surfaces.append(
+                (
+                    "Projection Plane",
+                    self._surface_world_corners(
+                        self._plane_center(),
+                        self.plane_width_m,
+                        self.plane_height_m,
+                    ),
+                    QColor(56, 64, 82),
+                )
+            )
+        if self.project_field_object:
+            for index, face in enumerate(self._field_object_faces()):
+                surfaces.append((f"Field Object {index + 1}", face, QColor(70, 96, 124)))
+        return surfaces
+
+    def _ray_surface_intersection(
+        self,
+        ray_origin: Vec3,
+        ray_direction: Vec3,
+        surface: list[Vec3],
+    ) -> tuple[float, Vec3] | None:
+        if len(surface) < 3:
+            return None
+        edge_u = vec_subtract(surface[1], surface[0])
+        edge_v = vec_subtract(surface[-1], surface[0])
+        normal = vec_normalize(vec_cross(edge_u, edge_v))
+        if normal is None:
+            return None
+
+        denominator = vec_dot(ray_direction, normal)
+        if abs(denominator) <= 1e-8:
+            return None
+        ray_to_plane = vec_subtract(surface[0], ray_origin)
+        distance = vec_dot(ray_to_plane, normal) / denominator
+        if distance <= 1e-5:
+            return None
+
+        hit = (
+            ray_origin[0] + ray_direction[0] * distance,
+            ray_origin[1] + ray_direction[1] * distance,
+            ray_origin[2] + ray_direction[2] * distance,
+        )
+        edge_signs: list[float] = []
+        for index, corner in enumerate(surface):
+            next_corner = surface[(index + 1) % len(surface)]
+            edge = vec_subtract(next_corner, corner)
+            to_hit = vec_subtract(hit, corner)
+            edge_signs.append(vec_dot(vec_cross(edge, to_hit), normal))
+        if not (
+            all(sign >= -1e-6 for sign in edge_signs)
+            or all(sign <= 1e-6 for sign in edge_signs)
+        ):
+            return None
+        return (distance, hit)
+
+    def _first_projector_hit(
+        self,
+        x_pixel: float,
+        y_pixel: float,
+        image_width: int,
+        image_height: int,
+        projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float],
+        surfaces: list[SceneSurface],
+    ) -> tuple[int, Vec3] | None:
+        ray_direction = self._projector_ray_direction(
+            x_pixel,
+            y_pixel,
+            image_width,
+            image_height,
+            projector_context,
+        )
+        if ray_direction is None:
+            return None
+
+        projector_origin = projector_context[0]
+        nearest: tuple[float, int, Vec3] | None = None
+        for surface_index, (_, corners, _) in enumerate(surfaces):
+            intersection = self._ray_surface_intersection(
+                projector_origin,
+                ray_direction,
+                corners,
+            )
+            if intersection is None:
+                continue
+            distance, hit = intersection
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, surface_index, hit)
+        if nearest is None:
+            return None
+        return (nearest[1], nearest[2])
+
+    def _draw_projected_scene(
+        self,
+        painter: QPainter,
+        pixmap: QPixmap,
+        viewport_width: int,
+        viewport_height: int,
+        *,
+        view_context: CameraContext | None = None,
+        columns: int = PROJECTOR_RAYCAST_COLUMNS,
+        rows: int = PROJECTOR_RAYCAST_ROWS,
+        projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None = None,
+        scene_surfaces: list[SceneSurface] | None = None,
+    ) -> bool:
+        if pixmap.width() <= 0 or pixmap.height() <= 0:
+            return False
+        if view_context is None:
+            view_context = self._camera_projection_context(viewport_width, viewport_height)
+        if view_context is None:
+            return False
+        if projector_context is None:
+            projector_context = self._projector_projection_context(pixmap.width(), pixmap.height())
+        if projector_context is None:
+            return False
+
+        surfaces = scene_surfaces if scene_surfaces is not None else self._scene_surfaces()
+        if not surfaces:
+            return False
+
+        surface_cells: list[list[tuple[QPolygonF, QPolygonF]]] = [
+            [] for _ in surfaces
+        ]
+        columns = max(2, columns)
+        rows = max(2, rows)
+        for row in range(rows):
+            y0 = pixmap.height() * row / rows
+            y1 = pixmap.height() * (row + 1) / rows
+            for column in range(columns):
+                x0 = pixmap.width() * column / columns
+                x1 = pixmap.width() * (column + 1) / columns
+                source_points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+                center_hit = self._first_projector_hit(
+                    (x0 + x1) * 0.5,
+                    (y0 + y1) * 0.5,
+                    pixmap.width(),
+                    pixmap.height(),
+                    projector_context,
+                    surfaces,
+                )
+                if center_hit is None:
+                    continue
+
+                surface_index = center_hit[0]
+                surface_corners = surfaces[surface_index][1]
+                edge_u = vec_subtract(surface_corners[1], surface_corners[0])
+                edge_v = vec_subtract(surface_corners[-1], surface_corners[0])
+                surface_normal = vec_normalize(vec_cross(edge_u, edge_v))
+                if surface_normal is None:
+                    continue
+
+                hit_points: list[Vec3] = []
+                for sx, sy in source_points:
+                    ray_direction = self._projector_ray_direction(
+                        sx,
+                        sy,
+                        pixmap.width(),
+                        pixmap.height(),
+                        projector_context,
+                    )
+                    if ray_direction is None:
+                        hit_points = []
+                        break
+                    hit = self._intersect_ray_with_plane(
+                        projector_context[0],
+                        ray_direction,
+                        surface_corners[0],
+                        surface_normal,
+                    )
+                    if hit is None:
+                        hit_points = []
+                        break
+                    hit_points.append(hit)
+                if len(hit_points) != 4:
+                    continue
+
+                destination_points = [
+                    self._project_world_point(hit, view_context)
+                    for hit in hit_points
+                ]
+                if any(point is None for point in destination_points):
+                    continue
+
+                source_quad = QPolygonF([QPointF(sx, sy) for sx, sy in source_points])
+                destination_quad = QPolygonF(
+                    [point for point in destination_points if point is not None]
+                )
+                surface_cells[surface_index].append((source_quad, destination_quad))
+
+        surface_order: list[tuple[float, int, QPolygonF]] = []
+        for index, (_, corners, _) in enumerate(surfaces):
+            projected_surface: list[QPointF] = []
+            for corner in corners:
+                projected = self._project_world_point(corner, view_context)
+                if projected is None:
+                    projected_surface = []
+                    break
+                projected_surface.append(projected)
+            if len(projected_surface) != len(corners):
+                continue
+            avg_depth = sum(self._world_to_camera(corner, view_context)[2] for corner in corners) / len(corners)
+            surface_order.append((avg_depth, index, QPolygonF(projected_surface)))
+
+        if not surface_order:
+            return False
+        surface_order.sort(key=lambda item: item[0], reverse=True)
+        for _, surface_index, projected_surface in surface_order:
+            _, _, color = surfaces[surface_index]
+            self._draw_solid_quad(painter, projected_surface, color)
+            for source_quad, destination_quad in surface_cells[surface_index]:
+                self._draw_projected_source_quad(
+                    painter,
+                    pixmap,
+                    source_quad,
+                    destination_quad,
+                    clip_quad=projected_surface,
+                )
+        return True
 
     def _surface_corners(
         self, center: Vec3, width: float, height: float
@@ -807,32 +1217,21 @@ class ProjectionWindow(QWidget):
         primary_surface = self._primary_projection_surface()
         if primary_surface is not None:
             target = primary_surface[0]
-        horizontal_target = (target[0], target[1], origin[2])
-        if (
-            abs(horizontal_target[0] - origin[0]) <= 1e-9
-            and abs(horizontal_target[1] - origin[1]) <= 1e-9
-        ):
-            return target
-        return horizontal_target
+        return (target[0], target[1], origin[2])
 
-    def _ground_alignment_local_y_offset(
-        self,
-        origin: Vec3,
-        up: Vec3,
-        local_ground_y: float,
-        target_world_z: float = 0.0,
-    ) -> float:
-        if abs(up[2]) <= 1e-6:
-            return 0.0
-        return ((target_world_z - origin[2]) / up[2]) - local_ground_y
+    def _horizontal_forward_direction(self, origin: Vec3) -> Vec3:
+        target = self._projector_horizontal_target(origin)
+        direction = vec_normalize((target[0] - origin[0], target[1] - origin[1], 0.0))
+        if direction is not None:
+            return direction
+        tangent = vec_normalize((self._symmetry_tangent[0], self._symmetry_tangent[1], 0.0))
+        if tangent is not None:
+            return tangent
+        return (0.0, 1.0, 0.0)
 
     def _projector_chassis_axes(self) -> tuple[Vec3, Vec3, Vec3, Vec3] | None:
         chassis_origin = self._projector_pos
-        forward = vec_normalize(
-            vec_subtract(self._projector_horizontal_target(chassis_origin), chassis_origin)
-        )
-        if forward is None:
-            return None
+        forward = self._horizontal_forward_direction(chassis_origin)
         world_up: Vec3 = (0.0, 0.0, 1.0)
         if abs(vec_dot(forward, world_up)) > 0.98:
             world_up = (0.0, 1.0, 0.0)
@@ -848,27 +1247,17 @@ class ProjectionWindow(QWidget):
             return None
         chassis_origin, right, up, forward = chassis_axes
 
-        half_body_w = self.projector_width / 2.0
-        half_body_h = self.projector_height / 2.0
-        lens_half_w = min(PROJECTOR_LENS_WINDOW_WIDTH_CM / 2.0, max(0.1, half_body_w - 0.05))
-        lens_half_h = min(PROJECTOR_LENS_WINDOW_HEIGHT_CM / 2.0, max(0.1, half_body_h - 0.05))
-        local_y_offset = self._ground_alignment_local_y_offset(
-            chassis_origin,
-            up,
-            -half_body_h,
-            target_world_z=PROJECTOR_HOLDER_HEIGHT_CM,
-        )
-
-        cx = max(-half_body_w + lens_half_w, min(half_body_w - lens_half_w, self.projector_lens_offset_x))
-        cy = max(-half_body_h + lens_half_h, min(half_body_h - lens_half_h, self.projector_lens_offset_y))
-        cz = self.projector_depth + PROJECTOR_LENS_FACE_EPS
+        lens_half_w = PROJECTOR_LENS_WINDOW_WIDTH_CM * 0.5
+        lens_half_h = PROJECTOR_LENS_WINDOW_HEIGHT_CM * 0.5
+        cx = self.projector_lens_offset_x
+        cy = self.projector_lens_offset_y
+        cz = self.projector_lens_offset_z + PROJECTOR_LENS_FACE_EPS
 
         def local_to_world(lx: float, ly: float, lz: float) -> Vec3:
-            local_y = ly + local_y_offset
             return (
-                chassis_origin[0] + right[0] * lx + up[0] * local_y + forward[0] * lz,
-                chassis_origin[1] + right[1] * lx + up[1] * local_y + forward[1] * lz,
-                chassis_origin[2] + right[2] * lx + up[2] * local_y + forward[2] * lz,
+                chassis_origin[0] + right[0] * lx + up[0] * ly + forward[0] * lz,
+                chassis_origin[1] + right[1] * lx + up[1] * ly + forward[1] * lz,
+                chassis_origin[2] + right[2] * lx + up[2] * ly + forward[2] * lz,
             )
 
         center = local_to_world(cx, cy, cz)
@@ -885,11 +1274,7 @@ class ProjectionWindow(QWidget):
         if lens_data is None:
             return None
         _, lens_origin = lens_data
-        lens_forward = vec_normalize(
-            vec_subtract(self._projector_horizontal_target(lens_origin), lens_origin)
-        )
-        if lens_forward is None:
-            return None
+        lens_forward = self._horizontal_forward_direction(lens_origin)
         world_up: Vec3 = (0.0, 0.0, 1.0)
         if abs(vec_dot(lens_forward, world_up)) > 0.98:
             world_up = (0.0, 1.0, 0.0)
@@ -945,67 +1330,6 @@ class ProjectionWindow(QWidget):
             ray_origin[2] + ray_direction[2] * t,
         )
 
-    def _projected_projection_footprint(
-        self,
-        center: Vec3,
-        width: float,
-        height: float,
-        image_width: int,
-        image_height: int,
-        viewport_width: int,
-        viewport_height: int,
-    ) -> tuple[QPolygonF, QPolygonF, list[Vec3]] | None:
-        if width <= 0 or height <= 0:
-            return None
-        view_context = self._camera_projection_context(viewport_width, viewport_height)
-        if view_context is None:
-            return None
-        projector_context = self._projector_projection_context(image_width, image_height)
-        if projector_context is None:
-            return None
-
-        surface_world = self._surface_world_corners(center, width, height)
-        surface_quad_points: list[QPointF] = []
-        for world_corner in surface_world:
-            screen_point = self._project_world_point(world_corner, view_context)
-            if screen_point is None:
-                return None
-            surface_quad_points.append(screen_point)
-        surface_quad = QPolygonF(surface_quad_points)
-
-        edge_u = vec_subtract(surface_world[1], surface_world[0])
-        edge_v = vec_subtract(surface_world[3], surface_world[0])
-        plane_normal = vec_normalize(vec_cross(edge_u, edge_v))
-        if plane_normal is None:
-            return None
-
-        projector_origin = projector_context[0]
-        source_corners = [
-            (0.0, 0.0),
-            (float(image_width), 0.0),
-            (float(image_width), float(image_height)),
-            (0.0, float(image_height)),
-        ]
-        projection_points: list[QPointF] = []
-        footprint_hits_world: list[Vec3] = []
-        for sx, sy in source_corners:
-            ray_direction = self._projector_ray_direction(
-                sx, sy, image_width, image_height, projector_context
-            )
-            if ray_direction is None:
-                return None
-            hit = self._intersect_ray_with_plane(
-                projector_origin, ray_direction, surface_world[0], plane_normal
-            )
-            if hit is None:
-                return None
-            screen_hit = self._project_world_point(hit, view_context)
-            if screen_hit is None:
-                return None
-            projection_points.append(screen_hit)
-            footprint_hits_world.append(hit)
-        return (QPolygonF(projection_points), surface_quad, footprint_hits_world)
-
     def _draw_projector_contours(
         self,
         painter: QPainter,
@@ -1015,6 +1339,8 @@ class ProjectionWindow(QWidget):
     ) -> None:
         self._projector_projection_hit_world = None
         self._projector_ray_origin_world = None
+        self._clamp_projection_hit_world = None
+        self._clamp_ray_origin_world = None
         view_context = self._camera_projection_context(viewport_width, viewport_height)
         if view_context is None:
             return
@@ -1046,72 +1372,163 @@ class ProjectionWindow(QWidget):
             pa, pb = segment
             painter.drawLine(pa, pb)
 
-        def draw_contour_for_surface(center: Vec3, width: float, height: float) -> Vec3 | None:
-            projected = self._projected_projection_footprint(
-                center,
-                width,
-                height,
+        scene_surfaces = self._scene_surfaces()
+        if not scene_surfaces:
+            return
+
+        source_corners = [
+            (0.0, 0.0),
+            (float(pixmap.width()), 0.0),
+            (float(pixmap.width()), float(pixmap.height())),
+            (0.0, float(pixmap.height())),
+        ]
+        hit_world_points: list[Vec3] = []
+        projection_points: list[QPointF] = []
+        for sx, sy in source_corners:
+            hit = self._first_projector_hit(
+                sx,
+                sy,
                 pixmap.width(),
                 pixmap.height(),
-                viewport_width,
-                viewport_height,
+                projector_context,
+                scene_surfaces,
             )
+            if hit is None:
+                continue
+            hit_world = hit[1]
+            projected = self._project_world_point(hit_world, view_context)
             if projected is None:
-                return None
-            projection_quad, _, hit_world_points = projected
+                continue
+            hit_world_points.append(hit_world)
+            projection_points.append(projected)
 
+        if len(projection_points) == 4:
+            projection_quad = QPolygonF(projection_points)
             for i in range(projection_quad.count()):
                 pa = projection_quad.at(i)
                 pb = projection_quad.at((i + 1) % projection_quad.count())
                 painter.drawLine(pa, pb)
+        for i, hit in enumerate(hit_world_points):
+            lens_corner = lens_corners_world[i % len(lens_corners_world)]
+            segment = self._project_segment_clipped(lens_corner, hit, view_context)
+            if segment is None:
+                continue
+            pa, pb = segment
+            painter.drawLine(pa, pb)
 
-            for i, hit in enumerate(hit_world_points):
-                lens_corner = lens_corners_world[i % len(lens_corners_world)]
-                segment = self._project_segment_clipped(lens_corner, hit, view_context)
+        center_hit = self._first_projector_hit(
+            pixmap.width() * 0.5,
+            pixmap.height() * 0.5,
+            pixmap.width(),
+            pixmap.height(),
+            projector_context,
+            scene_surfaces,
+        )
+        projector_hit = center_hit[1] if center_hit is not None else None
+        if projector_hit is not None:
+            center_line = self._project_segment_clipped(
+                lens_center_world, projector_hit, view_context
+            )
+            if center_line is not None:
+                painter.save()
+                painter.setPen(QPen(QColor(255, 190, 90, 210), 1.5))
+                pa, pb = center_line
+                painter.drawLine(pa, pb)
+                painter.restore()
+        self._projector_projection_hit_world = projector_hit
+
+        clamp_context = self._surface_camera_projection_context(pixmap.width(), pixmap.height())
+        if clamp_context is not None:
+            clamp_origin = clamp_context[0]
+            self._clamp_ray_origin_world = clamp_origin
+            clamp_right = clamp_context[1]
+            clamp_up = clamp_context[2]
+            clamp_half_w = PROJECTOR_LENS_WINDOW_WIDTH_CM * 0.5
+            clamp_half_h = PROJECTOR_LENS_WINDOW_HEIGHT_CM * 0.5
+            clamp_corners_world: list[Vec3] = [
+                (
+                    clamp_origin[0] + clamp_right[0] * -clamp_half_w + clamp_up[0] * clamp_half_h,
+                    clamp_origin[1] + clamp_right[1] * -clamp_half_w + clamp_up[1] * clamp_half_h,
+                    clamp_origin[2] + clamp_right[2] * -clamp_half_w + clamp_up[2] * clamp_half_h,
+                ),
+                (
+                    clamp_origin[0] + clamp_right[0] * clamp_half_w + clamp_up[0] * clamp_half_h,
+                    clamp_origin[1] + clamp_right[1] * clamp_half_w + clamp_up[1] * clamp_half_h,
+                    clamp_origin[2] + clamp_right[2] * clamp_half_w + clamp_up[2] * clamp_half_h,
+                ),
+                (
+                    clamp_origin[0] + clamp_right[0] * clamp_half_w + clamp_up[0] * -clamp_half_h,
+                    clamp_origin[1] + clamp_right[1] * clamp_half_w + clamp_up[1] * -clamp_half_h,
+                    clamp_origin[2] + clamp_right[2] * clamp_half_w + clamp_up[2] * -clamp_half_h,
+                ),
+                (
+                    clamp_origin[0] + clamp_right[0] * -clamp_half_w + clamp_up[0] * -clamp_half_h,
+                    clamp_origin[1] + clamp_right[1] * -clamp_half_w + clamp_up[1] * -clamp_half_h,
+                    clamp_origin[2] + clamp_right[2] * -clamp_half_w + clamp_up[2] * -clamp_half_h,
+                ),
+            ]
+
+            clamp_projection_points: list[QPointF] = []
+            clamp_hit_world_points: list[Vec3] = []
+            for sx, sy in source_corners:
+                clamp_hit = self._first_projector_hit(
+                    sx,
+                    sy,
+                    pixmap.width(),
+                    pixmap.height(),
+                    clamp_context,
+                    scene_surfaces,
+                )
+                if clamp_hit is None:
+                    continue
+                hit_world = clamp_hit[1]
+                projected = self._project_world_point(hit_world, view_context)
+                if projected is None:
+                    continue
+                clamp_hit_world_points.append(hit_world)
+                clamp_projection_points.append(projected)
+
+            if len(clamp_projection_points) == 4:
+                clamp_quad = QPolygonF(clamp_projection_points)
+                painter.save()
+                painter.setPen(QPen(QColor(92, 222, 255, 210), 1.2))
+                for i in range(clamp_quad.count()):
+                    pa = clamp_quad.at(i)
+                    pb = clamp_quad.at((i + 1) % clamp_quad.count())
+                    painter.drawLine(pa, pb)
+                painter.restore()
+
+            for i, hit in enumerate(clamp_hit_world_points):
+                clamp_corner = clamp_corners_world[i % len(clamp_corners_world)]
+                segment = self._project_segment_clipped(clamp_corner, hit, view_context)
                 if segment is None:
                     continue
+                painter.save()
+                painter.setPen(QPen(QColor(92, 222, 255, 160), 1))
                 pa, pb = segment
                 painter.drawLine(pa, pb)
+                painter.restore()
 
-            surface_world = self._surface_world_corners(center, width, height)
-            edge_u = vec_subtract(surface_world[1], surface_world[0])
-            edge_v = vec_subtract(surface_world[3], surface_world[0])
-            plane_normal = vec_normalize(vec_cross(edge_u, edge_v))
-            center_ray = self._projector_ray_direction(
+            clamp_center_hit = self._first_projector_hit(
                 pixmap.width() * 0.5,
                 pixmap.height() * 0.5,
                 pixmap.width(),
                 pixmap.height(),
-                projector_context,
+                clamp_context,
+                scene_surfaces,
             )
-            center_hit_world: Vec3 | None = None
-            if plane_normal is not None and center_ray is not None:
-                center_hit_world = self._intersect_ray_with_plane(
-                    projector_context[0],
-                    center_ray,
-                    surface_world[0],
-                    plane_normal,
-                )
-            if center_hit_world is not None:
-                center_line = self._project_segment_clipped(
-                    lens_center_world, center_hit_world, view_context
-                )
-                if center_line is not None:
+            clamp_hit = clamp_center_hit[1] if clamp_center_hit is not None else None
+            self._clamp_projection_hit_world = clamp_hit
+            if clamp_hit is not None:
+                clamp_segment = self._project_segment_clipped(clamp_origin, clamp_hit, view_context)
+                if clamp_segment is not None:
                     painter.save()
-                    painter.setPen(QPen(QColor(255, 190, 90, 210), 1.5))
-                    pa, pb = center_line
+                    painter.setPen(QPen(QColor(92, 222, 255, 210), 1.5))
+                    pa, pb = clamp_segment
                     painter.drawLine(pa, pb)
                     painter.restore()
-                return center_hit_world
-            return None
 
-        projection_surface = self._primary_projection_surface()
-        if projection_surface is None:
-            return
-        center, width, height = projection_surface
-        projector_hit = draw_contour_for_surface(center, width, height)
-        self._projector_projection_hit_world = projector_hit
-        clamp_hit = getattr(self, "_clamp_projection_hit_world", None)
+        clamp_hit = self._clamp_projection_hit_world
 
         projector_hit_2d = (
             self._project_world_point(projector_hit, view_context)
@@ -1124,7 +1541,7 @@ class ProjectionWindow(QWidget):
             else None
         )
         projector_origin = getattr(self, "_projector_ray_origin_world", None)
-        clamp_origin = getattr(self, "_clamp_ray_origin_world", None)
+        clamp_origin = self._clamp_ray_origin_world
         projector_origin_2d = (
             self._project_world_point(projector_origin, view_context)
             if projector_origin is not None
@@ -1158,12 +1575,6 @@ class ProjectionWindow(QWidget):
             and projector_hit is not None
         ):
             draw_hit_marker(projector_hit_2d, projector_hit, QColor(255, 190, 90), "Proj hit")
-        if (
-            bool(getattr(self, "show_clamp_hit_marker", True))
-            and clamp_hit_2d is not None
-            and clamp_hit is not None
-        ):
-            draw_hit_marker(clamp_hit_2d, clamp_hit, QColor(92, 222, 255), "Clamp hit")
         if projector_origin_2d is not None and projector_origin is not None:
             draw_hit_marker(
                 projector_origin_2d,
@@ -1186,10 +1597,13 @@ class ProjectionWindow(QWidget):
         height: float,
         viewport_width: int,
         viewport_height: int,
+        *,
+        context: CameraContext | None = None,
     ) -> QPolygonF | None:
         if width <= 0 or height <= 0:
             return None
-        context = self._camera_projection_context(viewport_width, viewport_height)
+        if context is None:
+            context = self._camera_projection_context(viewport_width, viewport_height)
         if context is None:
             return None
 
@@ -1201,6 +1615,194 @@ class ProjectionWindow(QWidget):
             projected.append(projected_point)
         return QPolygonF(projected)
 
+    def _surface_camera_view_context(
+        self, viewport_width: int, viewport_height: int
+    ) -> CameraContext | None:
+        clamp_origin = self._clamp_aperture_center_world(self._surface_camera_pos)
+        if clamp_origin is None:
+            return None
+        forward = self._horizontal_forward_direction(clamp_origin)
+        look_at = (
+            clamp_origin[0] + forward[0],
+            clamp_origin[1] + forward[1],
+            clamp_origin[2] + forward[2],
+        )
+        return self._camera_projection_context_for_viewport(
+            clamp_origin,
+            look_at,
+            viewport_width,
+            viewport_height,
+            self._effective_projector_fov_deg(),
+        )
+
+    def _surface_camera_projection_context(
+        self, image_width: int, image_height: int
+    ) -> tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None:
+        if image_width <= 0 or image_height <= 0:
+            return None
+        clamp_origin = self._clamp_aperture_center_world(self._surface_camera_pos)
+        if clamp_origin is None:
+            return None
+        forward = self._horizontal_forward_direction(clamp_origin)
+        world_up: Vec3 = (0.0, 0.0, 1.0)
+        if abs(vec_dot(forward, world_up)) > 0.98:
+            world_up = (0.0, 1.0, 0.0)
+        right = vec_normalize(vec_cross(forward, world_up))
+        if right is None:
+            return None
+        up = vec_cross(right, forward)
+        aspect = float(image_width) / float(image_height)
+        tan_half_fov = math.tan(math.radians(self._effective_projector_fov_deg()) / 2.0)
+        return (clamp_origin, right, up, forward, tan_half_fov, aspect)
+
+    @staticmethod
+    def _qimage_to_rgb_array(image: QImage) -> np.ndarray:
+        rgb = image.convertToFormat(QImage.Format_RGB888)
+        width = rgb.width()
+        height = rgb.height()
+        row_stride = rgb.bytesPerLine()
+        buffer = np.frombuffer(rgb.bits(), dtype=np.uint8).reshape((height, row_stride))
+        return buffer[:, : width * 3].reshape((height, width, 3)).copy()
+
+    def record_surface_camera_sweep_video(
+        self,
+        output_path: str,
+        *,
+        frames: int = SWEEP_RECORD_FRAMES,
+        fps: float = SWEEP_RECORD_FPS,
+        width: int = SWEEP_RECORD_WIDTH,
+        height: int = SWEEP_RECORD_HEIGHT,
+        phase_span_deg: float = SWEEP_RECORD_PHASE_SPAN_DEG,
+    ) -> None:
+        if frames <= 0:
+            raise ValueError("Frames must be > 0.")
+        if fps <= 0:
+            raise ValueError("FPS must be > 0.")
+        if width <= 0 or height <= 0:
+            raise ValueError("Capture size must be positive.")
+        if self.projection_source != "fringe":
+            raise ValueError("Fringe source is required for sweep recording.")
+
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        denominator = max(1, frames - 1)
+        source_phase = self.fringe_phase_deg
+        previous_processed = self._processed
+
+        try:
+            with imageio.get_writer(str(destination), fps=fps, macro_block_size=None) as writer:
+                for frame_index in range(frames):
+                    phase_deg = source_phase + (phase_span_deg * frame_index / denominator)
+                    fringe = generate_fringe_image(
+                        self.fringe_width,
+                        self.fringe_height,
+                        period_px=self.fringe_period_px,
+                        phase_deg=phase_deg,
+                        orientation=self.fringe_orientation,
+                        contrast=self.fringe_contrast,
+                        bias=self.fringe_bias,
+                    )
+                    self._processed = self._process_image(fringe)
+                    capture = self.render_surface_camera_capture(width, height)
+                    writer.append_data(self._qimage_to_rgb_array(capture))
+        finally:
+            self._processed = previous_processed
+            self.update()
+
+    def render_surface_camera_capture(self, width: int, height: int) -> QImage:
+        pixmap = QPixmap.fromImage(self._processed)
+        capture, _ = self._render_surface_camera_capture(
+            pixmap,
+            max(2, width),
+            max(2, height),
+        )
+        return capture
+
+    def _render_surface_camera_capture(
+        self,
+        pixmap: QPixmap,
+        width: int,
+        height: int,
+        *,
+        projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None = None,
+        scene_surfaces: list[SceneSurface] | None = None,
+        draw_crosshair: bool = False,
+    ) -> tuple[QImage, bool]:
+        capture = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+        capture.fill(QColor(8, 10, 14))
+        view_context = self._surface_camera_view_context(width, height)
+        out_of_frame = view_context is None
+
+        capture_painter = QPainter(capture)
+        capture_painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        capture_painter.setRenderHint(QPainter.Antialiasing, True)
+        if view_context is not None:
+            if not self._draw_projected_scene(
+                capture_painter,
+                pixmap,
+                width,
+                height,
+                view_context=view_context,
+                columns=MINIMAP_RAYCAST_COLUMNS,
+                rows=MINIMAP_RAYCAST_ROWS,
+                projector_context=projector_context,
+                scene_surfaces=scene_surfaces,
+            ):
+                out_of_frame = True
+            if draw_crosshair:
+                cx = width // 2
+                cy = height // 2
+                capture_painter.setPen(QPen(QColor(220, 230, 250, 130), 1))
+                capture_painter.drawLine(cx - 7, cy, cx + 7, cy)
+                capture_painter.drawLine(cx, cy - 7, cx, cy + 7)
+        capture_painter.end()
+        return (capture, out_of_frame)
+
+    def _draw_surface_camera_minimap(
+        self,
+        painter: QPainter,
+        pixmap: QPixmap,
+        *,
+        projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None = None,
+        scene_surfaces: list[SceneSurface] | None = None,
+    ) -> None:
+        inset_margin = 12
+        inset_width = max(220, min(360, int(self.width() * 0.30)))
+        inset_height = max(140, int(inset_width * 9.0 / 16.0))
+        if inset_height > self.height() - inset_margin * 2:
+            inset_height = max(120, self.height() - inset_margin * 2)
+            inset_width = max(180, int(inset_height * 16.0 / 9.0))
+
+        inset_x = self.width() - inset_width - inset_margin
+        inset_y = inset_margin
+        painter.save()
+        painter.setPen(QPen(QColor(190, 200, 220, 220), 1))
+        painter.setBrush(QColor(10, 12, 18, 215))
+        painter.drawRect(inset_x, inset_y, inset_width, inset_height)
+        painter.restore()
+
+        out_of_frame = False
+        render_width = max(2, inset_width - 2)
+        render_height = max(2, inset_height - 2)
+        minimap, out_of_frame = self._render_surface_camera_capture(
+            pixmap,
+            render_width,
+            render_height,
+            projector_context=projector_context,
+            scene_surfaces=scene_surfaces,
+            draw_crosshair=True,
+        )
+
+        painter.drawImage(inset_x + 1, inset_y + 1, minimap)
+        painter.save()
+        if out_of_frame:
+            painter.setPen(QColor(255, 210, 210, 230))
+            painter.drawText(inset_x + 8, inset_y + 32, "OUT OF FRAME")
+
+        painter.setPen(QColor(220, 230, 245, 220))
+        painter.drawText(inset_x + 8, inset_y + 16, "Surface Camera Capture")
+        painter.restore()
+
     def _plane_center(self) -> Vec3:
         delta = self.distance_m - self._base_distance_m
         d = self._plane_shift_direction
@@ -1211,7 +1813,16 @@ class ProjectionWindow(QWidget):
         )
 
     def _field_center(self) -> Vec3:
-        return (self.field_center_x, self.field_center_y, self.field_center_z)
+        frame = self._field_object_frame()
+        if frame is None:
+            return (self.field_center_x, self.field_center_y, self.field_center_z)
+        plane_center, _, _, normal = frame
+        offset = FIELD_OBJECT_PLANE_GAP_M + self._field_object_depth() * 0.5
+        return (
+            plane_center[0] + normal[0] * offset,
+            plane_center[1] + normal[1] * offset,
+            plane_center[2] + normal[2] * offset,
+        )
 
     def _primary_projection_surface(self) -> tuple[Vec3, float, float] | None:
         if self.project_projection_plane:
@@ -1298,9 +1909,22 @@ class ProjectionWindow(QWidget):
     def _camera_projection_context(
         self, viewport_width: int, viewport_height: int
     ) -> CameraContext | None:
-        look_target = self._orbit_target
-        camera: Vec3 = (self.camera_x, self.camera_y, self.camera_z)
-        look_at = look_target
+        return self._camera_projection_context_for_viewport(
+            (self.camera_x, self.camera_y, self.camera_z),
+            self._orbit_target,
+            viewport_width,
+            viewport_height,
+            self.fov_deg,
+        )
+
+    def _camera_projection_context_for_viewport(
+        self,
+        camera: Vec3,
+        look_at: Vec3,
+        viewport_width: int,
+        viewport_height: int,
+        fov_deg: float,
+    ) -> CameraContext | None:
         world_up: Vec3 = (0.0, 0.0, 1.0)
 
         forward = vec_normalize(vec_subtract(look_at, camera))
@@ -1313,7 +1937,7 @@ class ProjectionWindow(QWidget):
             return None
         up = vec_cross(right, forward)
 
-        focal = (viewport_height / 2.0) / math.tan(math.radians(self.fov_deg) / 2.0)
+        focal = (viewport_height / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
         cx = viewport_width / 2.0
         cy_screen = viewport_height / 2.0
         return (camera, right, up, forward, focal, cx, cy_screen)
