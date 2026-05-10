@@ -3,7 +3,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtGui import QGuiApplication, QImage, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from .cli import parse_args
@@ -228,6 +228,12 @@ def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
     qt_argv = [sys.argv[0], *(argv or [])] if argv is not None else sys.argv
     app = QApplication.instance()
     if app is None:
+        surface_format = QSurfaceFormat()
+        surface_format.setRenderableType(QSurfaceFormat.OpenGL)
+        surface_format.setProfile(QSurfaceFormat.CompatibilityProfile)
+        surface_format.setVersion(2, 1)
+        surface_format.setSamples(4)
+        QSurfaceFormat.setDefaultFormat(surface_format)
         app = QApplication(qt_argv)
     if debug_mode:
         app.aboutToQuit.connect(
@@ -268,7 +274,7 @@ def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
 
     print(
         f"Projection window open in {args.mode} mode (source: {args.source}). "
-        "Use left-drag to orbit, mouse wheel to zoom, sliders for proj-clamp spacing/plane distance/FOV, and Esc to close.",
+        "Use left-drag to orbit, mouse wheel to zoom, sliders for proj-telecentric spacing/plane distance/FOV, and Esc to close.",
         flush=True,
     )
     exit_code = app.exec()
