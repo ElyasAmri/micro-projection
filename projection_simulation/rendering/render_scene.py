@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from PySide6.QtGui import QColor, QImage
 
-from .types import Vec3
+from ..core.types import Vec3
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,8 @@ class CameraView:
     up: Vec3
     forward: Vec3
     fov_deg: float
+    orthographic_half_width: float | None = None
+    orthographic_half_height: float | None = None
 
 
 @dataclass(frozen=True)

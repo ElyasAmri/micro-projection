@@ -1,6 +1,7 @@
 .venv/
 .archive/
 .artifacts/
+*.mp4
 *.local*
 __pycache__/
 *.pyc

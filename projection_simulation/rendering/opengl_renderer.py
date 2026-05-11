@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from PySide6.QtGui import QImage, QMatrix4x4, QVector3D
+from PySide6.QtGui import QImage, QMatrix4x4, QOpenGLContext, QVector3D
 from PySide6.QtOpenGL import (
     QOpenGLBuffer,
+    QOpenGLFramebufferObject,
+    QOpenGLFramebufferObjectFormat,
     QOpenGLShader,
     QOpenGLShaderProgram,
     QOpenGLTexture,
 )
-from PySide6.QtGui import QOpenGLContext
 
 from .render_scene import CameraView, ProjectionScene, ViewportRect
 
@@ -90,7 +91,17 @@ bool insideScan(vec3 point) {
 }
 
 bool fringeUvForWorld(vec3 point, out vec2 uv) {
-    vec3 rel = point - u_fringe_origin;
+    vec3 ray = point - u_projector_origin;
+    float denom = dot(ray, u_fringe_normal);
+    if (abs(denom) <= 0.000001) {
+        return false;
+    }
+    float t = dot(u_fringe_origin - u_projector_origin, u_fringe_normal) / denom;
+    if (t <= 0.000001) {
+        return false;
+    }
+    vec3 plane_point = u_projector_origin + ray * t;
+    vec3 rel = plane_point - u_fringe_origin;
     float u = dot(rel, u_fringe_right);
     float v = dot(rel, u_fringe_up);
     float u_min = u_fringe_bounds.x;
@@ -220,6 +231,38 @@ class OpenGLProjectionRenderer:
                 viewport,
             )
             functions.glViewport(0, 0, framebuffer_width, framebuffer_height)
+
+    def render_view_to_image(
+        self,
+        scene: ProjectionScene,
+        view: CameraView,
+        width: int,
+        height: int,
+    ) -> QImage:
+        self.initialize()
+        framebuffer_format = QOpenGLFramebufferObjectFormat()
+        framebuffer_format.setAttachment(QOpenGLFramebufferObject.CombinedDepthStencil)
+        framebuffer = QOpenGLFramebufferObject(
+            max(1, width),
+            max(1, height),
+            framebuffer_format,
+        )
+        if not framebuffer.isValid():
+            raise RuntimeError("Failed to create OpenGL capture framebuffer.")
+
+        functions = QOpenGLContext.currentContext().functions()
+        framebuffer.bind()
+        try:
+            functions.glEnable(GL_DEPTH_TEST)
+            functions.glEnable(GL_BLEND)
+            functions.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            functions.glViewport(0, 0, max(1, width), max(1, height))
+            functions.glClearColor(0.04, 0.05, 0.07, 1.0)
+            functions.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            self._draw_scene_view(scene, view, ViewportRect(0, 0, width, height))
+            return framebuffer.toImage()
+        finally:
+            framebuffer.release()
 
     def _draw_scene_view(
         self,
@@ -355,7 +398,20 @@ class OpenGLProjectionRenderer:
     def _mvp_for_view(self, view: CameraView, width: int, height: int) -> QMatrix4x4:
         aspect = max(1.0 / 1024.0, float(width) / float(max(1, height)))
         projection = QMatrix4x4()
-        projection.perspective(float(view.fov_deg), aspect, 0.01, 10000.0)
+        if (
+            view.orthographic_half_width is not None
+            and view.orthographic_half_height is not None
+        ):
+            projection.ortho(
+                -float(view.orthographic_half_width),
+                float(view.orthographic_half_width),
+                -float(view.orthographic_half_height),
+                float(view.orthographic_half_height),
+                0.01,
+                10000.0,
+            )
+        else:
+            projection.perspective(float(view.fov_deg), aspect, 0.01, 10000.0)
         eye = _qvec(view.camera)
         center = QVector3D(
             float(view.camera[0] + view.forward[0]),

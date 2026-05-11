@@ -7,9 +7,10 @@ from PySide6.QtGui import QGuiApplication, QImage, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from .cli import parse_args
-from .fringe import generate_fringe_image
-from .types import Vec3
-from .window import DEFAULT_DEVICE_SPACING_CM, ProjectionWindow
+from .core.constants import DEFAULT_DEVICE_SPACING_CM
+from .core.fringe import generate_fringe_image
+from .core.types import Vec3
+from .ui.window import ProjectionWindow
 
 _Transform = Callable[[object], object]
 RELOAD_EXIT_CODE = 75
