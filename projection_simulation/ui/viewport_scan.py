@@ -17,6 +17,7 @@ from ..core.constants import (
     SWEEP_RECORD_WIDTH,
 )
 from ..core.fringe import generate_fringe_image
+from ..core.image_utils import even_video_frame, qimage_to_luma, qimage_to_rgb_array
 from ..scanning.scan_pipeline import ScanReconstruction, reconstruct_from_phase_sequences
 
 
@@ -164,8 +165,8 @@ class ViewportScanMixin:
             self._processed = self._process_image(fringe)
             frame = self._grab_viewport_scan_frame(width, height)
             if writer is not None:
-                writer.append_data(self._qimage_to_rgb_array(_even_video_frame(frame)))
-            frames.append(_qimage_to_luma(frame))
+                writer.append_data(qimage_to_rgb_array(even_video_frame(frame)))
+            frames.append(qimage_to_luma(frame))
         return np.stack(frames, axis=0)
 
     def _grab_viewport_scan_frame(self, width: int, height: int) -> QImage:
@@ -188,20 +189,3 @@ class ViewportScanMixin:
             Qt.SmoothTransformation,
         )
 
-
-def _qimage_to_luma(image: QImage) -> np.ndarray:
-    rgb = image.convertToFormat(QImage.Format_RGB888)
-    width = rgb.width()
-    height = rgb.height()
-    row_stride = rgb.bytesPerLine()
-    buffer = np.frombuffer(rgb.bits(), dtype=np.uint8).reshape((height, row_stride))
-    pixels = buffer[:, : width * 3].reshape((height, width, 3))
-    return pixels.astype(np.float64).mean(axis=2) / 255.0
-
-
-def _even_video_frame(image: QImage) -> QImage:
-    width = image.width() if image.width() % 2 == 0 else image.width() + 1
-    height = image.height() if image.height() % 2 == 0 else image.height() + 1
-    if width == image.width() and height == image.height():
-        return image
-    return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)

@@ -4,7 +4,6 @@ import math
 from pathlib import Path
 
 import imageio.v2 as imageio
-import numpy as np
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -20,6 +19,7 @@ from ..core.constants import (
     SWEEP_RECORD_WIDTH,
 )
 from ..core.fringe import generate_fringe_image
+from ..core.image_utils import qimage_to_rgb_array
 from ..core.math3d import vec_cross, vec_dot, vec_normalize, vec_subtract
 from ..core.types import Vec3
 from ..rendering.opengl_renderer import OpenGLProjectionRenderer
@@ -77,15 +77,6 @@ class SurfaceCameraMixin:
         tan_half_fov = math.tan(math.radians(self._effective_projector_fov_deg()) / 2.0)
         return (telecentric_origin, right, up, forward, tan_half_fov, aspect)
 
-    @staticmethod
-    def _qimage_to_rgb_array(image: QImage) -> np.ndarray:
-        rgb = image.convertToFormat(QImage.Format_RGB888)
-        width = rgb.width()
-        height = rgb.height()
-        row_stride = rgb.bytesPerLine()
-        buffer = np.frombuffer(rgb.bits(), dtype=np.uint8).reshape((height, row_stride))
-        return buffer[:, : width * 3].reshape((height, width, 3)).copy()
-
     def record_surface_camera_sweep_video(
         self,
         output_path: str,
@@ -126,7 +117,7 @@ class SurfaceCameraMixin:
                     )
                     self._processed = self._process_image(fringe)
                     capture = self.render_surface_camera_telecentric_capture(width, height)
-                    writer.append_data(self._qimage_to_rgb_array(capture))
+                    writer.append_data(qimage_to_rgb_array(capture))
         finally:
             self._processed = previous_processed
             self.update()
