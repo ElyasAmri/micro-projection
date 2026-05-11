@@ -8,6 +8,8 @@ import time
 import traceback
 from collections import deque
 
+PROJECT_PACKAGE = "projection_simulation"
+
 
 def _build_command(app_args: list[str]) -> list[str]:
     return [sys.executable, "-m", "projection_simulation", *app_args]
@@ -30,6 +32,17 @@ def _guard_restart_rate(restart_times: deque[float]) -> None:
     if len(restart_times) >= 6:
         print("[runner] Too many rapid restarts, pausing briefly...", flush=True)
         time.sleep(2.0)
+
+
+def _clear_projection_modules() -> None:
+    importlib.invalidate_caches()
+    module_names = [
+        name
+        for name in sys.modules
+        if name == PROJECT_PACKAGE or name.startswith(f"{PROJECT_PACKAGE}.")
+    ]
+    for name in sorted(module_names, key=len, reverse=True):
+        sys.modules.pop(name, None)
 
 
 def _run_debug(app_args: list[str]) -> int:
@@ -83,6 +96,8 @@ def _run_debug(app_args: list[str]) -> int:
             except Exception:
                 pass
             _guard_restart_rate(restart_times)
+            _clear_projection_modules()
+            app_module = None
             print("[runner] Reload requested. Restarting...", flush=True)
             continue
         print(

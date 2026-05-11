@@ -50,8 +50,7 @@ uniform vec3 u_projector_origin;
 uniform vec3 u_projector_right;
 uniform vec3 u_projector_up;
 uniform vec3 u_projector_forward;
-uniform float u_projector_tan_half_fov;
-uniform float u_projector_aspect;
+uniform vec2 u_projector_projection;
 uniform int u_source_is_fringe;
 uniform int u_project_projection;
 uniform int u_has_scan;
@@ -126,8 +125,10 @@ bool projectorUvForWorld(vec3 point, out vec2 uv, out vec3 projected_point) {
     if (depth <= 0.00001) {
         return false;
     }
-    float x = dot(rel, u_projector_right) / (depth * u_projector_aspect * u_projector_tan_half_fov);
-    float y = dot(rel, u_projector_up) / (depth * u_projector_tan_half_fov);
+    float tan_half_fov = u_projector_projection.x;
+    float aspect = u_projector_projection.y;
+    float x = dot(rel, u_projector_right) / (depth * aspect * tan_half_fov);
+    float y = dot(rel, u_projector_up) / (depth * tan_half_fov);
     uv = vec2((x + 1.0) * 0.5, (1.0 - y) * 0.5);
     projected_point = point;
     return insideUnitUv(uv);
@@ -141,17 +142,9 @@ void main() {
     }
     vec2 uv = vec2(0.0);
     vec3 mask_point = v_world;
-    bool lit = false;
-    bool use_scan_mask = true;
+    bool lit = projectorUvForWorld(v_world, uv, mask_point);
 
-    if (u_source_is_fringe == 1 && u_has_fringe_rect == 1) {
-        lit = fringeUvForWorld(v_world, uv);
-        use_scan_mask = false;
-    } else {
-        lit = projectorUvForWorld(v_world, uv, mask_point);
-    }
-
-    if (lit && (!use_scan_mask || insideScan(mask_point))) {
+    if (lit) {
         vec3 projected = texture2D(u_source, uv).rgb;
         gl_FragColor = vec4(projected, 1.0);
     } else {
@@ -322,8 +315,12 @@ class OpenGLProjectionRenderer:
         _set_uniform(program, "u_projector_right", _qvec(projector.right))
         _set_uniform(program, "u_projector_up", _qvec(projector.up))
         _set_uniform(program, "u_projector_forward", _qvec(projector.forward))
-        _set_uniform(program, "u_projector_tan_half_fov", float(projector.tan_half_fov))
-        _set_uniform(program, "u_projector_aspect", float(projector.aspect))
+        _set_uniform(
+            program,
+            "u_projector_projection",
+            float(projector.tan_half_fov),
+            float(projector.aspect),
+        )
         _set_uniform(program, "u_source_is_fringe", 1 if scene.source_is_fringe else 0)
 
         scan = scene.scan

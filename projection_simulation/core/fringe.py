@@ -1,6 +1,6 @@
 import math
 
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, qRgb
 
 
 def generate_fringe_image(
@@ -22,7 +22,7 @@ def generate_fringe_image(
     if not (0.0 <= bias <= 1.0):
         raise ValueError("Fringe bias must be in [0, 1].")
 
-    image = QImage(width, height, QImage.Format_Grayscale8)
+    image = QImage(width, height, QImage.Format_RGB32)
     phase = math.radians(phase_deg)
     two_pi_over_period = (2.0 * math.pi) / period_px
 
@@ -32,5 +32,5 @@ def generate_fringe_image(
             wave = math.sin(two_pi_over_period * axis + phase)
             value = bias + 0.5 * contrast * wave
             level = int(max(0, min(255, round(value * 255))))
-            image.setPixel(x, y, level)
+            image.setPixel(x, y, qRgb(level, level, level))
     return image

@@ -307,19 +307,6 @@ class ProjectionMappingMixin:
             if not surfaces:
                 return False
 
-            telecentric_scan_context = self._surface_camera_telecentric_scan_context(
-                pixmap.width(),
-                pixmap.height(),
-            )
-            fringe_rect_context = (
-                self._primary_surface_fringe_context(
-                    pixmap.width(),
-                    pixmap.height(),
-                    telecentric_scan_context,
-                )
-                if self.projection_source == "fringe"
-                else None
-            )
             surface_cells: list[list[tuple[QPolygonF, QPolygonF]]] = [
                 [] for _ in surfaces
             ]
@@ -338,8 +325,8 @@ class ProjectionMappingMixin:
                         pixmap,
                         view_context,
                         projector_context,
-                        telecentric_scan_context,
-                        fringe_rect_context,
+                        None,
+                        None,
                         x0,
                         y0,
                         x1,
