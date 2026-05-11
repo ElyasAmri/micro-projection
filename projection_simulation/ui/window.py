@@ -25,6 +25,7 @@ from ..core.types import CameraContext, Vec3
 from ..geometry.camera_navigation import CameraNavigationMixin
 from ..geometry.optics_geometry import OpticsGeometryMixin
 from ..rendering.device_rendering import DeviceRenderingMixin
+from ..rendering.grid_rendering import GridRenderingMixin
 from ..rendering.opengl_renderer import OpenGLProjectionRenderer
 from ..rendering.projection_mapping import ProjectionMappingMixin
 from ..rendering.scene_assembly import SceneAssemblyMixin
@@ -42,6 +43,7 @@ RenderWidgetBase = (
 class ProjectionWindow(
     ProjectionControlsMixin,
     DeviceRenderingMixin,
+    GridRenderingMixin,
     SceneAssemblyMixin,
     CameraNavigationMixin,
     OpticsGeometryMixin,
