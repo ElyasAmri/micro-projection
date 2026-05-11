@@ -29,6 +29,7 @@ from ..rendering.grid_rendering import GridRenderingMixin
 from ..rendering.opengl_renderer import OpenGLProjectionRenderer
 from ..rendering.projection_mapping import ProjectionMappingMixin
 from ..rendering.scene_assembly import SceneAssemblyMixin
+from ..scanning.scan_pipeline import ScanReconstruction
 from .controls import ProjectionControlsMixin
 from .surface_camera import SurfaceCameraMixin
 from .viewport_scan import ViewportScanMixin
@@ -187,6 +188,8 @@ class ProjectionWindow(
         self._recording_video = False
         self._scan_in_progress = False
         self._viewport_scan_capture = False
+        self._show_surface_camera_minimap = True
+        self._reconstruction_handler: Callable[[ScanReconstruction], None] | None = None
         self._reconstruction_windows: list[QWidget] = []
         self._profiler = FrameProfiler(
             Path(os.environ.get("PROJECTION_SIM_PERF_LOG", "projection-sim-performance.log"))
@@ -241,6 +244,23 @@ class ProjectionWindow(
 
     def set_reload_handler(self, handler: Callable[[], None] | None) -> None:
         self._reload_handler = handler
+
+    def set_reconstruction_handler(
+        self,
+        handler: Callable[[ScanReconstruction], None] | None,
+    ) -> None:
+        self._reconstruction_handler = handler
+
+    def set_surface_camera_minimap_visible(self, visible: bool) -> None:
+        self._show_surface_camera_minimap = visible
+        self.update()
+
+    def dispose_gpu_renderer(self) -> None:
+        if isinstance(self, QOpenGLWidget) and self._gpu_renderer is not None:
+            self.makeCurrent()
+            self._gpu_renderer.dispose()
+            self._gpu_renderer = None
+            self.doneCurrent()
 
     def _init_shortcuts(self) -> None:
         self._reload_shortcut_r = QShortcut(QKeySequence("R"), self)
@@ -297,11 +317,7 @@ class ProjectionWindow(
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         self._log_reload_debug("closeEvent received")
-        if isinstance(self, QOpenGLWidget) and self._gpu_renderer is not None:
-            self.makeCurrent()
-            self._gpu_renderer.dispose()
-            self._gpu_renderer = None
-            self.doneCurrent()
+        self.dispose_gpu_renderer()
         super().closeEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
@@ -362,7 +378,11 @@ class ProjectionWindow(
         self._begin_perf_frame("paintGL")
         try:
             with self._profile_section("gpu_scene_build"):
-                scene = self._build_projection_scene(self.width(), self.height(), include_minimap=True)
+                scene = self._build_projection_scene(
+                    self.width(),
+                    self.height(),
+                    include_minimap=self._show_surface_camera_minimap,
+                )
             if scene is None:
                 return
             if self._gpu_renderer is None:
@@ -387,7 +407,8 @@ class ProjectionWindow(
                         self.width(),
                         self.height(),
                     )
-                    self._draw_surface_camera_minimap_chrome(painter)
+                    if self._show_surface_camera_minimap:
+                        self._draw_surface_camera_minimap_chrome(painter)
                     painter.end()
         finally:
             self._end_perf_frame()
@@ -435,13 +456,14 @@ class ProjectionWindow(
                             self.width(),
                             self.height(),
                         )
-                    with self._profile_section("_draw_surface_camera_minimap"):
-                        self._draw_surface_camera_minimap(
-                            painter,
-                            pixmap,
-                            projector_context=projector_context,
-                            scene_surfaces=scene_surfaces,
-                        )
+                    if self._show_surface_camera_minimap:
+                        with self._profile_section("_draw_surface_camera_minimap"):
+                            self._draw_surface_camera_minimap(
+                                painter,
+                                pixmap,
+                                projector_context=projector_context,
+                                scene_surfaces=scene_surfaces,
+                            )
                     if drew_projection:
                         return
 

@@ -5,16 +5,22 @@ import math
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QPolygonF, QWheelEvent
+from PySide6.QtGui import QColor, QCloseEvent, QMouseEvent, QPainter, QPen, QPolygonF, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from ..scanning.scan_pipeline import ScanReconstruction
 
 
 class ReconstructionWindow(QWidget):
-    def __init__(self, reconstruction: ScanReconstruction) -> None:
+    def __init__(
+        self,
+        reconstruction: ScanReconstruction,
+        *,
+        loop_frames: bool = False,
+    ) -> None:
         super().__init__()
         self._reconstruction = reconstruction
+        self._loop_frames = loop_frames
         self._yaw = math.radians(-38.0)
         self._pitch = math.radians(56.0)
         self._zoom = 1.0
@@ -66,6 +72,13 @@ class ReconstructionWindow(QWidget):
             self.update()
         event.accept()
 
+    def stop_playback(self) -> None:
+        self._timer.stop()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        self.stop_playback()
+        super().closeEvent(event)
+
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -77,8 +90,20 @@ class ReconstructionWindow(QWidget):
     def _advance_frame(self) -> None:
         if not self._frames:
             return
-        self._frame_index = (self._frame_index + 1) % len(self._frames)
+        last_index = len(self._frames) - 1
+        next_index = self._frame_index + 1
+        if next_index > last_index:
+            if self._loop_frames:
+                self._frame_index = 0
+                self.update()
+            else:
+                self.stop_playback()
+            return
+
+        self._frame_index = next_index
         self.update()
+        if not self._loop_frames and self._frame_index == last_index:
+            self.stop_playback()
 
     def _draw_title(self, painter: QPainter) -> None:
         frame = self._current_frame()

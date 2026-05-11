@@ -233,7 +233,12 @@ class ProjectionControlsMixin:
             self._scan_reconstruct_button.setText("Scan and reconstruct")
             self._refresh_control_labels()
 
-        window = ReconstructionWindow(reconstruction)
+        handler = getattr(self, "_reconstruction_handler", None)
+        if handler is not None:
+            handler(reconstruction)
+            return
+
+        window = ReconstructionWindow(reconstruction, loop_frames=False)
         window.destroyed.connect(lambda _=None, view=window: self._forget_reconstruction_window(view))
         self._reconstruction_windows.append(window)
         window.show()
@@ -243,7 +248,7 @@ class ProjectionControlsMixin:
             self._reconstruction_windows.remove(window)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
-        if hasattr(self, "_controls_frame"):
+        if hasattr(self, "_controls_frame") and self._controls_frame.parent() is self:
             self._controls_frame.setGeometry(12, 12, 280, 315)
         super().resizeEvent(event)
 

@@ -10,6 +10,7 @@ from .cli import parse_args
 from .core.constants import DEFAULT_DEVICE_SPACING_CM
 from .core.fringe import generate_fringe_image
 from .core.types import Vec3
+from .ui.application import ProjectionApplicationWindow
 from .ui.window import ProjectionWindow
 
 _Transform = Callable[[object], object]
@@ -150,10 +151,17 @@ def _window_state_from_args(args: argparse.Namespace) -> dict[str, object]:
     return state
 
 
-def _create_projection_window(args: argparse.Namespace, image: QImage) -> ProjectionWindow:
-    window = ProjectionWindow(image, distance_m=args.distance_m, **_window_state_from_args(args))
-    _configure_window_projection_source(window, args)
-    return window
+def _create_projection_view(args: argparse.Namespace, image: QImage) -> ProjectionWindow:
+    view = ProjectionWindow(image, distance_m=args.distance_m, **_window_state_from_args(args))
+    _configure_window_projection_source(view, args)
+    return view
+
+
+def _create_application_window(
+    args: argparse.Namespace,
+    image: QImage,
+) -> ProjectionApplicationWindow:
+    return ProjectionApplicationWindow(_create_projection_view(args, image))
 
 
 def _configure_window_projection_source(
@@ -197,7 +205,7 @@ def _apply_args_to_window(window: ProjectionWindow, args: argparse.Namespace) ->
     window._controls_frame.setVisible(window.mode == "plane3d")
 
 
-def _enable_manual_reload(window: ProjectionWindow) -> None:
+def _enable_manual_reload(window: ProjectionApplicationWindow) -> None:
     def on_reload() -> None:
         print("[reload-debug] on_reload requested app restart", flush=True)
         app = QApplication.instance()
@@ -255,7 +263,7 @@ def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
         return 1
 
     target_screen = screens[args.screen]
-    window = _create_projection_window(args, image)
+    window = _create_application_window(args, image)
     if window.windowHandle() is not None:
         window.windowHandle().setScreen(target_screen)
     if args.fullscreen:
@@ -276,7 +284,7 @@ def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
 
     print(
         f"Projection window open in {args.mode} mode (source: {args.source}). "
-        "Use left-drag to orbit, mouse wheel to zoom, sliders for proj-telecentric spacing/plane distance/FOV, and Esc to close.",
+        "Use left-drag to orbit, mouse wheel to zoom, sidebar controls for scan parameters, and Esc to close.",
         flush=True,
     )
     exit_code = app.exec()
