@@ -284,10 +284,28 @@ class SymmetricGeometry:
     M: float = 1.0
     p: float = 40.0
     theta: float = float(np.deg2rad(15.0))
+    # Internal projector "perspective distance" parameter (pixels), needed by
+    # `synthetic_fringes.project()`. In a symmetric system both arms share
+    # this same `a`. Default matches notebook cell 1.
+    a: float = 2000.0
     H: int = 480
     W: int = 640
     pixel_pitch_um: float = 53.0
     lambda_eq_override: Optional[float] = None
+
+    @property
+    def theta_projector(self) -> float:
+        """Alias for `theta` so the bias-parameter contract used by
+        `synthetic_fringes.project()` is uniform across geometries.
+
+        In a symmetric system both arms share the same angle, so
+        `theta_projector == theta`. The `project()` forward model reads
+        `geometry.theta_projector` uniformly; this alias lets a
+        `SymmetricGeometry` satisfy that contract without renaming the
+        primary `theta` field (which the symmetric `equivalent_wavelength`
+        formula still references as `theta`).
+        """
+        return self.theta
 
     def equivalent_wavelength(self) -> float:
         """Equivalent wavelength lambda_eq for the symmetric telecentric case.
