@@ -15,7 +15,7 @@ The user's deliverables:
 2. The **math/processing core** behind the UI.
 3. Eventually: **integration with real hardware** in the lab.
 
-The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. The notebook is the starting point for refactoring, not a thing to start over.
+The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stage 1 has been completed (see Section 12). The notebook is the starting point for refactoring, not a thing to start over.
 
 ---
 
@@ -113,43 +113,42 @@ This means **θ, projection-arm M, and the internal projector parameter `a` are 
 |---|---|---|
 | 2-44 | Full intensity equation `I(x₁, h)` (general non-telecentric) | `synthetic_fringes` (forward model) |
 | 2-46 / 2-47 | Phase → height + λ_eq (general) | `reconstruction` |
+| 2-51 | λ_eq (general, two angles `tan θ₁ + tan θ₂`) | `reconstruction` — hybrid case reduces θ_camera → 0 |
 | 2-52 | Simplified λ_eq (symmetric telecentric, sanity check) | `reconstruction` |
 | 2-54 | Inverse grating period p₂(x₁) — theoretical reference | `pattern_generator` |
 | 2-57 | Phase → height with inverse grating | `reconstruction` |
 | **4-2 → 4-7** | **Tilt-flip trick — operational core** | **`calibration`** |
 | 4-9 / 4-10 | Clean phase on object after bias correction | reference |
+| 4-11 / 4-12 | λ_eq (symmetric form with `sin θ`) — used in current notebook | `reconstruction` (will be replaced in Stage 2) |
 
 ---
 
 ## 4. State of the Existing Notebook
 
-`notebooks/Fringe_Projection_Python.ipynb` already implements the end-to-end synthetic pipeline. **It works.**
+`notebooks/Fringe_Projection_Python.ipynb` already implements the end-to-end synthetic pipeline with Stage 1 additions. **It works.**
 
-### Already implemented (Cells 1–19)
-- Grid/parameter setup
+### Implemented (Cells 0–20, original pipeline)
+- Grid/parameter setup (toy values — to be replaced with real hardware values in Stage 2)
 - Forward-model simulation of biased phase φ₁ (Taylor approximation of Eq. 2-44)
-- 4-step phase shifting
-- Phase extraction via `arctan2`
-- Phase unwrapping with `np.unwrap`
-- Tilt fitting and bias extraction
-- Tilt-flip computation of correction phase φ₂ (Cell 10)
+- 4-step phase shifting, phase extraction via `arctan2`, phase unwrapping with `np.unwrap`
+- Tilt fitting and bias extraction (calibration)
+- Tilt-flip computation of correction phase φ₂
 - Synthetic Gaussian object simulation
 - End-to-end height reconstruction with mean error ~10⁻⁵
 
-### ⚠️ What's missing (gap to close in Stage 1)
+### Implemented (Cells 21–23, Stage 1 simulation-loop additions)
+- `project()` function (cell 2) — Taylor-approximation forward model with docstring
+- Stage 1.2: roadmap-mandated consistency check (`project(uniform) == phi1`)
+- Stage 1.3: curvature-cancellation validation on flat reference (suppression factor ~10¹⁴)
 
-The notebook does **NOT** simulate the full physical projection loop. Specifically, it writes φ₁ and φ₃ directly as analytical formulas rather than simulating "pattern in → projector distorts it → distorted pattern out."
+### Implemented (Cells 24–29, Stage 1 strengthened validation)
+- **1-S.1 Exact-vs-Taylor**: bounds the Taylor truncation error and confirms it scales as predicted (ratio O(1))
+- **1-S.2 Parameter scaling**: confirms bias scales linearly in `tan(θ)` and inversely in `a` (relative variation < 1e-10)
+- **1-S.3 Limit cases**: bias → 0 when `θ = 0` or `a → ∞`
+- Markdown summary of all three checks
 
-The minimal addition needed:
-
-```python
-def project(input_phase):
-    """Simulates non-telecentric projector adding perspective bias."""
-    bias = (2 * np.pi / p1) * (X**2 * np.tan(theta) / a)
-    return input_phase - bias
-```
-
-With this, projecting φ₂ through the function should produce a clean uniform ramp. That validates the full inverse-grating method end-to-end before any real hardware is touched.
+### Cell 14 caveat
+Cell 14 uses the symmetric `λ_eq = (p1·M) / (4π sin θ)` formula (Eq. 4-11). For the hybrid hardware, the strict formula is `λ_eq = (p1·M) / tan(θ_projector)` (from Eq. 2-51 with θ_camera = 0). The simulation still converges correctly because one consistent θ is used everywhere; the formula is replaced in Stage 2 / measured empirically in Stage 6.
 
 ---
 
@@ -191,15 +190,15 @@ Fringe_Projection_Project_Phase1/
 
 The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 
-| Stage | What | Hardware needed? |
-|---|---|---|
-| 0 | Project setup, Git, Python env | No |
-| 1 | Close simulation loop in notebook (add `project()` function) | No |
-| 2 | Refactor notebook into Python modules | No |
-| 3 | Upgrade forward model to exact Eq. 2-44 | No |
-| 4 | Build PyQt6 GUI with mock hardware | No |
-| 5 | Hardware familiarization (capture frame, project pattern) | Optional |
-| 6 | Real hardware integration with mounting + new projector | Yes |
+| Stage | What | Hardware needed? | Status |
+|---|---|---|---|
+| 0 | Project setup, Git, Python env | No | ✅ Done |
+| 1 | Close simulation loop in notebook (add `project()` function) | No | ✅ Done |
+| 2 | Refactor notebook into Python modules | No | ⏳ Next |
+| 3 | Upgrade forward model to exact Eq. 2-44 | No | — |
+| 4 | Build PyQt6 GUI with mock hardware | No | — |
+| 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
+| 6 | Real hardware integration with mounting + new projector | Yes | — |
 
 ---
 
@@ -242,7 +241,7 @@ Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector
 ## 8. Open Questions for Supervisor (not blocking)
 
 1. Is the upgraded projector telecentric? If yes, the hybrid case collapses to symmetric-telecentric.
-2. What's the simplified `λ_eq` formula for the hybrid case (telecentric viewing + non-telecentric projection)? Or use empirical calibration per Chapter 4?
+2. **Still open:** What's the simplified `λ_eq` formula for the hybrid case (telecentric viewing + non-telecentric projection)? Eq. 2-51 with θ_camera = 0 gives `Mp / tan(θ_projector)`, but in practice we'd skip the formula and use empirical step-height calibration per Chapter 4 §4.3.1.
 3. Software post-correction (subtract bias from measurement) or hardware pre-correction (project inverse pattern)? Both are mathematically equivalent. Chapter uses pre-correction.
 4. How many phase-shift steps (4 or 8)? Notebook uses 4; chapter uses 8.
 5. What calibration artifacts are available in the lab vs. need to be ordered?
@@ -273,21 +272,47 @@ When refactoring, work **one module at a time**, write a small test that confirm
 
 ---
 
-## 11. Suggested Starting Tasks for Claude Code
+## 11. Suggested Starting Tasks for Claude Code (Stage 2)
 
 In rough priority order. Do them with the user, one at a time:
 
 1. Read this file, the conversation summary, and the notebook. Summarize back to confirm understanding.
 2. Set up the package structure (`src/` with empty stub modules per the layout above).
-3. Refactor Cells 1–2 of the notebook into `geometry.py` (system parameters + `HybridGeometry` class).
-4. Refactor Cell 3 (forward model) into `synthetic_fringes.py`. **Add the missing `project()` function.**
-5. Refactor Cells 5–7 into `phase_shifting.py` and `unwrapping.py`.
-6. Refactor Cell 18 into `reconstruction.py`.
-7. Refactor Cells 8–11 into `calibration.py` (tilt-flip trick).
-8. Write `tests/test_pipeline_synthetic.py` reproducing the notebook's end-to-end Gaussian recovery.
-9. Once the test passes, the math core is done — start the GUI.
+3. Refactor Cells 1–2 of the notebook into `geometry.py` (system parameters + `HybridGeometry` class). **See Section 12 for required Stage 2 decisions.**
+4. Refactor the forward model (`project()` function and `phi1` construction) into `synthetic_fringes.py`.
+5. Refactor PSI cells (4–7) into `phase_shifting.py` and `unwrapping.py`.
+6. Refactor object recovery (cell 18) into `reconstruction.py`.
+7. Refactor calibration cells (8–11) into `calibration.py` (tilt-flip trick).
+8. Write `tests/test_pipeline_synthetic.py` reproducing the notebook's end-to-end Gaussian recovery (~1e-5 std error).
+9. Once the test passes, the math core is done — start the GUI (Stage 4).
 
 For each module, write **clear docstrings** with units, dimensions, and references to the relevant chapter equation (e.g., `# Implements Eq. 4-7 from Samara Chapter 4`).
+
+---
+
+## 12. Stage 1 Completion Notes & Stage 2 Decisions
+
+### Stage 1 — Done
+
+- 1.1 `project()` function added (Taylor-approximation forward model)
+- 1.2 Roadmap-mandated consistency check (cell 22)
+- 1.3 Curvature-cancellation validation on flat reference (cell 23, suppression ~10¹⁴)
+- 1.4 Markdown documentation + Git commit
+- **Strengthened validation** added beyond roadmap: 1-S.1 (Taylor error bounded), 1-S.2 (parameter scaling verified), 1-S.3 (limit cases pass)
+- A fourth strengthened check (1-S.4 end-to-end object recovery via explicit `project()` chain) was considered and **deliberately omitted**: in simulation, the same analytical bias formula is used both to construct `phi2` and inside `project()`, so cancellation is satisfied by construction and provides no independent verification. Object recovery is already exercised by cells 14–20 of the original pipeline. A meaningful version of this test belongs in Stage 6 with real hardware.
+
+### Validation philosophy arrived at
+
+Simulation validation can only catch bugs where the test path uses *different* logic than the thing being tested. Tests that share the same formula on both sides are tautological. Real validation comes from (a) cross-implementation comparison (MATLAB, Three.js sim), (b) real hardware measurements, or (c) analytical limit checks. The Stage 1 validations cover (c) and small portions of (a). Stages 2+ open the door to (a) more broadly via the regression test script; Stage 6 brings (b).
+
+### Stage 2 decisions (instruct Claude Code accordingly)
+
+1. **Default geometry: `HybridGeometry`** (telecentric camera, non-telecentric projector), matching the actual hardware.
+2. **Replace toy parameter values** with real hardware values from Section 2 of this file (M = 0.09 modern / 11.1 chapter, sensor 1280×1024 at 4.8 µm pitch, pixel pitch on test surface ~53 µm, projector parameters from real geometry once measured).
+3. **`λ_eq` formula:** use `M·p / tan(θ_projector)` (reduction of Eq. 2-51 with θ_camera → 0), not the symmetric `4π sin θ` form from Eq. 4-11. Even better: design `reconstruction.py` so `λ_eq` can be computed *or* loaded from a calibration file (Chapter 4 §4.3.1 approach).
+4. **Keep `SymmetricGeometry`** as an alternative implementation for textbook reference / cross-validation, but it's not the operational default.
+5. **Document the geometry choice** explicitly in `geometry.py` docstrings, including the camera/projector telecentricity status and which equations apply.
+6. **Forward model stays Taylor for Stage 2;** exact Eq. 2-44 form is Stage 3 work. The `project()` interface should be designed to accept a `model={'taylor', 'exact'}` parameter even if only `'taylor'` is implemented now.
 
 ---
 
