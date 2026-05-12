@@ -23,5 +23,9 @@ data/captures/
 *.npy
 *.npz
 
+# Regression fixture is the versioned ground truth Stage 2 tests check
+# against — keep it tracked even though *.npz is otherwise ignored.
+!tests/regression_data.npz
+
 # Conda env
 *.conda
