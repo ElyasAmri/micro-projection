@@ -313,6 +313,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 4. **Keep `SymmetricGeometry`** as an alternative implementation for textbook reference / cross-validation, but it's not the operational default.
 5. **Document the geometry choice** explicitly in `geometry.py` docstrings, including the camera/projector telecentricity status and which equations apply.
 6. **Forward model stays Taylor for Stage 2;** exact Eq. 2-44 form is Stage 3 work. The `project()` interface should be designed to accept a `model={'taylor', 'exact'}` parameter even if only `'taylor'` is implemented now.
+7. **`pattern_generator.py` is intentionally left as an empty stub for Stage 2.** The synthetic pipeline closes without it (`phi2` is the projector pattern in phase form; intensity synthesis is handled by `synthetic_fringes.synthesize_psi_stack`). `pattern_generator` becomes load-bearing in Stage 5 when real hardware needs an actual image written to the projector's framebuffer. Defer until then.
 
 ---
 
