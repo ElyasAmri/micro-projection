@@ -54,7 +54,15 @@ def project(
               bias(x) = (4 * pi / p) * x^2 * tan(theta_projector) / a,
 
           subtracted from `input_phase`. `x` is the column index in pixels.
-        - 'exact': Stage 3 work; raises NotImplementedError today.
+        - 'exact': full Ch.2 Eq. 2-44 form (notebook cell 25),
+
+              phi_exact(x) = (2 * pi / p) * x / (1 + 2 * x * tan(theta) / a),
+
+          replacing `input_phase`'s carrier. The bias is exact (no truncation
+          remainder). Reads only the same (p, theta_projector, a) attributes
+          as the Taylor branch, preserving lambda_eq-independence. Raises
+          ValueError if the denominator is non-positive anywhere on the grid
+          (small-angle assumption violated).
 
     Returns
     -------
@@ -66,6 +74,14 @@ def project(
     The bias is column-only (independent of row) because the projector's
     perspective effect is horizontal-only under the chapter's geometry.
     The output has the same shape as `input_phase`.
+
+    Sign convention for the 'exact' branch: the +u denominator
+    (`1 + 2*x*tan(theta)/a`) matches the existing Taylor branch (which
+    subtracts a positive bias). Ch.4 Eq. 4-6 as printed in the thesis has
+    -u; the notebook (cell 25) treats this as a sign typo akin to the
+    missing 2*pi in Eq. 4-2. With -u, the Taylor expansion would carry a
+    + bias and disagree with this module's Taylor branch at the leading
+    order.
     """
     if model == "taylor":
         phase = np.asarray(input_phase, dtype=np.float64)
@@ -77,10 +93,29 @@ def project(
         )
         return phase - bias
     if model == "exact":
-        raise NotImplementedError(
-            "model='exact' (full Eq. 2-44 forward model) is Stage 3 work. "
-            "Use model='taylor' until then."
-        )
+        phase = np.asarray(input_phase, dtype=np.float64)
+        H, W = phase.shape
+        x = np.arange(W, dtype=np.float64)
+        X = np.tile(x, (H, 1))
+        denom = 1.0 + 2.0 * X * np.tan(geometry.theta_projector) / geometry.a
+        denom_min = float(denom.min())
+        if denom_min <= 0.0:
+            raise ValueError(
+                "project(model='exact'): denominator "
+                "1 + 2*x*tan(theta_projector)/a is non-positive on the grid "
+                f"(min={denom_min:.6e}). The small-angle/short-throw assumption "
+                f"is violated. Parameters: p={geometry.p}, "
+                f"theta_projector={geometry.theta_projector} rad, "
+                f"a={geometry.a}, x_range=[0, {W - 1}]."
+            )
+        carrier_exact = (2.0 * np.pi / geometry.p) * X / denom
+        # Substitute the exact-bias carrier for the carrier in `input_phase`.
+        # The carrier the caller passed in is (2*pi/p)*X (the unbiased term
+        # the Taylor branch is parameterized around); replacing it with
+        # `carrier_exact` preserves any height/object phase the caller layered
+        # on top, exactly as the Taylor branch's `phase - bias` does.
+        carrier_input = (2.0 * np.pi / geometry.p) * X
+        return phase - carrier_input + carrier_exact
     raise ValueError(f"unknown model {model!r}; expected 'taylor' or 'exact'")
 
 
