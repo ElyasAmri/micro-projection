@@ -13,9 +13,29 @@ Tolerances (from tests/conftest.py):
     ATOL_ANALYTICAL = 1e-12   (closed-form arithmetic)
     ATOL_PIPELINE   = 1e-8    (pipeline operations)
 
-Recovery-quality bar:
+Recovery-quality bar (Taylor branch only):
     std_err < 2 * BASELINE_STD where BASELINE_STD = 1.7645046580428724e-05
     (recorded in notebook cell 20).
+
+Stage 3 parametrization
+-----------------------
+The test is parametrized over `model in {'taylor', 'exact'}` to confirm
+both forward models run end-to-end without raising. The fixture (phi2,
+H_rec0) was generated against the Taylor branch, so the fixture
+comparisons and the cell-20 std bar apply only to model='taylor'. For
+model='exact', the test asserts only that the pipeline completes and
+that `std_err` is finite — the deviation from Taylor is informational,
+not gatekept. Rationale: both models are user-togglable; any numerical
+bound on the exact branch's std would be arbitrary today and would
+shift when hardware params change.
+
+Note: under the current test structure the object leg does NOT call
+`project()` (see deviation note below), so for the model='exact' run,
+only the calibration leg actually differs from Taylor. The object-leg
+std_err prints the same value under both models. That's expected — the
+parametrization here covers the calibration path; the object-leg
+behavior under `project()` is independently exercised by the unit
+tests in tests/test_synthetic_fringes.py.
 
 Deviation from the Stage 2.6 spec — step d
 ------------------------------------------
@@ -38,6 +58,7 @@ tests/test_synthetic_fringes.py.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from conftest import ATOL_ANALYTICAL, ATOL_PIPELINE
 from calibration import compute_inverse_phase, fit_tilt_line_1d
@@ -51,7 +72,8 @@ from unwrapping import unwrap_2d
 BASELINE_STD = 1.7645046580428724e-05  # notebook cell 20
 
 
-def test_pipeline_end_to_end_gaussian_recovery(regression_data):
+@pytest.mark.parametrize("model", ["taylor", "exact"])
+def test_pipeline_end_to_end_gaussian_recovery(regression_data, model, capsys):
     geom = SymmetricGeometry()
     H, W = geom.H, geom.W
 
@@ -66,7 +88,7 @@ def test_pipeline_end_to_end_gaussian_recovery(regression_data):
     # through the PSI pipeline, derive phi2 via compute_inverse_phase.
     # ----------------------------------------------------------------
     uniform_phase = (2.0 * np.pi / geom.p) * X
-    phi1_computed = project(uniform_phase, geom)
+    phi1_computed = project(uniform_phase, geom, model=model)
 
     flat_stack = synthesize_psi_stack(phi1_computed, deltas)
     flat_wrapped = extract_phase(flat_stack, deltas)
@@ -74,12 +96,15 @@ def test_pipeline_end_to_end_gaussian_recovery(regression_data):
 
     phi2_computed = compute_inverse_phase(phi1_unwrapped)
 
-    np.testing.assert_allclose(
-        phi2_computed,
-        regression_data["phi2"],
-        atol=ATOL_ANALYTICAL,
-        err_msg="calibration leg: phi2 must match fixture",
-    )
+    # The phi2 fixture was generated against the Taylor branch. Only
+    # assert the bit-near-fixture match for that branch.
+    if model == "taylor":
+        np.testing.assert_allclose(
+            phi2_computed,
+            regression_data["phi2"],
+            atol=ATOL_ANALYTICAL,
+            err_msg="calibration leg: phi2 must match fixture",
+        )
 
     # ----------------------------------------------------------------
     # Object leg: build phi3 = carrier + height_phase, synthesize the
@@ -101,23 +126,40 @@ def test_pipeline_end_to_end_gaussian_recovery(regression_data):
     h_rec = recover_object_height(object_stack, phi_calibration, deltas, geom)
     h_rec0 = h_rec - h_rec.mean() + H_obj.mean()
 
-    # ----------------------------------------------------------------
-    # Recovery-quality bar (cell-20 baseline).
-    # ----------------------------------------------------------------
-    std_err = float((h_rec0 - H_obj).std())
-    assert std_err < 2.0 * BASELINE_STD, (
-        f"recovery std error {std_err:.4e} exceeds 2 x baseline "
-        f"{BASELINE_STD:.4e}"
+    assert np.all(np.isfinite(h_rec0)), (
+        f"recovered height map is non-finite under model={model!r}"
     )
 
-    # ----------------------------------------------------------------
-    # Belt-and-suspenders: bit-near-fixture match. Catches silent
-    # divergence from the notebook's pipeline that the std bar might
-    # not see (e.g., a shape change that happens to keep std small).
-    # ----------------------------------------------------------------
-    np.testing.assert_allclose(
-        h_rec0,
-        regression_data["H_rec0"],
-        atol=ATOL_PIPELINE,
-        err_msg="H_rec0 must match fixture to ATOL_PIPELINE",
+    std_err = float((h_rec0 - H_obj).std())
+    assert np.isfinite(std_err), (
+        f"std_err is non-finite under model={model!r}: {std_err}"
     )
+
+    # Informational print (visible under `pytest -s`).
+    with capsys.disabled():
+        print(
+            f"  [pipeline] model={model:<6} std_err={std_err:.6e} "
+            f"(baseline={BASELINE_STD:.6e})"
+        )
+
+    if model == "taylor":
+        # ------------------------------------------------------------
+        # Recovery-quality bar (cell-20 baseline) — Taylor only.
+        # ------------------------------------------------------------
+        assert std_err < 2.0 * BASELINE_STD, (
+            f"recovery std error {std_err:.4e} exceeds 2 x baseline "
+            f"{BASELINE_STD:.4e}"
+        )
+
+        # ------------------------------------------------------------
+        # Belt-and-suspenders fixture match — Taylor only. Catches
+        # silent divergence from the notebook's pipeline that the std
+        # bar might not see (e.g., a shape change that happens to keep
+        # std small).
+        # ------------------------------------------------------------
+        np.testing.assert_allclose(
+            h_rec0,
+            regression_data["H_rec0"],
+            atol=ATOL_PIPELINE,
+            err_msg="H_rec0 must match fixture to ATOL_PIPELINE",
+        )
