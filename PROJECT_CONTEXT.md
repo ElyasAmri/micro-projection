@@ -152,6 +152,8 @@ Cell 14 uses the symmetric `λ_eq = (p1·M) / (4π sin θ)` formula (Eq. 4-11). 
 
 **Stage 2 update:** the notebook itself is unchanged — Stage 2 refactored the formula into `geometry.py` (both `HybridGeometry` and `SymmetricGeometry` implementations), not into the notebook. The notebook remains as a historical reference and as the source of the regression fixture (`tests/regression_data.npz`).
 
+**Stage 3 update:** notebook cell 25 (Stage 1-S.1) is the spec for the exact-form forward model. The `+u` denominator convention adopted by `project(model='exact')` is documented there and in the function's docstring. Cell 25 stays as the authoritative reference for the sign convention.
+
 ---
 
 ## 5. Project Directory Layout
@@ -197,8 +199,8 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | 0 | Project setup, Git, Python env | No | ✅ Done |
 | 1 | Close simulation loop in notebook (add `project()` function) | No | ✅ Done |
 | 2 | Refactor notebook into Python modules | No | ✅ Done |
-| 3 | Upgrade forward model to exact Eq. 2-44 | No | ⏳ Next |
-| 4 | Build PyQt6 GUI with mock hardware | No | — |
+| 3 | Upgrade forward model to exact Eq. 2-44 | No | ✅ Done |
+| 4 | Build PyQt6 GUI with mock hardware | No | ⏳ Next |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
 
@@ -258,6 +260,7 @@ Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector
 - **Image arrays**: NumPy convention `(H, W)` = (rows, cols). When mapping to physical X (horizontal) and Y (vertical), array axis 0 = vertical (Y), axis 1 = horizontal (X).
 - **Phase units**: radians.
 - **Length units**: SI in equations; pixels in synthetic notebook. Document units explicitly in every function docstring.
+- **Forward-model bias sign (`project()`):** Taylor branch subtracts a positive bias `(4π/p)·x²·tan(θ)/a`. Exact branch uses `+u` denominator `1 + 2x·tan(θ)/a` to match (notebook cell 25). Textbook Ch.4 Eq. 4-6 prints `−u` — treated as a sign typo, see Section 12 Stage 3 notes.
 
 ---
 
@@ -294,7 +297,7 @@ For each module, write **clear docstrings** with units, dimensions, and referenc
 
 ---
 
-## 12. Stage 1 Completion Notes & Stage 2 Decisions
+## 12. Stage 1 Completion Notes & Stage 2 / Stage 3 Decisions
 
 ### Stage 1 — Done
 
@@ -332,7 +335,7 @@ These were made during Stage 2 and bind future stages:
 
 - **Module order swapped from Section 11.** Calibration was refactored before reconstruction (not the order suggested in Section 11) so each module's tests naturally consume the previous module's output. Section 11's order was an early draft; Section 12 supersedes it.
 
-- **`project()` is `λ_eq`-independent.** The Taylor forward model reads only `p`, `theta_projector`, and `a` from the Geometry — never `lambda_eq`. This means `HybridGeometry` and `SymmetricGeometry` produce bit-identical `project()` output (test `test_project_is_lambda_eq_independent` locks this invariant). `λ_eq` enters only at the height↔phase boundary in `reconstruction.py`. **Stage 3's exact-Eq.-2-44 forward model must preserve this invariant.**
+- **`project()` is `λ_eq`-independent.** The Taylor forward model reads only `p`, `theta_projector`, and `a` from the Geometry — never `lambda_eq`. This means `HybridGeometry` and `SymmetricGeometry` produce bit-identical `project()` output (test `test_project_is_lambda_eq_independent` locks this invariant). `λ_eq` enters only at the height↔phase boundary in `reconstruction.py`. **Stage 3's exact-Eq.-2-44 forward model preserves this invariant** (test `test_project_exact_lambda_eq_independent`, atol=1e-15).
 
 - **Two tilt fits live in `calibration.py`, not one. They are NOT interchangeable on non-trivial inputs.**
   - `fit_tilt_plane` (2D lstsq, `[x, y, 1]` design matrix): for flat references or any measurement where genuine y-tilt may be present (small optical-axis rotation, future hardware calibration). Strict superset of the 1D form on y-invariant data.
@@ -345,12 +348,31 @@ These were made during Stage 2 and bind future stages:
 
 - **Real hardware values (Section 2) replace toy defaults when measured.** Both `HybridGeometry` and `SymmetricGeometry` currently default to identical bias parameters (`a = 2000` pixels, `θ = 15°`) — both marked as `# PLACEHOLDER`. When real values arrive in Stage 6, both geometries' defaults must update in lockstep, or the bit-identical `project()` invariant silently breaks.
 
-### Future-stage hooks deferred during Stage 2
+### Stage 3 — Done
+
+- 3.1 `project(model='exact')` implemented per notebook cell 25's `+u` denominator form:
+  `phi_exact(x) = (2π/p) · x / (1 + 2x·tan(θ)/a)`. Closing commit: `b752f47`.
+- 3.2 (comparison script) deliberately skipped. The model toggle is the deliverable; cell 25 and the unit test `test_project_exact_taylor_consistency` already capture the diff numbers (ratio = 3.40, matches cell 25's published value). A standalone script adds nothing the toggle doesn't.
+- 3.3 (inverse-grating cancellation under exact) folded into the parametrized integration test rather than written as a standalone test.
+- Integration test `tests/test_pipeline_synthetic.py` parametrized over `model in {'taylor', 'exact'}`. Both branches run end-to-end. Closing commit: `e5201fb`. Tag: `stage-3-complete`.
+- 17 tests passing (12 prior + 4 new unit tests for the exact branch + 1 new parametrization ID on the integration test).
+
+### Stage 3 architectural decisions worth carrying forward
+
+- **Default remains `model='taylor'`.** Flip is deferred; no driver to flip it yet, and keeping Taylor as default preserves bit-identical behavior for any existing caller.
+- **The `+u` denominator convention is the project's operational convention.** Textbook Ch.4 Eq. 4-6 as printed has `−u`; the notebook (cell 25) treats this as a sign typo akin to the missing `2π` in Eq. 4-2. With `−u` the Taylor expansion would carry a `+` bias and disagree with the existing Taylor branch's `−` bias at the leading order. The exact branch's docstring documents this; cell 25 remains the authoritative reference.
+- **Validation is informational, not gatekept.** The Taylor-vs-exact comparison is not a strict criterion. Both models are user-togglable. The exact branch in the integration test asserts only `isfinite` and prints `std_err`; no numerical bound is enforced because any bound would be arbitrary and would shift when hardware params change. Rationale: under the reframe, both models are user-facing toggles, not competing implementations to be ranked.
+- **The exact branch is `λ_eq`-independent, same invariant as Taylor.** Locked by `test_project_exact_lambda_eq_independent` at `atol=1e-15`. The invariant from Stage 2 holds across both forward models.
+- **Denominator-positivity guard.** The exact branch raises `ValueError` if `1 + 2x·tan(θ)/a ≤ 0` anywhere on the grid, with all relevant parameters named in the error message. Protects against future hardware params that violate the small-angle assumption. Does not fire under current defaults (`denom ∈ [1.0, 1.17]`).
+- **Object leg of the integration test still skips `project()`.** Per the documented Stage 2.6 deviation, the object stack is synthesized from `phi3 = carrier + K·H_obj` directly. As a result, the parametrized test's `std_err` is identical across both models — the model toggle only affects the calibration leg. The test confirms "the pipeline runs under both models without crashing"; it does NOT independently verify that exact's calibration cancels exact's bias. Cell 23 in the notebook covers that for Taylor; an analogous demonstration for exact is deferred to Stage 4 (where the GUI will exercise it visually) or Stage 6 (hardware).
+
+### Future-stage hooks deferred during Stage 2 / Stage 3
 
 - **`pattern_generator.py`** (Decision 7): empty stub. Stage 5+ when hardware needs framebuffer writes.
 - **`io_utils.py`**: empty stub. Adds frame I/O when capture loop lands.
 - **`src/test_surfaces.py`**: not yet created. Stage 4+ work. Pure heightmap generators (flat, tilt, Gaussian, step, sphere cap, multi-bump, file-loaded, solder-bump-array). The solder-bump-array generator is the Chapter 5 application — should exist before Stage 6. Symmetric in role to `pattern_generator.py` but for the measurement side, not the projection side.
-- **Slider-driven GUI** (Stage 4+): the current architecture supports it cleanly. Both `Geometry` classes take all parameters as constructor args; the pipeline is pure functions over arrays. Changing a slider → new geometry instance → re-run pipeline. No hidden state. Live re-runs of the synthetic pipeline at 480×640 are millisecond-scale; full-res 1280×1024 unwrap is not.
+- **Slider-driven GUI** (Stage 4+): the current architecture supports it cleanly. Both `Geometry` classes take all parameters as constructor args; the pipeline is pure functions over arrays. Changing a slider → new geometry instance → re-run pipeline. No hidden state. Live re-runs of the synthetic pipeline at 480×640 are millisecond-scale; full-res 1280×1024 unwrap is not. With Stage 3 done, the GUI can also expose a Taylor/exact toggle for the forward model without any further math work.
+- **`scripts/compare_forward_models.py`**: deliberately not created (Stage 3.2 was skipped). If a future need arises (e.g., a sanity check at real-hardware parameters), cell 25's logic ports cleanly to a standalone script — but the model toggle in the GUI is the operational deliverable.
 
 ---
 

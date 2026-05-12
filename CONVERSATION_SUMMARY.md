@@ -141,7 +141,7 @@ Chapter 4 also covers:
 
 ---
 
-## 7. State of the Project Through Stage 2
+## 7. State of the Project Through Stage 3
 
 ### Notebook (Stage 1 work, frozen as historical reference)
 
@@ -152,7 +152,7 @@ The user's `Fringe_Projection_Python.ipynb` implements the math and includes the
 - Roadmap validations 1.2 / 1.3 done (consistency check + curvature cancellation on flat reference)
 - Strengthened validations 1-S.1 / 1-S.2 / 1-S.3 done (Taylor error bounded, parameter scaling verified, limit cases pass)
 
-The notebook is frozen as the source of truth for the regression fixture `tests/regression_data.npz`, which Stage 2 modules are tested against.
+The notebook is frozen as the source of truth for the regression fixture `tests/regression_data.npz`, which Stage 2 modules are tested against. **Notebook cell 25 (Stage 1-S.1) is also the spec for the Stage 3 exact-form forward model** — the `+u` denominator convention adopted in `project(model='exact')` is documented there.
 
 ### Validation philosophy arrived at during Stage 1
 
@@ -163,7 +163,7 @@ The user pushed back hard on tests that compare two quantities both derived from
 This led to:
 - Recognition that Stage 1.2 (`project(uniform) == phi1`) is operationally a typo-guard, not a physics test (still kept because the roadmap requires it).
 - Recognition that an originally drafted Stage 1-S.4 cell (end-to-end recovery via explicit `project()` chain) was redundant with what cells 14–20 already validate, since the same analytical bias formula appears on both sides of the cancellation in simulation. **It was deliberately omitted.** The strongest possible test of this kind requires real hardware (Stage 6), where the projector's actual bias may differ from the calibration-extracted bias.
-- The Stage 1-S markdown summary explicitly documents this omission so a thesis examiner doesn't wonder if the test was forgotten.
+- The Stage 1-S markdown summary explicitly documents this omission so anyone reading the notebook later doesn't wonder if the test was forgotten.
 
 Real validation comes from (a) cross-implementation comparison (MATLAB, Three.js), (b) real hardware, or (c) analytical limit checks. Stage 1 covers (c). Stage 2's regression test will start (a). Stage 6 brings (b).
 
@@ -186,7 +186,7 @@ Six task-prompts handled one at a time; one module per commit (plus chores). Fin
 These were made during refactor and bind future stages (also mirrored in PROJECT_CONTEXT.md Section 12):
 
 - **Module order swapped from PROJECT_CONTEXT Section 11**: calibration before reconstruction, so tests follow data flow.
-- **`project()` is `λ_eq`-independent**, locked by `test_project_is_lambda_eq_independent` (`atol=1e-15`). Both Geometry types produce bit-identical bias output. Stage 3's exact-form forward model must preserve this.
+- **`project()` is `λ_eq`-independent**, locked by `test_project_is_lambda_eq_independent` (`atol=1e-15`). Both Geometry types produce bit-identical bias output. Stage 3's exact-form forward model preserves this.
 - **Two non-interchangeable tilt fits in `calibration.py`**: `fit_tilt_plane` (2D, flat refs) vs `fit_tilt_line_1d` (1D, object self-cal). Diverge by ~4e-5 in height on off-center bumps.
 - **`recover_object_height` is operand-agnostic on `phi_calibration`** — caller decides self-cal vs cross-cal.
 - **Integration test does NOT close the inverse-grating loop.** Same tautology limit as Stage 1's omitted 1-S.4. Real validation needs cross-impl or hardware.
@@ -198,6 +198,40 @@ These were made during refactor and bind future stages (also mirrored in PROJECT
 - `.gitattributes` with `* text=auto eol=lf` to suppress Windows CRLF warnings.
 - `environment.yml` pins runtime + dev dependencies (Python 3.10, NumPy 2.2.6, pytest, etc.).
 - Two git-history rewrites at Stage 2 close: (a) purge `FPP Thesis/` PDFs from history (kept on disk, gitignored — Claude Code reads them locally, never pushed); (b) change commit authorship from auto-derived HBKU institutional identity to `Husam Al Ardah <152923640+HusamArdah@users.noreply.github.com>` (personal GitHub no-reply alias). Repo pushed to private GitHub: `HusamArdah/fringe-projection-3d`.
+
+### Stage 3 — Exact forward model (Complete)
+
+Two task-prompts handled across two commits. Final state: 17 tests, all passing, closing commit `e5201fb` tagged `stage-3-complete`.
+
+| Task | File(s) | What landed |
+|---|---|---|
+| 3.1 | `src/synthetic_fringes.py`, `tests/test_synthetic_fringes.py` | `project(model='exact')` implemented per notebook cell 25's `+u` denominator form: `phi_exact(x) = (2π/p) · x / (1 + 2x·tan(θ)/a)`. Four new unit tests: x=0 agreement (atol=1e-15), cell-25 truncation ratio reproduction (ratio = 3.40 matches notebook), `λ_eq`-independence under exact branch (atol=1e-15), denom-positivity smoke test. `ValueError` guard if denominator ≤ 0. Commit `b752f47`. |
+| 3 close | `tests/test_pipeline_synthetic.py` | Integration test parametrized over `model in {'taylor', 'exact'}`. Taylor branch: existing assertions preserved (std bar + H_rec0 fixture match). Exact branch: asserts only `isfinite(std_err)` and `isfinite(h_rec0)`; std_err printed informationally. `phi2` fixture match gated under Taylor branch. Commit `e5201fb`. Tag: `stage-3-complete`. |
+
+Roadmap sub-tasks 3.2 (comparison script) and 3.3 (standalone cancellation test) were deliberately not implemented as written:
+- **3.2 skipped.** The model toggle is the deliverable. Cell 25 + the unit test already capture the diff numbers. A standalone `scripts/compare_forward_models.py` adds nothing the toggle doesn't.
+- **3.3 folded into the parametrized integration test.** Both models run end-to-end without crashing; that's what the cancellation test would have demonstrated, in a more useful form.
+
+### Stage 3 architectural decisions
+
+(mirrored in PROJECT_CONTEXT.md Sec 12)
+
+- **`+u` denominator is the project's operational sign convention.** Textbook Ch.4 Eq. 4-6 has `−u`; notebook cell 25 documents the rationale for treating this as a typo (cf. the missing `2π` in Eq. 4-2). The Taylor expansion of `1/(1+u)` produces a `−` bias that matches the current Taylor branch's `−` bias; a `−u` denominator would produce a `+` bias and disagree. Documented in the exact branch's docstring.
+- **Default stays `model='taylor'`.** Flip deferred until a driver appears.
+- **Validation reframed as informational, not gatekept.** No numerical bound on the exact branch's `std_err` in the integration test. Any bound would be arbitrary today and would shift when hardware params change. Both models are user-togglable forward models, not competing implementations to be ranked.
+- **Object leg still synthesizes `phi3` analytically.** As a consequence, the parametrized integration test's `std_err` is identical for both models (1.764505e-05 under defaults) — the model toggle only affects the calibration leg. This is documented honestly in the test's module docstring rather than papered over. A genuine end-to-end test of "exact cancels exact-bias" would require closing the inverse-grating loop, which has the same tautology limit identified in Stage 1.
+- **Denom-positivity guard.** `ValueError` with `p, theta_projector, a, x_range` named if denom goes non-positive. Doesn't fire under defaults (`denom ∈ [1.0, 1.17]` for both Hybrid and Symmetric).
+
+### Validation philosophy update during Stage 3
+
+Stage 1's "simulation validation is limited by tautology" carried forward and sharpened in Stage 3. The reframe — "both models are togglable, neither needs to be defended against the other" — collapsed the original 3.2 and 3.3 sub-tasks into nothing once it was noticed that strict validation criteria would just be arbitrary thresholds masquerading as rigor. The informational-print + `isfinite` pattern is the right shape for "user-facing toggle, not gated implementation." The user pushed back specifically on a draft `std_err < 10 * BASELINE_STD` bound for the exact branch and got it dropped — the resulting test stays useful across hardware changes without relitigation.
+
+### Tooling / housekeeping in Stage 3
+
+- No new dependencies, no fixture regeneration, no schema changes.
+- Notebook untouched (cell 25 remains the spec the src/ port mirrors).
+- Test count: 12 → 17 (4 new unit tests + 1 new parametrization ID on the existing integration test).
+- Local commits ahead of origin/main at Stage 3 close: 2 (`b752f47`, `e5201fb`) + the tag `stage-3-complete` on `e5201fb`. Push deferred to user's discretion.
 
 ---
 
@@ -242,13 +276,22 @@ The user worked through the chapter step by step and these were the conceptual l
 
 - **OpenCV is not needed for the fringe analysis math** — PSI, unwrap, tilt fitting, height conversion all live in NumPy. OpenCV's role will be image I/O, ROI masking, lateral calibration (grid detection), and display helpers. `skimage.restoration.unwrap_phase` is the recommended robust unwrap option per the roadmap.
 
+### Additional insights added during Stage 3 walkthrough
+
+- **The textbook's Eq. 4-6 has a sign typo.** Printed as `1/(1 − 2x·tan(θ)/a)`, but the notebook (cell 25) shows that this convention disagrees with the existing Taylor branch's `−` bias. The `+u` form `1/(1 + 2x·tan(θ)/a)` is the consistent one and was adopted as the operational convention. Cell 25 also calls out that Eq. 4-2 has a separate typo (missing `2π`) — there's prior evidence the chapter equations have transcription errors, so trusting the notebook over the printed equations is justified.
+
+- **Validation criteria for user-facing toggles should be informational, not gating.** Strict numerical bounds on the deviation between Taylor and exact would have been arbitrary (why 2×? why 10×? why 100×?), would have required relitigation every time hardware params change, and would not have improved confidence in the implementation. The actual confidence-building comes from: (a) cell 25's analytical-Taylor-vs-analytical-exact comparison reproduced in `test_project_exact_taylor_consistency`, (b) the bit-identical x=0 agreement, (c) the `λ_eq`-independence invariant carrying through. The integration test's role is to confirm the toggle doesn't crash, not to rank the models.
+
+- **A test parametrization can technically pass without meaningfully exercising the parametrized variable.** The Stage 3 integration test prints identical `std_err` for both models because the object leg synthesizes `phi3` analytically (the Stage 2.6 deviation). This was noticed during review and documented honestly in the test docstring rather than papered over. The cleanest fix (close the loop in the object leg) would have broken the existing Taylor fixture; the second-cleanest (add a standalone exact-cancellation test) was rejected as scope creep. Living with a partially-tautological test, documented as such, was the correct trade-off given the reframe.
+
 ---
 
 ## 10. Project Conversations Note
 
 - User had a friend building a separate **Three.js 3D simulation** of the lab geometry (separate from the Python pipeline). The `Projector_Geometry_Summary.docx` was prepared for that collaborator. The Three.js work is **complementary**, not duplicative — it's a geometric visualization of the physical setup; the Python work is the operational measurement pipeline.
-- User plans to add a virtual representation of the setup (live sliders for θ, a, M, etc. that drive the simulation and update results) at the end of the roadmap. Stage 4's PyQt6 GUI provides the foundation; the live-update slider tabs are a natural extension built after Stage 4 with mock hardware in place.
+- User plans to add a virtual representation of the setup (live sliders for θ, a, M, etc. that drive the simulation and update results) at the end of the roadmap. Stage 4's PyQt6 GUI provides the foundation; the live-update slider tabs are a natural extension built after Stage 4 with mock hardware in place. With Stage 3 done, the slider GUI can also expose a Taylor/exact toggle for the forward model.
 - User plans to add a **test-surface library** (`src/test_surfaces.py`) as part of the slider GUI work. Pure heightmap generators: flat, tilt, Gaussian, step, sphere cap, multi-bump, file-loaded, and crucially a **solder-bump-array generator** (Chapter 5 application). The architecture already supports this — the pipeline consumes any `(H, W)` heightmap via `geometry.height_to_phase`. Decision deferred to Stage 4+.
+- User clarified during Stage 3 that **the chapters in the reference folder are the math basis for the inverse fringe projection method, not a template for a thesis the user is writing.** The user's own paper comes later (if at all). Current deliverable is a working simulation with a GUI that uses real hardware parameters; the existing simulation validations are informational tools for understanding deviation, not gating criteria. This reframe directly drove the Stage 3 scope reduction (skipping 3.2's comparison script and 3.3's standalone test).
 
 ---
 
@@ -262,8 +305,8 @@ The user worked through the chapter step by step and these were the conceptual l
 - Identified the gap in the existing notebook (missing `project()` function) — **closed in Stage 1**
 - Established that hardware-free development is the right starting approach until mounting hardware arrives
 - Built a roadmap (Stages 0–6) with this-week to-do items
-- **Stage 0, Stage 1, and Stage 2 completed.** Notebook has the `project()` function, all roadmap-mandated validations, and three independent strengthened validations. Stage 2 refactored the notebook into 6 tested src/ modules with a 12-test regression suite plus end-to-end integration test; closing commit `b5b7342` tagged `stage-2-complete` and pushed to private GitHub remote.
-- Validation philosophy formalized: simulation-only validation has fundamental limits (tautology if same formula appears on both sides); meaningful end-to-end testing requires hardware or cross-implementation.
+- **Stage 0, Stage 1, Stage 2, and Stage 3 completed.** Notebook has the `project()` function, all roadmap-mandated validations, and three independent strengthened validations. Stage 2 refactored the notebook into 6 tested src/ modules with a 12-test regression suite plus end-to-end integration test; closing commit `b5b7342` tagged `stage-2-complete` and pushed to private GitHub remote. Stage 3 added `project(model='exact')` with 5 new tests, all passing; closing commit `e5201fb` tagged `stage-3-complete` (local only at the time of this writing).
+- Validation philosophy formalized: simulation-only validation has fundamental limits (tautology if same formula appears on both sides); meaningful end-to-end testing requires hardware or cross-implementation. Stage 3 further refined this: validations on user-facing toggles should be informational (print numbers, assert finiteness) rather than gating (arbitrary numerical bounds).
 
 ---
 
@@ -276,13 +319,13 @@ The user prefers:
 - One thing at a time
 - Practical code suggestions kept minimal
 
-The user pushes back when something feels redundant or tautological. This is a strength — Stage 1 ended up with a smaller, cleaner validation suite than originally proposed because of it.
+The user pushes back when something feels redundant or tautological. This is a strength — Stage 1 ended up with a smaller, cleaner validation suite than originally proposed because of it, and Stage 3 collapsed from three sub-tasks to one (plus a minor parametrization) for the same reason. Strategy chat should default to less, not more, and let the user push for additions if they want them.
 
 ---
 
-## 13. Working Model with Claude Code (Established During Stage 2)
+## 13. Working Model with Claude Code (Established During Stage 2, Carried Through Stage 3)
 
-The handoff pattern that worked across Stage 2's six tasks:
+The handoff pattern that worked across Stage 2's six tasks and Stage 3's two tasks:
 
 1. **Strategy chat (this assistant) drafts the prompt.** Includes the architectural constraints, the exact tests to write, and the binding decisions Claude Code shouldn't relitigate.
 2. **User reviews and pastes into Claude Code (terminal).**
@@ -295,7 +338,11 @@ Belt-and-suspenders verifications the user does in their own terminal (not Claud
 - Independent verification of git rewrites with own queries.
 - Confirmation that working-tree files match expectations after history operations.
 
-This separation kept Stage 2 honest: every commit was reviewed twice (Claude Code self-checks during implementation, strategy chat second-pass), and every destructive operation had a manual confirmation step before authorization.
+This separation kept Stage 2 and Stage 3 honest: every commit was reviewed twice (Claude Code self-checks during implementation, strategy chat second-pass), and every destructive operation had a manual confirmation step before authorization.
+
+### Stage 3 refinement: prompts shrink when the deliverable is reframed
+
+During Stage 3, the user's reframe ("validation is informational, not gating; both models are user-togglable forward models") collapsed two of the three roadmap sub-tasks. The lesson: a Claude Code prompt is only as valuable as the framing it inherits. Strategy chat should challenge the framing of upcoming tasks before drafting prompts, not just transcribe roadmap text into prompt form. The Stage 3.2 → "skip" decision and the Stage 3.3 → "fold into parametrized test" decision both came from re-asking *what is this for* rather than from any code analysis.
 
 ---
 
