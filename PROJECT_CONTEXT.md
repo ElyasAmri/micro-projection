@@ -150,6 +150,8 @@ This means **θ, projection-arm M, and the internal projector parameter `a` are 
 ### Cell 14 caveat
 Cell 14 uses the symmetric `λ_eq = (p1·M) / (4π sin θ)` formula (Eq. 4-11). For the hybrid hardware, the strict formula is `λ_eq = (p1·M) / tan(θ_projector)` (from Eq. 2-51 with θ_camera = 0). The simulation still converges correctly because one consistent θ is used everywhere; the formula is replaced in Stage 2 / measured empirically in Stage 6.
 
+**Stage 2 update:** the notebook itself is unchanged — Stage 2 refactored the formula into `geometry.py` (both `HybridGeometry` and `SymmetricGeometry` implementations), not into the notebook. The notebook remains as a historical reference and as the source of the regression fixture (`tests/regression_data.npz`).
+
 ---
 
 ## 5. Project Directory Layout
@@ -194,8 +196,8 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 |---|---|---|---|
 | 0 | Project setup, Git, Python env | No | ✅ Done |
 | 1 | Close simulation loop in notebook (add `project()` function) | No | ✅ Done |
-| 2 | Refactor notebook into Python modules | No | ⏳ Next |
-| 3 | Upgrade forward model to exact Eq. 2-44 | No | — |
+| 2 | Refactor notebook into Python modules | No | ✅ Done |
+| 3 | Upgrade forward model to exact Eq. 2-44 | No | ⏳ Next |
 | 4 | Build PyQt6 GUI with mock hardware | No | — |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
@@ -288,6 +290,8 @@ In rough priority order. Do them with the user, one at a time:
 
 For each module, write **clear docstrings** with units, dimensions, and references to the relevant chapter equation (e.g., `# Implements Eq. 4-7 from Samara Chapter 4`).
 
+**Note:** the actual Stage 2 module order differed from the list above — see Section 12 "Stage 2 architectural decisions worth carrying forward" for details. Section 12 supersedes this section.
+
 ---
 
 ## 12. Stage 1 Completion Notes & Stage 2 Decisions
@@ -314,6 +318,39 @@ Simulation validation can only catch bugs where the test path uses *different* l
 5. **Document the geometry choice** explicitly in `geometry.py` docstrings, including the camera/projector telecentricity status and which equations apply.
 6. **Forward model stays Taylor for Stage 2;** exact Eq. 2-44 form is Stage 3 work. The `project()` interface should be designed to accept a `model={'taylor', 'exact'}` parameter even if only `'taylor'` is implemented now.
 7. **`pattern_generator.py` is intentionally left as an empty stub for Stage 2.** The synthetic pipeline closes without it (`phi2` is the projector pattern in phase form; intensity synthesis is handled by `synthetic_fringes.synthesize_psi_stack`). `pattern_generator` becomes load-bearing in Stage 5 when real hardware needs an actual image written to the projector's framebuffer. Defer until then.
+
+### Stage 2 — Done
+
+- Notebook refactored into 6 src/ modules: `geometry.py`, `synthetic_fringes.py`, `phase_shifting.py`, `unwrapping.py`, `calibration.py`, `reconstruction.py`. `pattern_generator.py` and `io_utils.py` remain stubs (deferred to Stage 5 per Decision 7).
+- 12 regression tests passing across 6 test files plus a final integration test (`tests/test_pipeline_synthetic.py`).
+- Closing commit: `b5b7342` (Stage 2.6 end-to-end integration test). Tag: `stage-2-complete`.
+- Repository pushed to private GitHub remote (`HusamArdah/fringe-projection-3d`).
+
+### Stage 2 architectural decisions worth carrying forward
+
+These were made during Stage 2 and bind future stages:
+
+- **Module order swapped from Section 11.** Calibration was refactored before reconstruction (not the order suggested in Section 11) so each module's tests naturally consume the previous module's output. Section 11's order was an early draft; Section 12 supersedes it.
+
+- **`project()` is `λ_eq`-independent.** The Taylor forward model reads only `p`, `theta_projector`, and `a` from the Geometry — never `lambda_eq`. This means `HybridGeometry` and `SymmetricGeometry` produce bit-identical `project()` output (test `test_project_is_lambda_eq_independent` locks this invariant). `λ_eq` enters only at the height↔phase boundary in `reconstruction.py`. **Stage 3's exact-Eq.-2-44 forward model must preserve this invariant.**
+
+- **Two tilt fits live in `calibration.py`, not one. They are NOT interchangeable on non-trivial inputs.**
+  - `fit_tilt_plane` (2D lstsq, `[x, y, 1]` design matrix): for flat references or any measurement where genuine y-tilt may be present (small optical-axis rotation, future hardware calibration). Strict superset of the 1D form on y-invariant data.
+  - `fit_tilt_line_1d` (1D polyfit on row-mean, tiled): for object-phase self-calibration per Ch.4 §4.3.1 / notebook cell 18. The recovered tilt has `m_y == 0` by construction — intentional, because absorbing the bump into `m_y` is precisely what we don't want for self-cal.
+  - The two diverge by ~4e-5 in recovered height on object-phase fixtures (Gaussian bump whose center sits ~0.5 px off the grid centroid). `recover_object_height` uses `fit_tilt_line_1d`; `compute_inverse_phase` uses `fit_tilt_plane`.
+
+- **`recover_object_height` subtracts a self-cal tilt, not a cross-cal flat-reference phase.** This matches notebook cell 18's `tilt3_2d`. The function signature is operand-agnostic — the caller passes `phi_calibration`. When real cross-calibration enters in Stage 6 (flat-reference measurement separate from object), the same function still works; only the operand changes.
+
+- **The integration test does NOT exercise the closed inverse-grating loop.** `tests/test_pipeline_synthetic.py` synthesizes the object stack from `phi3` directly, not from `project(phi3, geom)`. This matches the notebook's assumption (inverse-grating correction already applied → projector emits clean fringes), and avoids a ~36-unit height contamination from adding the projector bias on top of the object phase. A true closed-loop test (display `phi2`, let bias cancel through, recover height) requires either cross-implementation comparison (MATLAB, Three.js) or real hardware — Stage 6 work. Same tautology limit identified in Stage 1.
+
+- **Real hardware values (Section 2) replace toy defaults when measured.** Both `HybridGeometry` and `SymmetricGeometry` currently default to identical bias parameters (`a = 2000` pixels, `θ = 15°`) — both marked as `# PLACEHOLDER`. When real values arrive in Stage 6, both geometries' defaults must update in lockstep, or the bit-identical `project()` invariant silently breaks.
+
+### Future-stage hooks deferred during Stage 2
+
+- **`pattern_generator.py`** (Decision 7): empty stub. Stage 5+ when hardware needs framebuffer writes.
+- **`io_utils.py`**: empty stub. Adds frame I/O when capture loop lands.
+- **`src/test_surfaces.py`**: not yet created. Stage 4+ work. Pure heightmap generators (flat, tilt, Gaussian, step, sphere cap, multi-bump, file-loaded, solder-bump-array). The solder-bump-array generator is the Chapter 5 application — should exist before Stage 6. Symmetric in role to `pattern_generator.py` but for the measurement side, not the projection side.
+- **Slider-driven GUI** (Stage 4+): the current architecture supports it cleanly. Both `Geometry` classes take all parameters as constructor args; the pipeline is pure functions over arrays. Changing a slider → new geometry instance → re-run pipeline. No hidden state. Live re-runs of the synthetic pipeline at 480×640 are millisecond-scale; full-res 1280×1024 unwrap is not.
 
 ---
 

@@ -141,14 +141,18 @@ Chapter 4 also covers:
 
 ---
 
-## 7. State of the Existing Notebook (Stage 1 Complete)
+## 7. State of the Project Through Stage 2
 
-The user's `Fringe_Projection_Python.ipynb` implements the math and now also includes the Stage 1 simulation-loop and strengthened validations:
+### Notebook (Stage 1 work, frozen as historical reference)
+
+The user's `Fringe_Projection_Python.ipynb` implements the math and includes the Stage 1 simulation-loop and strengthened validations:
 - Phase shifting, unwrapping, tilt fitting, tilt-flip correction, height reconstruction
 - Recovers a synthetic Gaussian to ~10⁻⁵ precision
 - `project()` function added (Stage 1.1) — Taylor-approximation forward model
 - Roadmap validations 1.2 / 1.3 done (consistency check + curvature cancellation on flat reference)
 - Strengthened validations 1-S.1 / 1-S.2 / 1-S.3 done (Taylor error bounded, parameter scaling verified, limit cases pass)
+
+The notebook is frozen as the source of truth for the regression fixture `tests/regression_data.npz`, which Stage 2 modules are tested against.
 
 ### Validation philosophy arrived at during Stage 1
 
@@ -162,6 +166,38 @@ This led to:
 - The Stage 1-S markdown summary explicitly documents this omission so a thesis examiner doesn't wonder if the test was forgotten.
 
 Real validation comes from (a) cross-implementation comparison (MATLAB, Three.js), (b) real hardware, or (c) analytical limit checks. Stage 1 covers (c). Stage 2's regression test will start (a). Stage 6 brings (b).
+
+### Stage 2 — Refactor into Python modules (Complete)
+
+Six task-prompts handled one at a time; one module per commit (plus chores). Final state: 12 tests, all passing, closing commit `b5b7342` tagged `stage-2-complete`.
+
+| Task | Module(s) | What landed |
+|---|---|---|
+| 2.1 | `geometry.py` + scaffolding | `Geometry` Protocol, `HybridGeometry` (default), `SymmetricGeometry` (cross-check). All-arg constructors. Regression fixture script + `tests/regression_data.npz`. |
+| 2.2 | `synthetic_fringes.py` | `project(input_phase, geometry, model='taylor')` + `synthesize_psi_stack`. Architectural lock: `project()` does not read `λ_eq`. |
+| 2.3 | `phase_shifting.py` + `unwrapping.py` | Generalized N-step PSI via `arctan2(-Σ I sin δ, Σ I cos δ)`. Operational `unwrap_2d` (row-then-column np.unwrap) + alternative `unwrap_2d_skimage`. |
+| 2.4 | `calibration.py` | `fit_tilt_plane` (2D lstsq), `compute_inverse_phase` (tilt-flip, Eq. 4-7). |
+| 2.5 | `reconstruction.py` | `phase_to_height` (dispatcher to geometry), `recover_object_height` (full pipeline composition). |
+| 2.5b | `calibration.py` (hotfix) | Added `fit_tilt_line_1d` to lift inline polyfit out of test code; documented 1D-vs-2D use-case split. |
+| 2.6 | `tests/test_pipeline_synthetic.py` | End-to-end integration test through public APIs only. `std_err < 2 × BASELINE_STD` and `H_rec0` matches fixture to `ATOL_PIPELINE`. |
+
+### Stage 2 architectural decisions
+
+These were made during refactor and bind future stages (also mirrored in PROJECT_CONTEXT.md Section 12):
+
+- **Module order swapped from PROJECT_CONTEXT Section 11**: calibration before reconstruction, so tests follow data flow.
+- **`project()` is `λ_eq`-independent**, locked by `test_project_is_lambda_eq_independent` (`atol=1e-15`). Both Geometry types produce bit-identical bias output. Stage 3's exact-form forward model must preserve this.
+- **Two non-interchangeable tilt fits in `calibration.py`**: `fit_tilt_plane` (2D, flat refs) vs `fit_tilt_line_1d` (1D, object self-cal). Diverge by ~4e-5 in height on off-center bumps.
+- **`recover_object_height` is operand-agnostic on `phi_calibration`** — caller decides self-cal vs cross-cal.
+- **Integration test does NOT close the inverse-grating loop.** Same tautology limit as Stage 1's omitted 1-S.4. Real validation needs cross-impl or hardware.
+
+### Tooling / housekeeping in Stage 2
+
+- Two-tier regression tolerance: `ATOL_ANALYTICAL = 1e-12` for analytical arrays, `ATOL_PIPELINE = 1e-8` for unwrap-pass-through outputs. Stops NumPy minor-version drift from breaking the suite spuriously.
+- `.npz` (not pickle) for regression fixtures — version-portable.
+- `.gitattributes` with `* text=auto eol=lf` to suppress Windows CRLF warnings.
+- `environment.yml` pins runtime + dev dependencies (Python 3.10, NumPy 2.2.6, pytest, etc.).
+- Two git-history rewrites at Stage 2 close: (a) purge `FPP Thesis/` PDFs from history (kept on disk, gitignored — Claude Code reads them locally, never pushed); (b) change commit authorship from auto-derived HBKU institutional identity to `Husam Al Ardah <152923640+HusamArdah@users.noreply.github.com>` (personal GitHub no-reply alias). Repo pushed to private GitHub: `HusamArdah/fringe-projection-3d`.
 
 ---
 
@@ -212,6 +248,7 @@ The user worked through the chapter step by step and these were the conceptual l
 
 - User had a friend building a separate **Three.js 3D simulation** of the lab geometry (separate from the Python pipeline). The `Projector_Geometry_Summary.docx` was prepared for that collaborator. The Three.js work is **complementary**, not duplicative — it's a geometric visualization of the physical setup; the Python work is the operational measurement pipeline.
 - User plans to add a virtual representation of the setup (live sliders for θ, a, M, etc. that drive the simulation and update results) at the end of the roadmap. Stage 4's PyQt6 GUI provides the foundation; the live-update slider tabs are a natural extension built after Stage 4 with mock hardware in place.
+- User plans to add a **test-surface library** (`src/test_surfaces.py`) as part of the slider GUI work. Pure heightmap generators: flat, tilt, Gaussian, step, sphere cap, multi-bump, file-loaded, and crucially a **solder-bump-array generator** (Chapter 5 application). The architecture already supports this — the pipeline consumes any `(H, W)` heightmap via `geometry.height_to_phase`. Decision deferred to Stage 4+.
 
 ---
 
@@ -225,7 +262,7 @@ The user worked through the chapter step by step and these were the conceptual l
 - Identified the gap in the existing notebook (missing `project()` function) — **closed in Stage 1**
 - Established that hardware-free development is the right starting approach until mounting hardware arrives
 - Built a roadmap (Stages 0–6) with this-week to-do items
-- **Stage 0 and Stage 1 completed**. Notebook has the `project()` function, all roadmap-mandated validations, and three independent strengthened validations.
+- **Stage 0, Stage 1, and Stage 2 completed.** Notebook has the `project()` function, all roadmap-mandated validations, and three independent strengthened validations. Stage 2 refactored the notebook into 6 tested src/ modules with a 12-test regression suite plus end-to-end integration test; closing commit `b5b7342` tagged `stage-2-complete` and pushed to private GitHub remote.
 - Validation philosophy formalized: simulation-only validation has fundamental limits (tautology if same formula appears on both sides); meaningful end-to-end testing requires hardware or cross-implementation.
 
 ---
@@ -240,6 +277,25 @@ The user prefers:
 - Practical code suggestions kept minimal
 
 The user pushes back when something feels redundant or tautological. This is a strength — Stage 1 ended up with a smaller, cleaner validation suite than originally proposed because of it.
+
+---
+
+## 13. Working Model with Claude Code (Established During Stage 2)
+
+The handoff pattern that worked across Stage 2's six tasks:
+
+1. **Strategy chat (this assistant) drafts the prompt.** Includes the architectural constraints, the exact tests to write, and the binding decisions Claude Code shouldn't relitigate.
+2. **User reviews and pastes into Claude Code (terminal).**
+3. **Claude Code summarizes back what it understands before writing code.** Catches misunderstandings cheaply.
+4. **Claude Code implements, runs tests, commits.** One module per commit. Surfaces deviations from spec inline with magnitude estimates rather than silently picking defaults.
+5. **User pastes Claude Code's diff + test output back to strategy chat for review.** Strategy chat flags architectural smells, scope creep, or weak tests.
+6. **User decides on adjustments.** Sometimes leads to follow-up commits (e.g., Stage 2.5b lifted inline test logic into `calibration.py`).
+
+Belt-and-suspenders verifications the user does in their own terminal (not Claude Code's) before any destructive operation:
+- Independent verification of git rewrites with own queries.
+- Confirmation that working-tree files match expectations after history operations.
+
+This separation kept Stage 2 honest: every commit was reviewed twice (Claude Code self-checks during implementation, strategy chat second-pass), and every destructive operation had a manual confirmation step before authorization.
 
 ---
 
