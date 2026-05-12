@@ -1,0 +1,33 @@
+# Conda environment for the Fringe Projection project.
+#
+# Create or update:
+#     conda env create -f environment.yml         # first time
+#     conda env update -f environment.yml --prune # after pulling changes
+#
+# Pinned to the versions currently installed in the working environment
+# (captured via `pip freeze`) for reproducibility. Loosen tildes/ranges
+# once the project stabilizes and CI verifies compatibility.
+name: fringe
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  # Numerics / imaging
+  - numpy=2.2.6
+  - scipy=1.15.3
+  - matplotlib=3.10.9
+  - scikit-image=0.25.2
+  # Notebook + execution tooling (needed for scripts/build_regression_fixtures.py)
+  - nbformat=5.10.4
+  - ipykernel=7.2.0
+  - jupyterlab=4.5.7
+  - notebook=7.5.6
+  # Dev / test
+  - pytest=9.0.3
+  # opencv-python is the pip distribution; conda-forge `opencv` is a different
+  # build with different __version__ semantics. Keep on pip to match what is
+  # already installed.
+  - pip
+  - pip:
+      - opencv-python==4.13.0.92
