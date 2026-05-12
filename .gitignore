@@ -27,5 +27,9 @@ data/captures/
 # against — keep it tracked even though *.npz is otherwise ignored.
 !tests/regression_data.npz
 
+# Copyrighted thesis chapters — kept locally for reference,
+# never tracked, never pushed.
+FPP Thesis/
+
 # Conda env
 *.conda
