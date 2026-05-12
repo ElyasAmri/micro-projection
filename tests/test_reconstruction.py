@@ -8,21 +8,18 @@ a. phase_to_height is a true dispatcher — its result is bit-identical to
 b. recover_object_height reproduces the notebook's H_rec0 to ATOL_PIPELINE
    when fed:
      - a synthesized PSI stack from phi3 = carrier + height_to_phase(H_obj)
-     - phi_calibration = inline 1D polyfit on phi3_unwrapped.mean(axis=0),
-       tiled to (H, W), bit-for-bit matching notebook cell 18.
+     - phi_calibration = calibration.fit_tilt_line_1d(phi3_unwrapped)[0]
+       (1D polyfit on row-mean, tiled — bit-for-bit notebook cell 18)
      - the canonical 4-step deltas
      - SymmetricGeometry() (matches the fixture's provenance)
    The cell-20 DC alignment to H_obj.mean() is applied in the test, not
    inside the function, because it requires ground truth.
 
-   Why not use calibration.fit_tilt_plane here: that function does a 2D
-   lstsq fit, while the notebook does a 1D polyfit on the row-mean. For
-   phi3_unwrapped (which contains a centered Gaussian bump whose center
-   sits ~0.5 px off the grid centroid), the two fits diverge by enough
-   to produce a ~4e-5 difference in H_rec — far above ATOL_PIPELINE.
-   calibration.fit_tilt_plane's correctness is verified independently
-   in test_calibration.py; this test exercises recover_object_height as
-   a pipeline with notebook-faithful inputs.
+   Why fit_tilt_line_1d and not fit_tilt_plane here: see the calibration
+   module docstring for the use-case split. The 2D plane fit diverges
+   from the 1D row-mean fit by ~4e-5 in H_rec on this fixture (Gaussian
+   bump center sits ~0.5 px off the grid centroid), exceeding
+   ATOL_PIPELINE.
 
 c. HybridGeometry round-trip identity check:
    h -> height_to_phase -> phase_to_height -> h, to ATOL_ANALYTICAL.
@@ -35,6 +32,7 @@ import numpy as np
 
 from conftest import ATOL_ANALYTICAL, ATOL_PIPELINE
 import reconstruction
+from calibration import fit_tilt_line_1d
 from geometry import HybridGeometry, SymmetricGeometry
 from synthetic_fringes import synthesize_psi_stack
 
@@ -71,12 +69,10 @@ def test_recover_object_height_matches_fixture(regression_data):
     deltas = [0.0, np.pi / 2.0, np.pi, 3.0 * np.pi / 2.0]
     stack = synthesize_psi_stack(phi3, deltas)
 
-    # Match notebook cell 18 bit-for-bit: 1D polyfit on phi3_unwrapped's
-    # row-mean, then np.tile to (H, W). Not via calibration.fit_tilt_plane
-    # (which is 2D lstsq) — see module docstring for the divergence.
-    phi3_profile = regression_data["phi3_unwrapped"].mean(axis=0)
-    m3, c3 = np.polyfit(x, phi3_profile, 1)
-    phi_calibration = np.tile(m3 * x + c3, (H, 1))
+    # Match notebook cell 18 bit-for-bit via calibration.fit_tilt_line_1d
+    # (1D polyfit on row-mean, tiled). NOT fit_tilt_plane — see the
+    # calibration module docstring for why the 2D fit diverges here.
+    phi_calibration, _ = fit_tilt_line_1d(regression_data["phi3_unwrapped"])
 
     h_rec = reconstruction.recover_object_height(
         stack, phi_calibration, deltas, geom
