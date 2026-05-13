@@ -1,25 +1,37 @@
-"""main_window.py — Stage 4a task 2 GUI skeleton (layout only).
+"""main_window.py — Stage 4a task 3 GUI: surface controls wired to 3D preview.
 
 QMainWindow with horizontal splitter:
 - Left pane: surface selector + per-surface param sliders, geometry
   sliders, PSI step count, locked-hardware info panel.
-- Right pane: pyqtgraph OpenGL view with a placeholder grid.
+- Right pane: SurfacePreview (3D heightmap render with viridis
+  colormap).
 
-Behavior wired in this commit
------------------------------
-Exactly ONE: the surface QComboBox switches the QStackedWidget page so
-the user can see each surface type's param sliders. Every other widget
-(all sliders, the PSI spinbox, the info panel, the 3D view) is inert;
-they emit signals that nothing listens to.
+Behavior wired in this commit (Stage 4a task 3)
+-----------------------------------------------
+- Surface QComboBox switches the QStackedWidget page (carried over
+  from task 2).
+- Surface QComboBox change ALSO triggers `_refresh_surface_preview`
+  (new), which reads the current page's slider values and pushes a
+  freshly-computed heightmap into the 3D view.
+- Every surface-param slider (8 total across 4 pages) triggers
+  `_refresh_surface_preview` via the new `LabeledFloatSlider.valueChanged`
+  signal.
 
-No math-layer imports yet — that's task 3.
+Still inert (deferred to task 4)
+--------------------------------
+Geometry sliders (theta_projector, theta_camera, projector_distance),
+PSI step count, info-panel labels.
+
+First math-module import: `src.test_surfaces`. The task-2 "no math
+imports" constraint is deliberately lifted here — wiring those
+generators into the GUI is the point of this task.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-import pyqtgraph.opengl as gl
-from PyQt6.QtCore import Qt
+import numpy as np
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QGridLayout,
@@ -34,6 +46,21 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from src.gui.surface_preview import SurfacePreview
+from src.test_surfaces import (
+    make_flat,
+    make_gaussian,
+    make_sphere,
+    make_step,
+    make_tilt,
+)
+
+
+# Locked at Stage 4a launch defaults; revisit when info panel exposes
+# hardware-derived values.
+SURFACE_SHAPE: tuple[int, int] = (480, 640)
+SURFACE_PIXEL_SIZE_MM: float = 0.1
 
 
 # Locked hardware values for the info panel (PROJECT_CONTEXT Sec 2 +
@@ -60,7 +87,14 @@ class LabeledFloatSlider(QWidget):
     factor (derived from `step`) under the hood and exposes float
     `value()` / `set_value()` accessors. The value label updates
     automatically as the slider is dragged.
+
+    Emits `valueChanged(float)` whenever the underlying slider moves.
+    Task-3 callers (e.g., `MainWindow._refresh_surface_preview`)
+    connect to this signal rather than the inner QSlider so the
+    int<->float conversion stays encapsulated.
     """
+
+    valueChanged = pyqtSignal(float)
 
     def __init__(
         self,
@@ -103,6 +137,7 @@ class LabeledFloatSlider(QWidget):
     def _refresh_value_label(self, int_val: int) -> None:
         v = int_val / self._scale
         self._value_label.setText(f"{v:.{self._decimals}f}{self._suffix}")
+        self.valueChanged.emit(v)
 
     def value(self) -> float:
         """Current slider value as a float."""
@@ -122,6 +157,10 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._build_view_3d())
         splitter.setSizes([400, 880])
         self.setCentralWidget(splitter)
+
+        self._wire_surface_refresh()
+        # Initial render — pushes the default Gaussian into the view.
+        self._refresh_surface_preview()
 
     # ------------------------------------------------------------------
     # Left pane — control panel
@@ -257,15 +296,80 @@ class MainWindow(QMainWindow):
         return box
 
     # ------------------------------------------------------------------
-    # Right pane — 3D view placeholder
+    # Right pane — 3D surface preview
     # ------------------------------------------------------------------
     def _build_view_3d(self) -> QWidget:
-        view = gl.GLViewWidget()
-        view.setBackgroundColor((30, 30, 30))
-        view.setCameraPosition(distance=80)
-        grid_item = gl.GLGridItem()
-        grid_item.setSize(x=100, y=100)
-        grid_item.setSpacing(x=5, y=5)
-        view.addItem(grid_item)
-        self.view_3d = view
-        return view
+        self.view_3d = SurfacePreview()
+        return self.view_3d
+
+    # ------------------------------------------------------------------
+    # Surface refresh wiring (task 3)
+    # ------------------------------------------------------------------
+    def _wire_surface_refresh(self) -> None:
+        """Connect dropdown + every surface slider to the refresh slot.
+
+        Sliders on non-visible pages still emit signals when (rarely)
+        their values change programmatically; the slot reads only the
+        currently-visible page's values, so non-visible emissions are
+        harmless no-ops.
+        """
+        self.surface_combo.currentIndexChanged.connect(
+            self._refresh_surface_preview
+        )
+        for slider in self._all_surface_sliders():
+            slider.valueChanged.connect(self._refresh_surface_preview)
+
+    def _all_surface_sliders(self) -> list[LabeledFloatSlider]:
+        return [
+            self.tilt_slope_x,
+            self.tilt_slope_y,
+            self.gaussian_amplitude,
+            self.gaussian_sigma,
+            self.step_height,
+            self.step_edge_x,
+            self.sphere_cap_height,
+            self.sphere_footprint,
+        ]
+
+    def _refresh_surface_preview(self, *_args: object) -> None:
+        """Recompute the heightmap from current controls and push to view.
+
+        Accepts any number of signal args (`currentIndexChanged(int)`
+        and `valueChanged(float)` both connect here) and discards them.
+        """
+        heightmap = self._compute_current_heightmap()
+        self.view_3d.update_heightmap(heightmap)
+
+    def _compute_current_heightmap(self) -> np.ndarray:
+        """Dispatch on current dropdown text -> matching make_* call."""
+        name = self.surface_combo.currentText()
+        shape = SURFACE_SHAPE
+        ps = SURFACE_PIXEL_SIZE_MM
+
+        if name == "Flat":
+            return make_flat(shape, ps)
+        if name == "Tilt":
+            return make_tilt(
+                shape, ps,
+                slope_x=self.tilt_slope_x.value(),
+                slope_y=self.tilt_slope_y.value(),
+            )
+        if name == "Gaussian":
+            return make_gaussian(
+                shape, ps,
+                amplitude_mm=self.gaussian_amplitude.value(),
+                sigma_mm=self.gaussian_sigma.value(),
+            )
+        if name == "Step":
+            return make_step(
+                shape, ps,
+                height_mm=self.step_height.value(),
+                edge_x_mm=self.step_edge_x.value(),
+            )
+        if name == "Sphere":
+            return make_sphere(
+                shape, ps,
+                cap_height_mm=self.sphere_cap_height.value(),
+                footprint_radius_mm=self.sphere_footprint.value(),
+            )
+        raise RuntimeError(f"unknown surface name: {name!r}")
