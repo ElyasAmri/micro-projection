@@ -31,6 +31,8 @@ The user wants to deeply understand the theory and how it maps to hardware **bef
 
 The thesis chapter author is **the thesis author**. Equations: "Eq. 2-X" → Chapter 2; "Eq. 4-X" → Chapter 4.
 
+The chapters in the reference folder are **the math basis for the inverse fringe projection method, not a template for a thesis the user is writing.** The user's own paper comes later, if at all.
+
 ---
 
 ## 3. Hardware Identification (Confirmed via Photos)
@@ -50,7 +52,7 @@ The thesis chapter author is **the thesis author**. Equations: "Eq. 2-X" → Cha
 - 132–182 mm working distance (focusable)
 - < 0.2° telecentricity
 - 1/2" sensor format
-- **Confirmed telecentric**
+- **Confirmed telecentric**. NOTE (Stage 4 clarification): telecentric only locks the lens magnification; the camera body's physical tilt angle is independent. "Telecentric ≠ mounted vertical." Camera arm tilt is a separate parameter (θ_camera in Eq. 2-51).
 
 ### Projector: Pico Genie Impact 2.0 Plus Elite (placeholder)
 - Identified from "Pico Genie Impact 2 Plus Elite" label on bottom of unit
@@ -84,7 +86,7 @@ The thesis chapter author is **the thesis author**. Equations: "Eq. 2-X" → Cha
 - Fiji/ImageJ (quick fringe inspection)
 - VS Code with extensions
 - Gemini Code Assist (recommend disabling for this project to avoid conflict)
-- Claude Code (in VS Code)
+- Claude Code (in VS Code) — Claude Opus 4.7, 1M context as of Stage 4 start
 - MATLAB + Image Processing Toolbox + Simulink (for cross-validation)
 - Chocolatey, Node.js, Git
 - MeshLab + CloudCompare (for 3D mesh viewing later)
@@ -93,6 +95,7 @@ The thesis chapter author is **the thesis author**. Equations: "Eq. 2-X" → Cha
 
 ### Pending (add to IT list when needed)
 - **Spinnaker SDK + PySpin** — needed for FLIR camera; needs admin install
+- **PyQt6** + **PyQtGraph** — needed for Stage 4 GUI
 
 ---
 
@@ -101,17 +104,20 @@ The thesis chapter author is **the thesis author**. Equations: "Eq. 2-X" → Cha
 ### How we got there
 Initially user asked whether the system was telecentric or not. Through several rounds of clarification:
 
-1. Camera arm telecentric: ✅ confirmed (Edmund Optics lens, hardware-locked)
-2. Projector arm: ❌ Pico Genie is not telecentric
+1. Camera arm lens telecentric: ✅ confirmed (Edmund Optics lens, hardware-locked)
+2. Projector arm lens: ❌ Pico Genie is not telecentric
 3. Future projector: ❓ unknown until hardware arrives
-4. Therefore: **HYBRID** is the only honest description
+4. Therefore: **HYBRID in lens type** is the only honest description
 5. Build code for hybrid; it gracefully degrades to symmetric-telecentric if upgraded projector turns out to be telecentric
 
+**Stage 4 clarification (important):** "Hybrid" refers to *lens type only* (telecentric vs non-telecentric on each arm). The arm *angles* (θ_projector, θ_camera) are independent of lens type — both can be tilted at any angle, both arm tilts contribute to triangulation per Eq. 2-51. Stage 2's framing implicitly conflated these.
+
 ### Why this matters
-- Chapter 2 §2.3.4 derives all math under the **symmetric** non-telecentric assumption (both arms identical)
+- Chapter 2 §2.3.4 derives all math under the **symmetric** non-telecentric assumption (both arms identical: same M, same θ, same a, same b)
 - Eq. 2-54 (inverse grating period) was derived under that assumption
 - For your hybrid system, Eq. 2-54's exact form isn't quite right — but the **method** still works
 - The chapter's Eq. 2-54 isn't used directly anyway. **In practice, the inverse pattern is computed from empirical flat-reference calibration**, not from theoretical formulas. This is what Chapter 4 does.
+- **The two-angle form (Eq. 2-51) handles arbitrary arm angles for λ_eq**, which is what the GUI needs.
 
 ---
 
@@ -121,7 +127,7 @@ The single most important insight from Chapter 4:
 
 > *"It is difficult to measure the system parameters accurately. Instead, the system is calibrated using a standard VLSI step height."* — Chapter 4 §4.3.1
 
-This means you don't need θ, projection-arm M, or the internal projector parameter `a`. The "tilt-flip trick" of §4.3.1 computes the inverse pattern from calibration data alone:
+This means **for the inverse-grating bias correction**, you don't need θ, projection-arm M, or the internal projector parameter `a`. The "tilt-flip trick" of §4.3.1 computes the inverse pattern from calibration data alone:
 
 ```
 1. Project uniform fringes onto flat reference
@@ -133,6 +139,8 @@ This means you don't need θ, projection-arm M, or the internal projector parame
 ```
 
 φ₂ is then used to generate the pre-distorted projection pattern (Eq. 4-5). When projected through the same biased system, the pre-distortion and the system bias cancel. Result: clean uniform fringes (Eq. 4-9), regardless of what the underlying system parameters actually are.
+
+**However**, this only handles the bias-correction step. The phase-to-height conversion (λ_eq, Eq. 2-51) still depends on both arm angles. In real hardware, λ_eq is calibrated empirically against a step gauge, sidestepping the need to measure both angles precisely. In simulation, λ_eq is computed from Eq. 2-51 directly because both angles are known by definition (they're sliders).
 
 Chapter 4 also covers:
 - Repeating the bias measurement 50× with phase offsets and surface position changes for averaging
@@ -161,9 +169,8 @@ The user pushed back hard on tests that compare two quantities both derived from
 > *Simulation validation can only catch bugs where the test path uses different logic than the thing being tested. Tests that share the same formula on both sides are tautological.*
 
 This led to:
-- Recognition that Stage 1.2 (`project(uniform) == phi1`) is operationally a typo-guard, not a physics test (still kept because the roadmap requires it).
-- Recognition that an originally drafted Stage 1-S.4 cell (end-to-end recovery via explicit `project()` chain) was redundant with what cells 14–20 already validate, since the same analytical bias formula appears on both sides of the cancellation in simulation. **It was deliberately omitted.** The strongest possible test of this kind requires real hardware (Stage 6), where the projector's actual bias may differ from the calibration-extracted bias.
-- The Stage 1-S markdown summary explicitly documents this omission so anyone reading the notebook later doesn't wonder if the test was forgotten.
+- Recognition that Stage 1.2 (`project(uniform) == phi1`) is operationally a typo-guard, not a physics test.
+- Recognition that an originally drafted Stage 1-S.4 cell (end-to-end recovery via explicit `project()` chain) was redundant with what cells 14–20 already validate. **It was deliberately omitted.**
 
 Real validation comes from (a) cross-implementation comparison (MATLAB, Three.js), (b) real hardware, or (c) analytical limit checks. Stage 1 covers (c). Stage 2's regression test will start (a). Stage 6 brings (b).
 
@@ -175,63 +182,215 @@ Six task-prompts handled one at a time; one module per commit (plus chores). Fin
 |---|---|---|
 | 2.1 | `geometry.py` + scaffolding | `Geometry` Protocol, `HybridGeometry` (default), `SymmetricGeometry` (cross-check). All-arg constructors. Regression fixture script + `tests/regression_data.npz`. |
 | 2.2 | `synthetic_fringes.py` | `project(input_phase, geometry, model='taylor')` + `synthesize_psi_stack`. Architectural lock: `project()` does not read `λ_eq`. |
-| 2.3 | `phase_shifting.py` + `unwrapping.py` | Generalized N-step PSI via `arctan2(-Σ I sin δ, Σ I cos δ)`. Operational `unwrap_2d` (row-then-column np.unwrap) + alternative `unwrap_2d_skimage`. |
+| 2.3 | `phase_shifting.py` + `unwrapping.py` | Generalized N-step PSI via `arctan2(-Σ I sin δ, Σ I cos δ)`. |
 | 2.4 | `calibration.py` | `fit_tilt_plane` (2D lstsq), `compute_inverse_phase` (tilt-flip, Eq. 4-7). |
 | 2.5 | `reconstruction.py` | `phase_to_height` (dispatcher to geometry), `recover_object_height` (full pipeline composition). |
-| 2.5b | `calibration.py` (hotfix) | Added `fit_tilt_line_1d` to lift inline polyfit out of test code; documented 1D-vs-2D use-case split. |
-| 2.6 | `tests/test_pipeline_synthetic.py` | End-to-end integration test through public APIs only. `std_err < 2 × BASELINE_STD` and `H_rec0` matches fixture to `ATOL_PIPELINE`. |
+| 2.5b | `calibration.py` (hotfix) | Added `fit_tilt_line_1d` to lift inline polyfit out of test code. |
+| 2.6 | `tests/test_pipeline_synthetic.py` | End-to-end integration test through public APIs only. |
 
-### Stage 2 architectural decisions
+### Stage 2 architectural decisions (with Stage 4 corrections noted)
 
 These were made during refactor and bind future stages (also mirrored in PROJECT_CONTEXT.md Section 12):
 
 - **Module order swapped from PROJECT_CONTEXT Section 11**: calibration before reconstruction, so tests follow data flow.
-- **`project()` is `λ_eq`-independent**, locked by `test_project_is_lambda_eq_independent` (`atol=1e-15`). Both Geometry types produce bit-identical bias output. Stage 3's exact-form forward model preserves this.
-- **Two non-interchangeable tilt fits in `calibration.py`**: `fit_tilt_plane` (2D, flat refs) vs `fit_tilt_line_1d` (1D, object self-cal). Diverge by ~4e-5 in height on off-center bumps.
-- **`recover_object_height` is operand-agnostic on `phi_calibration`** — caller decides self-cal vs cross-cal.
-- **Integration test does NOT close the inverse-grating loop.** Same tautology limit as Stage 1's omitted 1-S.4. Real validation needs cross-impl or hardware.
+- **`project()` is `λ_eq`-independent**, locked by `test_project_is_lambda_eq_independent` (`atol=1e-15`). Both Geometry types produce bit-identical bias output. Stage 3's exact-form forward model preserves this. Stage 3.5 will preserve it too.
+- **Two non-interchangeable tilt fits in `calibration.py`**: `fit_tilt_plane` (2D, flat refs) vs `fit_tilt_line_1d` (1D, object self-cal).
+- **`recover_object_height` is operand-agnostic on `phi_calibration`**.
+- **Integration test does NOT close the inverse-grating loop.** Same tautology limit as Stage 1's omitted 1-S.4.
+- **Stage 2 Decision 3 (one-angle hybrid λ_eq) is SUPERSEDED by Stage 3.5** — see Section 7c below for the full rationale. The Stage 2 form `λ_eq = Mp / tan(θ_projector)` implicitly assumed `θ_camera = 0°` by conflating "telecentric lens" with "vertically mounted camera." Stage 4 surfaced this and upgrades to the full Eq. 2-51 two-angle form.
 
 ### Tooling / housekeeping in Stage 2
 
-- Two-tier regression tolerance: `ATOL_ANALYTICAL = 1e-12` for analytical arrays, `ATOL_PIPELINE = 1e-8` for unwrap-pass-through outputs. Stops NumPy minor-version drift from breaking the suite spuriously.
-- `.npz` (not pickle) for regression fixtures — version-portable.
-- `.gitattributes` with `* text=auto eol=lf` to suppress Windows CRLF warnings.
-- `environment.yml` pins runtime + dev dependencies (Python 3.10, NumPy 2.2.6, pytest, etc.).
-- Two git-history rewrites at Stage 2 close: (a) purge `FPP Thesis/` PDFs from history (kept on disk, gitignored — Claude Code reads them locally, never pushed); (b) change commit authorship from auto-derived HBKU institutional identity to `Husam Al Ardah <152923640+HusamArdah@users.noreply.github.com>` (personal GitHub no-reply alias). Repo pushed to private GitHub: `HusamArdah/fringe-projection-3d`.
+- Two-tier regression tolerance: `ATOL_ANALYTICAL = 1e-12`, `ATOL_PIPELINE = 1e-8`.
+- `.npz` for regression fixtures.
+- `.gitattributes` with `* text=auto eol=lf`.
+- `environment.yml` pins Python 3.10, NumPy 2.2.6, pytest, etc.
+- Git-history rewrites at Stage 2 close: purged `FPP Thesis/` PDFs from history; updated commit authorship.
 
 ### Stage 3 — Exact forward model (Complete)
 
-Two task-prompts handled across two commits. Final state: 17 tests, all passing, closing commit `e5201fb` tagged `stage-3-complete`.
+Two task-prompts across two commits. Final state: 17 tests, all passing, closing commit `e5201fb` tagged `stage-3-complete`.
 
 | Task | File(s) | What landed |
 |---|---|---|
-| 3.1 | `src/synthetic_fringes.py`, `tests/test_synthetic_fringes.py` | `project(model='exact')` implemented per notebook cell 25's `+u` denominator form: `phi_exact(x) = (2π/p) · x / (1 + 2x·tan(θ)/a)`. Four new unit tests: x=0 agreement (atol=1e-15), cell-25 truncation ratio reproduction (ratio = 3.40 matches notebook), `λ_eq`-independence under exact branch (atol=1e-15), denom-positivity smoke test. `ValueError` guard if denominator ≤ 0. Commit `b752f47`. |
-| 3 close | `tests/test_pipeline_synthetic.py` | Integration test parametrized over `model in {'taylor', 'exact'}`. Taylor branch: existing assertions preserved (std bar + H_rec0 fixture match). Exact branch: asserts only `isfinite(std_err)` and `isfinite(h_rec0)`; std_err printed informationally. `phi2` fixture match gated under Taylor branch. Commit `e5201fb`. Tag: `stage-3-complete`. |
+| 3.1 | `src/synthetic_fringes.py`, `tests/test_synthetic_fringes.py` | `project(model='exact')` per cell 25's `+u` denominator: `phi_exact(x) = (2π/p)·x / (1 + 2x·tan(θ)/a)`. 4 new unit tests. ValueError guard on denom ≤ 0. Commit `b752f47`. |
+| 3 close | `tests/test_pipeline_synthetic.py` | Integration test parametrized over `model in {'taylor', 'exact'}`. Exact branch: only `isfinite` checks; std_err printed informationally. Commit `e5201fb`. Tag: `stage-3-complete`. |
 
-Roadmap sub-tasks 3.2 (comparison script) and 3.3 (standalone cancellation test) were deliberately not implemented as written:
-- **3.2 skipped.** The model toggle is the deliverable. Cell 25 + the unit test already capture the diff numbers. A standalone `scripts/compare_forward_models.py` adds nothing the toggle doesn't.
-- **3.3 folded into the parametrized integration test.** Both models run end-to-end without crashing; that's what the cancellation test would have demonstrated, in a more useful form.
+Roadmap sub-tasks 3.2 and 3.3 deliberately reframed (skipped / folded in).
 
 ### Stage 3 architectural decisions
 
-(mirrored in PROJECT_CONTEXT.md Sec 12)
-
-- **`+u` denominator is the project's operational sign convention.** Textbook Ch.4 Eq. 4-6 has `−u`; notebook cell 25 documents the rationale for treating this as a typo (cf. the missing `2π` in Eq. 4-2). The Taylor expansion of `1/(1+u)` produces a `−` bias that matches the current Taylor branch's `−` bias; a `−u` denominator would produce a `+` bias and disagree. Documented in the exact branch's docstring.
-- **Default stays `model='taylor'`.** Flip deferred until a driver appears.
-- **Validation reframed as informational, not gatekept.** No numerical bound on the exact branch's `std_err` in the integration test. Any bound would be arbitrary today and would shift when hardware params change. Both models are user-togglable forward models, not competing implementations to be ranked.
-- **Object leg still synthesizes `phi3` analytically.** As a consequence, the parametrized integration test's `std_err` is identical for both models (1.764505e-05 under defaults) — the model toggle only affects the calibration leg. This is documented honestly in the test's module docstring rather than papered over. A genuine end-to-end test of "exact cancels exact-bias" would require closing the inverse-grating loop, which has the same tautology limit identified in Stage 1.
-- **Denom-positivity guard.** `ValueError` with `p, theta_projector, a, x_range` named if denom goes non-positive. Doesn't fire under defaults (`denom ∈ [1.0, 1.17]` for both Hybrid and Symmetric).
-
-### Validation philosophy update during Stage 3
-
-Stage 1's "simulation validation is limited by tautology" carried forward and sharpened in Stage 3. The reframe — "both models are togglable, neither needs to be defended against the other" — collapsed the original 3.2 and 3.3 sub-tasks into nothing once it was noticed that strict validation criteria would just be arbitrary thresholds masquerading as rigor. The informational-print + `isfinite` pattern is the right shape for "user-facing toggle, not gated implementation." The user pushed back specifically on a draft `std_err < 10 * BASELINE_STD` bound for the exact branch and got it dropped — the resulting test stays useful across hardware changes without relitigation.
+- **`+u` denominator is the project's operational convention.** Textbook Ch.4 Eq. 4-6 has `−u`; notebook cell 25 documents the typo.
+- **Default stays `model='taylor'`.**
+- **Validation reframed as informational, not gatekept.**
+- **Object leg still synthesizes `phi3` analytically.** Documented honestly in the test docstring.
 
 ### Tooling / housekeeping in Stage 3
 
-- No new dependencies, no fixture regeneration, no schema changes.
-- Notebook untouched (cell 25 remains the spec the src/ port mirrors).
-- Test count: 12 → 17 (4 new unit tests + 1 new parametrization ID on the existing integration test).
-- Local commits ahead of origin/main at Stage 3 close: 2 (`b752f47`, `e5201fb`) + the tag `stage-3-complete` on `e5201fb`. Push deferred to user's discretion.
+- Stage 3 close commits: `b752f47`, `e5201fb`, `3716687` (docs). Tag `stage-3-complete` on `e5201fb`. All pushed.
+
+---
+
+## 7a. Stage 4 Planning (this strategy chat — Stage 4 pre-implementation)
+
+### What the GUI is, in plain words
+
+A simulator that operates as a **digital twin** of the user's lab setup. The user adjusts hardware-realistic controls and sees both a scientific result (true vs. recovered height with error map) and a spatial result (full 3D lab setup the user can orbit around). The point is to validate the math under different parameter regimes **before** the real hardware is fully built and mounted.
+
+### Stage 4 sequence (planned)
+
+- **Stage 3.5 (pre-task):** math layer upgrade to two-angle λ_eq (Eq. 2-51). One commit. See Section 7c.
+- **Stage 4a:** surface library + GUI + recovered-height view (the scientific tool)
+- **Stage 4b:** lab setup view (the spatial visualization)
+
+Each stage 4 sub-stage ships as its own tag (`stage-4a-complete`, `stage-4-complete`). Build the useful one first; the pretty one second. Math modules from Stages 2–3 are called by the GUI, not modified (except for the Stage 3.5 pre-task).
+
+### Final slider/control list (locked after long planning discussion)
+
+Mirrored in PROJECT_CONTEXT.md Sec 12. Five controls plus a surface dropdown:
+
+- Surface type (flat / tilt / Gaussian / step / sphere) + per-surface params
+- **θ_projector** slider (projector arm tilt from surface normal)
+- **θ_camera** slider (camera arm tilt from surface normal — independent of projector)
+- Projector distance from surface slider — **lab-design tool only**, does not affect chapter's bias math
+- PSI step count dropdown (4 or 8)
+
+Everything else (M, `a`, `p`, camera distance, FOV, throw ratio, λ_eq, model='taylor', resolution) is locked at hardware values and shown in a read-only info panel.
+
+**Degenerate case handling:** when `tan(θ_proj) + tan(θ_cam) → 0`, λ_eq → ∞ → "no height sensitivity." GUI shows clear warning, grays out the recovered-height view.
+
+### The reasoning trail (preserve this — easy to forget; it took many turns to get clean)
+
+The slider list emerged from peeling back five false starts. Recording them so a fresh chat doesn't re-walk the same ground:
+
+**False start 1: "M as a slider to explore distance changes."** Wrong because the camera lens is telecentric — M and distance are independent within the working distance range (132–182 mm). Moving the camera changes focus, not magnification or FOV. M is locked at 0.09× regardless of camera position.
+
+**False start 2: "Projector M and projector distance are coupled."** Wrong framing. Projectors don't have an "M" in the chapter's framework. They have `a` (internal grating-to-lens distance) and a throw ratio (lab-side). The chapter's M refers to the camera arm only (Eq. 2-41: `M = l/b` where l is camera-to-surface distance and b is camera-to-sensor distance).
+
+**False start 3: "Projector throw distance can drive `a` via the thin-lens equation."** Mathematically derivable (`a = f·D/(D−f)`), but this is image-side optics — the wrong `a`. The chapter's `a` is the **internal** distance from the DMD chip to the projector lens, which is **fixed by the projector hardware**. Moving the projector in the lab does NOT change `a`.
+
+**False start 4: "Symmetric assumption means projector distance must equal camera distance."** The symmetric form in Figure 4-4 (`l_p = l_k`, `a = b`, `θ_1 = θ_2`) is an expository convenience in the chapter, not a physical requirement. The tilt-flip method (§4.3.1) absorbs whatever bias the actual setup produces. Asymmetric distances are fine; the math handles them.
+
+**False start 5 (the biggest one, surfaced late in planning): "Telecentric camera lens means θ_camera = 0° (camera vertical)."** This was baked into Stage 2 Decision 3 (`λ_eq = Mp / tan(θ_projector)`). It was wrong. Telecentric only locks the lens's magnification (M is constant regardless of object distance, which is the property that eliminates lens-side perspective bias). The camera *body* can be mounted at any tilt angle relative to the surface — that's an independent mechanical parameter. The chapter's Eq. 2-51 takes both θ_projector and θ_camera as separate inputs, and the user's setup actually has the camera tilted at some non-zero angle (the lens being telecentric doesn't dictate the mount angle).
+
+**What survived all five false starts:**
+
+- **Camera lens M is locked by telecentric lens spec.** No slider for M.
+- **`a` is fixed inside the projector.** No slider.
+- **Projector distance moves projector body in 3D space but doesn't change bias math.** Slider kept for lab-design intuition.
+- **Both arm angles (θ_projector and θ_camera) are independent sliders.** Both contribute to triangulation via Eq. 2-51. Either or both can be zero (resulting in degenerate λ_eq → ∞).
+- **PSI step count** is a measurement-protocol toggle, not a hardware property.
+
+### Two 3D views
+
+The user wanted both:
+
+1. **Recovered-height view** (Stage 4a): standard scientific 3D surface plot showing true vs recovered + error map. Mouse rotate/zoom. Updates live when sliders move.
+
+2. **Lab setup view** (Stage 4b): 3D scene of the physical setup — camera body, projector body, test surface, projection cone, viewing cone. **User rotates around the entire scene** like rotating a CAD model. Updates live as θ sliders and projector-distance sliders move (projector body tilts and translates, camera body tilts).
+
+The user considered embedding their Three.js collaborator's existing lab visualization via Qt-WebEngine to avoid rebuilding it in Python, but **explicitly rejected this** in favor of building the lab view native in PyQt6 for full ownership and tighter integration with the controls.
+
+### Why MockCamera / MockProjector got deferred
+
+PROJECT_CONTEXT Sec 7.3 designs the hardware boundary as `Camera`/`Projector` Protocols with `MockCamera`/`MockProjector` synthetic implementations. The roadmap puts these in Stage 4. **The user opted to defer them entirely to Stage 5/6.**
+
+Rationale (user's own framing, paraphrased): *it's better to have a working theoretical simulation that matches hardware specs first, and then design the hardware abstraction when the real hardware is in hand and its actual SDK calls / frame formats / timing are known. Designing protocols against unknown hardware is premature.*
+
+### Hardware values for the GUI's info panel (locked at planning, real where known)
+
+| Quantity | Value | Status |
+|---|---|---|
+| Camera M | 0.09× | Real (Edmund Optics #58-259 spec) |
+| Camera-to-surface distance | 157 mm | Real (middle of 132–182 mm WD range) |
+| Camera FOV | 68 × 55 mm | Derived from real specs |
+| Pixel pitch on surface | ~53 µm | Derived from real specs |
+| Sensor | 1280 × 1024 at 4.8 µm | Real (FLIR Blackfly spec) |
+| Projector throw ratio | 1.2:1 | Real (Pico Genie spec) |
+| Projector distance (default) | 82 mm | Computed: 68 mm × 1.2 (matches projector FOV to camera FOV) |
+| `a` (projector internal) | 2000 px | Placeholder until measured |
+| `p` (fringe period) | placeholder | Placeholder until measured |
+| θ_projector (default tilt) | 15° | Placeholder until mount geometry settled |
+| θ_camera (default tilt) | 15° | Placeholder until mount geometry settled (default = symmetric for fixture compatibility) |
+
+**Both `HybridGeometry` and `SymmetricGeometry` defaults must update in lockstep** when real hardware arrives, or `test_project_is_lambda_eq_independent` silently breaks.
+
+### 3D viewer backend decision
+
+**PyQtGraph (OpenGL)** is the strong default for both views. Reasons: fast live updates needed for slider response, decent orbital camera built in, single dependency for both views. Matplotlib 3D considered and rejected (too slow). VTK/Mayavi considered and rejected (overkill).
+
+### Resolution decision
+
+Locked at 480×640 for live updates. Full-res toggle deferred.
+
+---
+
+## 7b. Stage 4 critical discoveries (what changed in our understanding during planning)
+
+These are the substantive mid-conversation discoveries that the planning history is worth preserving for. Each one corrected a previous-stage assumption or clarified a chapter equation.
+
+### The "telecentric = vertical camera" conflation (biggest discovery)
+
+For the entire planning session leading up to the slider list, I (the strategy assistant) was working under an implicit assumption that turned out to be wrong: that the camera being telecentric meant it was mounted vertical (looking straight down at the surface). This wasn't anywhere in the chapter — it was a residual assumption from Stage 2 Decision 3.
+
+The user surfaced this by repeatedly asking "what about the projector angle?" and "can I have both vertical?" Their physical intuition (different from textbook chapter framing) was that **both arms are independently mountable** — telecentric only means M is constant. The chapter's Fig. 2-10 shows θ₁ and θ₂ as separate parameters, and Eq. 2-51 takes both. Stage 2 had collapsed θ_camera to zero based on telecentric reasoning that was just wrong.
+
+This is the kind of discovery that's invisible until someone asks the right question. The user did. Strategy chat should have caught it earlier, but didn't until the user pushed multiple times.
+
+**Concrete fix:** Stage 3.5 pre-task before Stage 4. Math layer gets θ_camera as an explicit constructor arg. λ_eq formula uses Eq. 2-51 directly. Stage 2 Decision 3 explicitly superseded.
+
+### Eq. 2-51 is the right formula, not Eq. 4-11
+
+The user asked "what does the paper have? It has one right since it's symmetric." The honest answer is: the paper has **Eq. 2-51 as the general two-angle form** and **Eq. 2-52 as the symmetric special case**. Eq. 4-11 (`λ_eq = Mp / (4π sin θ)`) is a Chapter 4 restatement of the symmetric form using a slightly different parameterization. The notebook (cell 14) uses Eq. 4-11. Stages 2/3 inherited that.
+
+Stage 3.5 updates the math layer to use Eq. 2-51 directly. Doing so:
+- Is more faithful to the paper's general framework.
+- Reduces cleanly to Eq. 2-52 / Eq. 4-11 in the symmetric case (sanity check).
+- Doesn't break the regression fixture, *if* the default θ_camera = θ_projector (symmetric default) is chosen — which it is, in Stage 3.5's task spec.
+
+### θ = 0 is mathematically valid but physically degenerate
+
+When the user asked about projector-vertical configurations: with θ_projector = 0 AND θ_camera = 0, `tan(0) + tan(0) = 0`, so λ_eq → ∞. This means "no height sensitivity" — physically, both arms looking straight down at the surface from the same direction can't triangulate height. This is not a bug, it's the correct physical answer. The GUI should display a clear warning and gray out the recovered-height view when the user lands in this configuration. Asymmetric configurations (one arm vertical, the other tilted) still work fine.
+
+---
+
+## 7c. Stage 3.5 — Math layer upgrade (Stage 4 pre-task spec)
+
+**Status:** Drafted in strategy chat. Awaiting Claude Code execution as a pre-task to Stage 4a.
+
+**Why this exists.** Stage 4 planning surfaced that the current `HybridGeometry.equivalent_wavelength()` uses the Stage 2 simplified form `λ_eq = Mp / tan(θ_projector)`, which implicitly assumes `θ_camera = 0°`. To support a GUI with separate θ_projector and θ_camera sliders, the math layer must use Eq. 2-51's full two-angle form.
+
+**Scope:** One Claude Code task, one commit, no tag (not a stage close).
+
+1. **`src/geometry.py`:**
+   - `HybridGeometry.__init__` gains a new arg `theta_camera` (radians). Default value: same as `theta_projector` (preserves fixture compatibility — the symmetric default matches Eq. 2-52, which is what the old single-angle form effectively computed).
+   - `HybridGeometry.equivalent_wavelength()` updated to: `λ_eq = M·p / (2π·(tan θ_proj + tan θ_cam))`.
+   - Same change to `SymmetricGeometry`.
+   - Docstrings reference Eq. 2-51 directly and note the Stage 2 Decision 3 supersession.
+
+2. **`tests/test_geometry.py`:**
+   - Update existing λ_eq tests to use `theta_camera` explicitly.
+   - New test: symmetric case `θ_camera = θ_projector` matches Eq. 2-52.
+   - New test: degenerate case `tan θ_proj + tan θ_cam = 0` raises or returns infinity (decide which is cleaner for downstream handling).
+
+3. **`tests/test_pipeline_synthetic.py`:** must still pass without modification. The fixture's effective behavior is symmetric (single θ everywhere), and the new default `theta_camera = theta_projector` matches that.
+
+4. All other tests (especially `test_project_is_lambda_eq_independent` and `test_project_exact_lambda_eq_independent`) must continue to pass at atol=1e-15.
+
+**Architectural invariants preserved:**
+- `project()` stays `λ_eq`-independent.
+- HybridGeometry and SymmetricGeometry remain bit-identical in their `project()` output.
+
+**Commit message:**
+```
+Stage 3.5: two-angle λ_eq (Eq. 2-51), supersede Stage 2 Decision 3
+
+- HybridGeometry / SymmetricGeometry gain theta_camera arg
+- equivalent_wavelength() now Mp / (2π·(tan θ_proj + tan θ_cam))
+- Default theta_camera = theta_projector (preserves fixture)
+- 17 tests still passing
+- Math layer now matches paper's Eq. 2-51 exactly
+```
 
 ---
 
@@ -240,11 +399,12 @@ Stage 1's "simulation validation is limited by tautology" carried forward and sh
 Non-blocking — proceed on best assumptions and ask in parallel.
 
 1. Is the upgraded projector telecentric?
-2. **Still open:** What's the simplified λ_eq formula for the hybrid case (telecentric viewing + non-telecentric projection)? Eq. 2-51 reduces to `Mp / tan(θ_projector)` when θ_camera → 0. Or skip the formula entirely and use empirical step-height calibration per Chapter 4 §4.3.1.
+2. ~~Simplified λ_eq formula for the hybrid case?~~ **Resolved at Stage 4 planning:** use Eq. 2-51's two-angle general form. Real hardware will also calibrate empirically against a step gauge per Chapter 4 §4.3.1.
 3. Software post-correction or hardware pre-correction?
 4. Number of phase-shift steps (4 vs. 8)?
 5. Calibration artifacts available in lab?
-6. GUI framework preference?
+6. ~~GUI framework preference?~~ **Resolved: PyQt6** (Stage 4 plan).
+7. **NEW open question for the user's professor:** what are the intended mounting angles for both camera and projector? The chapter's Fig. 4-4 shows symmetric arms (~15° each). Chapter 5 shows an asymmetric setup (camera vertical at 0°, projector at 60°). The user's preference suggested vertical projector, but that requires non-vertical camera for triangulation to work. Worth clarifying with the professor before committing physical mount geometry.
 
 ---
 
@@ -262,51 +422,69 @@ The user worked through the chapter step by step and these were the conceptual l
 
 - **Eq. 4-7 is structurally Eq. 4-2 with the curvature sign flipped** — that's literally what the tilt-flip trick does.
 
-- **Custom grating is needed for this project** because the projector is non-telecentric. Telecentric viewing only handles the camera side; projector-side bias requires either a telecentric projector or the inverse grating method.
+- **Custom grating is needed for this project** because the projector is non-telecentric.
 
 ### Additional insights added during Stage 1 walkthrough
 
-- **The notebook's `phi1` vs `phi1_unwrapped` parallel structure** — `phi1` (analytical) is the ground truth; `phi1_unwrapped` (intensity → PSI → wrap → unwrap) is the simulated measurement. Cell 8 compares them. This pattern repeats for the object: `phi3` (analytical) vs. recovered phase from cells 17–18.
+- **The notebook's `phi1` vs `phi1_unwrapped` parallel structure** — `phi1` (analytical) is the ground truth; `phi1_unwrapped` (intensity → PSI → wrap → unwrap) is the simulated measurement.
 
-- **Best-fit tilt absorbs both real tilt and a bit of curvature** — `np.polyfit(x, phi1, 1)` does not recover the analytical `2π/p₁` slope; it returns whatever slope minimizes squared error across the whole biased profile. The resulting `bias_2d` and `phi2` therefore have linear residuals that are not strictly the "true tilt," but the curvature is captured correctly, which is the only part that matters for the inverse-grating cancellation. Downstream tilt removal absorbs any linear residual.
+- **Best-fit tilt absorbs both real tilt and a bit of curvature** — `np.polyfit(x, phi1, 1)` does not recover the analytical `2π/p₁` slope; it returns whatever slope minimizes squared error.
 
-- **The `λ_eq = (p1·M) / (4π sin θ)` formula in cell 14 is the symmetric form (Eq. 4-11), not the hybrid form.** The strict hybrid formula (Eq. 2-51 with θ_camera = 0) gives `Mp / tan(θ_projector)`. The simulation still converges to ~10⁻⁵ recovery because one consistent θ is used everywhere — the recovery is self-consistent, not physically faithful to the hybrid hardware. This will be corrected in Stage 2.
+- **Cell 14's K constant implicitly assumes a telecentric receiver.** No `capture()` function exists to mirror `project()`. The camera arm is treated as a perfect pass-through.
 
-- **Cell 14's `K` constant implicitly assumes a telecentric receiver.** No `capture()` function exists to mirror `project()`. The camera arm is treated as a perfect pass-through, which is correct for the Edmund Optics telecentric lens but should be made explicit in Stage 2 docstrings.
-
-- **OpenCV is not needed for the fringe analysis math** — PSI, unwrap, tilt fitting, height conversion all live in NumPy. OpenCV's role will be image I/O, ROI masking, lateral calibration (grid detection), and display helpers. `skimage.restoration.unwrap_phase` is the recommended robust unwrap option per the roadmap.
+- **OpenCV is not needed for the fringe analysis math** — PSI, unwrap, tilt fitting, height conversion all live in NumPy.
 
 ### Additional insights added during Stage 3 walkthrough
 
-- **The textbook's Eq. 4-6 has a sign typo.** Printed as `1/(1 − 2x·tan(θ)/a)`, but the notebook (cell 25) shows that this convention disagrees with the existing Taylor branch's `−` bias. The `+u` form `1/(1 + 2x·tan(θ)/a)` is the consistent one and was adopted as the operational convention. Cell 25 also calls out that Eq. 4-2 has a separate typo (missing `2π`) — there's prior evidence the chapter equations have transcription errors, so trusting the notebook over the printed equations is justified.
+- **The textbook's Eq. 4-6 has a sign typo.** Printed as `1/(1 − 2x·tan(θ)/a)`, but the notebook (cell 25) shows that this convention disagrees with the existing Taylor branch's `−` bias. The `+u` form is correct.
 
-- **Validation criteria for user-facing toggles should be informational, not gating.** Strict numerical bounds on the deviation between Taylor and exact would have been arbitrary (why 2×? why 10×? why 100×?), would have required relitigation every time hardware params change, and would not have improved confidence in the implementation. The actual confidence-building comes from: (a) cell 25's analytical-Taylor-vs-analytical-exact comparison reproduced in `test_project_exact_taylor_consistency`, (b) the bit-identical x=0 agreement, (c) the `λ_eq`-independence invariant carrying through. The integration test's role is to confirm the toggle doesn't crash, not to rank the models.
+- **Validation criteria for user-facing toggles should be informational, not gating.** Strict numerical bounds on the deviation between Taylor and exact would have been arbitrary.
 
-- **A test parametrization can technically pass without meaningfully exercising the parametrized variable.** The Stage 3 integration test prints identical `std_err` for both models because the object leg synthesizes `phi3` analytically (the Stage 2.6 deviation). This was noticed during review and documented honestly in the test docstring rather than papered over. The cleanest fix (close the loop in the object leg) would have broken the existing Taylor fixture; the second-cleanest (add a standalone exact-cancellation test) was rejected as scope creep. Living with a partially-tautological test, documented as such, was the correct trade-off given the reframe.
+- **A test parametrization can technically pass without meaningfully exercising the parametrized variable.** The Stage 3 integration test prints identical `std_err` for both models because the object leg synthesizes `phi3` analytically.
+
+### Additional insights added during Stage 4 planning
+
+- **The chapter's M is camera-side only.** Eq. 2-41 defines M as `l/b` — both lengths on the camera arm. The chapter uses one M everywhere because of its symmetric-arm assumption. Projectors don't have an "M" in the chapter's framework.
+
+- **`a` is fixed inside the projector** (DMD-to-lens distance, mechanical). The "throw distance from projector to surface" is a separate physical quantity.
+
+- **For telecentric cameras, M and distance are independent within the working-distance range.** Moving the camera only affects focus.
+
+- **The symmetric assumption (Fig. 4-4) is expository, not required.** Eqs. 2-41 and 4-11 use one M and one θ because the chapter writes derivations under symmetric arms for clarity.
+
+- **A slider that doesn't affect the science view is still valuable** if it serves a real lab-design purpose. The projector-distance slider is the case in point.
+
+- **Telecentric ≠ vertical mount.** This is the most important Stage 4 discovery. Telecentric only locks the lens magnification; the arm's tilt angle relative to the surface is an independent mechanical parameter. Stage 2 Decision 3's `λ_eq = Mp / tan(θ_projector)` was wrong because it assumed θ_camera = 0°, derived from this conflation. Stage 3.5 corrects it by using Eq. 2-51's full two-angle form. The chapter supports asymmetric configurations natively (Eq. 2-51 takes both angles; Chapter 5 explicitly uses an asymmetric setup with vertical camera and tilted projector).
+
+- **Both arms vertical = no triangulation = no height info.** The degenerate case `tan θ_proj + tan θ_cam = 0` makes λ_eq infinite. This is correct physics: triangulation needs angular separation between the projector beam and the camera view direction. The GUI should clearly indicate this case.
 
 ---
 
 ## 10. Project Conversations Note
 
-- User had a friend building a separate **Three.js 3D simulation** of the lab geometry (separate from the Python pipeline). The `Projector_Geometry_Summary.docx` was prepared for that collaborator. The Three.js work is **complementary**, not duplicative — it's a geometric visualization of the physical setup; the Python work is the operational measurement pipeline.
-- User plans to add a virtual representation of the setup (live sliders for θ, a, M, etc. that drive the simulation and update results) at the end of the roadmap. Stage 4's PyQt6 GUI provides the foundation; the live-update slider tabs are a natural extension built after Stage 4 with mock hardware in place. With Stage 3 done, the slider GUI can also expose a Taylor/exact toggle for the forward model.
-- User plans to add a **test-surface library** (`src/test_surfaces.py`) as part of the slider GUI work. Pure heightmap generators: flat, tilt, Gaussian, step, sphere cap, multi-bump, file-loaded, and crucially a **solder-bump-array generator** (Chapter 5 application). The architecture already supports this — the pipeline consumes any `(H, W)` heightmap via `geometry.height_to_phase`. Decision deferred to Stage 4+.
-- User clarified during Stage 3 that **the chapters in the reference folder are the math basis for the inverse fringe projection method, not a template for a thesis the user is writing.** The user's own paper comes later (if at all). Current deliverable is a working simulation with a GUI that uses real hardware parameters; the existing simulation validations are informational tools for understanding deviation, not gating criteria. This reframe directly drove the Stage 3 scope reduction (skipping 3.2's comparison script and 3.3's standalone test).
+- User had a friend building a separate **Three.js 3D simulation** of the lab geometry. The `Projector_Geometry_Summary.docx` was prepared for that collaborator. The Three.js work is **complementary**, not duplicative. The user **explicitly rejected** embedding the Three.js work into the Stage 4 GUI; lab view is native PyQt6.
+- User plans to add a virtual representation of the setup with live sliders (Stage 4 work).
+- User plans to add a **test-surface library** (`src/test_surfaces.py`) as part of Stage 4a. Pure heightmap generators: flat, tilt, Gaussian, step, sphere. Multi-bump and file-loaded surfaces deferred.
+- User clarified during Stage 3 and reaffirmed in Stage 4 planning that **the chapters in the reference folder are the math basis for the inverse fringe projection method, not a template for a thesis the user is writing.** Current deliverable is a working simulation that uses real hardware parameters.
+- User wants **the GUI to be updatable with real hardware specs once they arrive.** The architecture supports this cleanly. This is the user's most important Stage 4 acceptance criterion.
+- **User raised wanting to mount projector vertical (per professor preference).** Strategy chat surfaced that this requires non-vertical camera to preserve triangulation. Both-angles-as-sliders design supports this exploration and any other configuration the user/prof eventually decides on.
 
 ---
 
 ## 11. Resolved During the Conversation
 
 - Identified all hardware (camera, lens, projector models)
-- Confirmed system is **hybrid** (telecentric viewing, non-telecentric projection)
+- Confirmed system is **hybrid in lens type** (telecentric viewing lens, non-telecentric projector lens); arm angles are independent of lens type
 - Confirmed inverse grating method (§2.3.4.3 / Chapter 4) is the project's chosen approach
 - Measured projector lens position; ~0° vertical optical offset confirmed
 - Computed practical FOV, pixel pitch, magnification numbers
 - Identified the gap in the existing notebook (missing `project()` function) — **closed in Stage 1**
-- Established that hardware-free development is the right starting approach until mounting hardware arrives
+- Established that hardware-free development is the right starting approach
 - Built a roadmap (Stages 0–6) with this-week to-do items
-- **Stage 0, Stage 1, Stage 2, and Stage 3 completed.** Notebook has the `project()` function, all roadmap-mandated validations, and three independent strengthened validations. Stage 2 refactored the notebook into 6 tested src/ modules with a 12-test regression suite plus end-to-end integration test; closing commit `b5b7342` tagged `stage-2-complete` and pushed to private GitHub remote. Stage 3 added `project(model='exact')` with 5 new tests, all passing; closing commit `e5201fb` tagged `stage-3-complete` (local only at the time of this writing).
-- Validation philosophy formalized: simulation-only validation has fundamental limits (tautology if same formula appears on both sides); meaningful end-to-end testing requires hardware or cross-implementation. Stage 3 further refined this: validations on user-facing toggles should be informational (print numbers, assert finiteness) rather than gating (arbitrary numerical bounds).
+- **Stage 0, Stage 1, Stage 2, and Stage 3 completed.** Stage 3 added `project(model='exact')` with 5 new tests; closing commit `e5201fb` tagged `stage-3-complete` pushed. Stage 3 close notes committed in `3716687`.
+- Validation philosophy formalized: simulation-only validation has fundamental limits.
+- **Stage 4 plan locked at the strategy-chat level.** Five sliders + surface dropdown, locked values, two-view design, build sequence (3.5 → 4a → 4b), 3D viewer backend (PyQtGraph), resolution (480×640), MockCamera/Projector deferred.
+- **Stage 3.5 pre-task identified:** math layer upgrade to two-angle λ_eq (Eq. 2-51), supersedes Stage 2 Decision 3. Awaiting Claude Code execution before Stage 4a starts.
 
 ---
 
@@ -319,30 +497,47 @@ The user prefers:
 - One thing at a time
 - Practical code suggestions kept minimal
 
-The user pushes back when something feels redundant or tautological. This is a strength — Stage 1 ended up with a smaller, cleaner validation suite than originally proposed because of it, and Stage 3 collapsed from three sub-tasks to one (plus a minor parametrization) for the same reason. Strategy chat should default to less, not more, and let the user push for additions if they want them.
+The user pushes back when something feels redundant or tautological. This is a strength — Stage 1 ended up with a smaller, cleaner validation suite than originally proposed because of it, Stage 3 collapsed from three sub-tasks to one for the same reason, and Stage 4's slider list went through five false starts before settling on the right shape. Strategy chat should default to less, not more.
+
+The user also says when they don't understand something. When that happens, strategy chat should **simplify, not double down on technical accuracy.** Long technical explanations are the wrong response to "I don't get this" — shorter answers, more analogy, fewer equations. This came up several times during Stage 4 planning.
+
+**The user is also good at asking questions whose answers force the strategy chat to catch its own mistakes.** The "telecentric = vertical?" question that surfaced Stage 2 Decision 3's hidden assumption was an example. Strategy chat should treat user pushback as a diagnostic, not as resistance.
 
 ---
 
-## 13. Working Model with Claude Code (Established During Stage 2, Carried Through Stage 3)
+## 13. Working Model with Claude Code (Established During Stage 2, Refined Through Stage 4 Planning)
 
-The handoff pattern that worked across Stage 2's six tasks and Stage 3's two tasks:
+The handoff pattern that worked across Stage 2's six tasks, Stage 3's two tasks, and now Stage 3.5:
 
 1. **Strategy chat (this assistant) drafts the prompt.** Includes the architectural constraints, the exact tests to write, and the binding decisions Claude Code shouldn't relitigate.
 2. **User reviews and pastes into Claude Code (terminal).**
-3. **Claude Code summarizes back what it understands before writing code.** Catches misunderstandings cheaply.
-4. **Claude Code implements, runs tests, commits.** One module per commit. Surfaces deviations from spec inline with magnitude estimates rather than silently picking defaults.
-5. **User pastes Claude Code's diff + test output back to strategy chat for review.** Strategy chat flags architectural smells, scope creep, or weak tests.
-6. **User decides on adjustments.** Sometimes leads to follow-up commits (e.g., Stage 2.5b lifted inline test logic into `calibration.py`).
+3. **Claude Code summarizes back what it understands before writing code.**
+4. **Claude Code implements, runs tests, commits.** One module per commit. Surfaces deviations from spec inline.
+5. **User pastes Claude Code's diff + test output back to strategy chat for review.**
+6. **User decides on adjustments.**
 
-Belt-and-suspenders verifications the user does in their own terminal (not Claude Code's) before any destructive operation:
+Belt-and-suspenders verifications the user does in their own terminal before any destructive operation:
 - Independent verification of git rewrites with own queries.
 - Confirmation that working-tree files match expectations after history operations.
 
-This separation kept Stage 2 and Stage 3 honest: every commit was reviewed twice (Claude Code self-checks during implementation, strategy chat second-pass), and every destructive operation had a manual confirmation step before authorization.
-
 ### Stage 3 refinement: prompts shrink when the deliverable is reframed
 
-During Stage 3, the user's reframe ("validation is informational, not gating; both models are user-togglable forward models") collapsed two of the three roadmap sub-tasks. The lesson: a Claude Code prompt is only as valuable as the framing it inherits. Strategy chat should challenge the framing of upcoming tasks before drafting prompts, not just transcribe roadmap text into prompt form. The Stage 3.2 → "skip" decision and the Stage 3.3 → "fold into parametrized test" decision both came from re-asking *what is this for* rather than from any code analysis.
+During Stage 3, the user's reframe ("validation is informational, not gating") collapsed two of three roadmap sub-tasks. Strategy chat should challenge the framing of upcoming tasks before drafting prompts.
+
+### Stage 4 planning refinement: false starts get surfaced and corrected before code
+
+Stage 4 planning produced five named false starts before settling on the final slider list. Each was caught in strategy chat, **before** any prompt went to Claude Code. The savings vs catching these post-implementation are real: each false start would have been a partial GUI rewrite if it had landed in src/.
+
+The most important catch was the "telecentric = vertical camera" assumption that had been baked into Stage 2 Decision 3 for the entire project's history. It wasn't caught until Stage 4 planning, when the user kept pushing on "what about projector angle / both vertical / camera tilt?" The pattern: when the user repeatedly asks the same question framed differently, strategy chat should look harder rather than repeat the same answer.
+
+### Stage 4 fresh-session bootstrap
+
+When a new strategy chat or Claude Code session starts after a stage closes:
+
+- Strategy chat: re-upload latest PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md. Open chat with state-handoff message.
+- Claude Code: open a fresh terminal. First prompt: "Read PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md. Summarize back what we're building, where we are, and what's binding for [Stage X]. Don't write code yet."
+
+The two .md files carry all the context. A handoff .md is redundant when the context files are current.
 
 ---
 
