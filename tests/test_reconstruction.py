@@ -9,7 +9,16 @@ b. recover_object_height reproduces the notebook's H_rec0 to ATOL_PIPELINE
    when fed:
      - a synthesized PSI stack from phi3 = carrier + height_to_phase(H_obj)
      - phi_calibration = calibration.fit_tilt_line_1d(phi3_unwrapped)[0]
-       (1D polyfit on row-mean, tiled — bit-for-bit notebook cell 18)
+       where phi3_unwrapped is derived from the same stack via the PSI
+       extract + unwrap path. Stage 3.5 note: this used to read
+       phi3_unwrapped directly from the fixture, but the fixture was
+       generated against the OLD λ_eq (Eq. 4-11 sin form). After Stage
+       3.5 (Eq. 2-51 / Eq. 2-52 tan form), the fixture's phi3_unwrapped
+       carries a slightly different linear coefficient than the new
+       geometry's stack produces, and the cross-mixed wiring leaks a
+       ~1e-6 residual into H_rec0 — two orders over ATOL_PIPELINE.
+       Deriving phi3_unwrapped internally (as the integration test
+       already does) keeps everything on the same λ_eq.
      - the canonical 4-step deltas
      - SymmetricGeometry() (matches the fixture's provenance)
    The cell-20 DC alignment to H_obj.mean() is applied in the test, not
@@ -34,7 +43,9 @@ from conftest import ATOL_ANALYTICAL, ATOL_PIPELINE
 import reconstruction
 from calibration import fit_tilt_line_1d
 from geometry import HybridGeometry, SymmetricGeometry
+from phase_shifting import extract_phase
 from synthetic_fringes import synthesize_psi_stack
+from unwrapping import unwrap_2d
 
 
 def test_phase_to_height_dispatches_to_geometry(regression_data):
@@ -69,10 +80,17 @@ def test_recover_object_height_matches_fixture(regression_data):
     deltas = [0.0, np.pi / 2.0, np.pi, 3.0 * np.pi / 2.0]
     stack = synthesize_psi_stack(phi3, deltas)
 
-    # Match notebook cell 18 bit-for-bit via calibration.fit_tilt_line_1d
-    # (1D polyfit on row-mean, tiled). NOT fit_tilt_plane — see the
-    # calibration module docstring for why the 2D fit diverges here.
-    phi_calibration, _ = fit_tilt_line_1d(regression_data["phi3_unwrapped"])
+    # Derive phi3_unwrapped from the same stack (PSI extract + unwrap), so
+    # phi_calibration's linear coefficient matches the stack's λ_eq. The
+    # fixture's phi3_unwrapped is on the OLD λ_eq and would leak ~1e-6 of
+    # residual into H_rec0 — see module docstring (Stage 3.5 note).
+    wrapped = extract_phase(stack, deltas)
+    phi3_unwrapped = unwrap_2d(wrapped)
+
+    # Match notebook cell 18 via calibration.fit_tilt_line_1d (1D polyfit
+    # on row-mean, tiled). NOT fit_tilt_plane — see the calibration module
+    # docstring for why the 2D fit diverges here.
+    phi_calibration, _ = fit_tilt_line_1d(phi3_unwrapped)
 
     h_rec = reconstruction.recover_object_height(
         stack, phi_calibration, deltas, geom
