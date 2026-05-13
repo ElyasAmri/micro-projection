@@ -28,6 +28,14 @@ dependencies:
   # opencv-python is the pip distribution; conda-forge `opencv` is a different
   # build with different __version__ semantics. Keep on pip to match what is
   # already installed.
+  #
+  # The Stage 4 GUI stack (PyQt6 + PyQtGraph + PyOpenGL) is also on pip because
+  # PyQt6 from PyPI is what is already installed in this env; mixing it with
+  # conda-forge's `pyqt`/`pyqt6` builds produces ABI conflicts. Keep all three
+  # on pip to match the existing install.
   - pip
   - pip:
       - opencv-python==4.13.0.92
+      - PyQt6==6.11.0
+      - pyqtgraph==0.14.0
+      - PyOpenGL==3.1.10
