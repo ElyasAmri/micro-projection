@@ -34,6 +34,8 @@ Architectural notes
 """
 from __future__ import annotations
 
+from typing import Union
+
 import numpy as np
 
 from calibration import fit_tilt_line_1d
@@ -48,7 +50,8 @@ def run_pipeline(
     geometry,
     n_psi_steps: int,
     model: str = "taylor",
-) -> np.ndarray:
+    return_stages: bool = False,
+) -> Union[np.ndarray, tuple[np.ndarray, dict[str, np.ndarray]]]:
     """Run the full forward + inverse fringe projection pipeline.
 
     Takes a ground-truth heightmap and returns the recovered heightmap.
@@ -70,6 +73,21 @@ def run_pipeline(
         Forward-model choice. Currently a no-op in the object leg of
         the pipeline (see module docstring); reserved for future
         calibration-leg integration.
+    return_stages : bool, default False
+        If False, return only the recovered heightmap (backwards
+        compatible). If True, return a 2-tuple
+        `(recovered, stages_dict)` where stages_dict exposes the
+        pipeline's intermediate arrays for visualization:
+
+            'ground_truth'    : the input heightmap (float64-cast)
+            'fringe_frame'    : object_stack[..., 0], the first PSI
+                                phase-shift frame (the "camera view")
+            'wrapped_phase'   : output of extract_phase (range [-pi, pi])
+            'unwrapped_phase' : output of unwrap_2d
+
+        The dict values are references (not copies) to the pipeline's
+        intermediate arrays. The caller should not mutate them; if
+        mutation is needed, np.array(value) explicitly.
 
     Returns
     -------
@@ -77,6 +95,8 @@ def run_pipeline(
         Reconstructed height, DC-aligned to `heightmap.mean()` so the
         output is element-wise comparable to the input on absolute
         magnitude.
+    stages : dict[str, ndarray] (only if `return_stages=True`)
+        See description above.
     """
     heightmap = np.asarray(heightmap, dtype=np.float64)
     H, W = heightmap.shape
@@ -106,4 +126,14 @@ def run_pipeline(
     h_rec = recover_object_height(object_stack, phi_calibration, deltas, geometry)
 
     # DC alignment to input heightmap mean. Matches notebook cell 20.
-    return h_rec - h_rec.mean() + heightmap.mean()
+    recovered = h_rec - h_rec.mean() + heightmap.mean()
+
+    if return_stages:
+        stages: dict[str, np.ndarray] = {
+            "ground_truth": heightmap,
+            "fringe_frame": object_stack[..., 0],
+            "wrapped_phase": object_wrapped,
+            "unwrapped_phase": phi_unwrapped,
+        }
+        return recovered, stages
+    return recovered

@@ -111,6 +111,43 @@ def test_run_pipeline_n_psi_steps_4_and_8(regression_data, n_psi_steps):
 # ---------------------------------------------------------------------------
 # Geometry-protocol agnosticism
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# return_stages kwarg (task 4d)
+# ---------------------------------------------------------------------------
+def test_run_pipeline_return_stages_dict_keys(regression_data):
+    """return_stages=True yields (ndarray, dict-with-4-keys)."""
+    geom = SymmetricGeometry()
+    h_in = regression_data["H_obj"]
+    result = run_pipeline(h_in, geom, n_psi_steps=4, return_stages=True)
+
+    assert isinstance(result, tuple) and len(result) == 2, (
+        f"return_stages=True must yield a 2-tuple; got {type(result).__name__}"
+    )
+    recovered, stages = result
+    assert isinstance(recovered, np.ndarray)
+    assert isinstance(stages, dict)
+    expected_keys = {"ground_truth", "fringe_frame", "wrapped_phase", "unwrapped_phase"}
+    assert set(stages.keys()) == expected_keys, (
+        f"stages dict has {set(stages.keys())}, expected {expected_keys}"
+    )
+
+
+def test_run_pipeline_return_stages_shapes():
+    """All stage arrays have the same (H, W) shape as the input."""
+    geom = SymmetricGeometry(H=120, W=160)
+    rng = np.random.RandomState(0)
+    h_in = rng.standard_normal((120, 160)) * 0.01
+
+    recovered, stages = run_pipeline(
+        h_in, geom, n_psi_steps=4, return_stages=True
+    )
+    assert recovered.shape == (120, 160)
+    for name, arr in stages.items():
+        assert arr.shape == (120, 160), (
+            f"stage {name!r} has shape {arr.shape}, expected (120, 160)"
+        )
+
+
 def test_run_pipeline_hybrid_geometry(regression_data):
     """HybridGeometry with fixture-matched params reproduces fixture H_rec0.
 

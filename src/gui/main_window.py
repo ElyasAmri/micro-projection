@@ -1,26 +1,31 @@
-"""main_window.py — Stage 4a task 4c GUI: warning banner + colorbar + Z tune.
+"""main_window.py — Stage 4a task 4d GUI: pipeline stages viewer + view toggle.
 
 QMainWindow with horizontal splitter:
 - Left pane: surface selector + per-surface param sliders, geometry
-  sliders, PSI step count, display-mode toggle, error-statistics
-  panel (hidden until overlay is on), locked-hardware info panel.
-- Right pane container: degenerate-case warning banner (hidden by
-  default) + SurfacePreview + error colorbar (hidden when overlay
-  is off).
+  sliders, PSI step count, view-mode toggle, display-mode toggle,
+  error-statistics panel (hidden until overlay is on), locked-
+  hardware info panel.
+- Right pane is a QStackedWidget with two pages:
+    Page 0 (default): 3D scene = banner + SurfacePreview + colorbar
+    Page 1:           StagesView (2x3 grid of 5 pipeline-stage images)
 
-Stage 4a task 4c additions
+Stage 4a task 4d additions
 --------------------------
-- Degenerate-case warning banner: appears in red at the top of the
-  right pane when |tan(θ_proj) + tan(θ_cam)| < 1e-3, explaining why
-  recovery is invalid. The 3D view keeps its last good frame.
-- Error colorbar widget below view_3d showing the diverging colormap
-  with numeric labels (min / 0 / max), visible only when the error
-  overlay is on AND geometry is non-degenerate.
-- Z exaggeration in SurfacePreview tuned 20× -> 2× to prepare for
-  Stage 4b's real-scale hardware bodies.
-- Error stats auto-format to scientific notation when sub-precision
-  (< 1e-4 mm), so machine-precision residuals don't render as
-  "0.00000 mm".
+- "View Mode" groupbox with two radio buttons (3D Scene / Pipeline
+  Stages). Switches the right-pane QStackedWidget page.
+- `run_pipeline(..., return_stages=True)` is called unconditionally
+  in the refresh slot; intermediates feed the stages page when it's
+  visible.
+
+Stage 4a task 4c features (carried forward)
+-------------------------------------------
+- Degenerate-case warning banner: red QLabel atop the 3D scene page
+  when |tan(θ_proj) + tan(θ_cam)| < 1e-3. (Banner sits on the 3D
+  scene page only — it's visible when that page is current. The
+  Stages page doesn't show it; users hit-test by switching back.)
+- Error colorbar below view_3d on the 3D scene page.
+- Z exaggeration 2× in SurfacePreview.
+- Error stats auto-format to scientific notation when sub-precision.
 
 Stage 4a task 4b features (carried forward)
 -------------------------------------------
@@ -64,6 +69,7 @@ from typing import Optional
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QGridLayout,
@@ -71,6 +77,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QRadioButton,
     QSpinBox,
     QSlider,
     QSplitter,
@@ -81,6 +88,7 @@ from PyQt6.QtWidgets import (
 
 from geometry import HybridGeometry
 from pipeline import run_pipeline
+from src.gui.stages_view import StagesView
 from src.gui.surface_preview import ErrorColorbar, SurfacePreview
 from src.test_surfaces import (
     make_flat,
@@ -208,7 +216,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_control_panel())
-        splitter.addWidget(self._build_view_3d())
+        splitter.addWidget(self._build_right_pane())
         splitter.setSizes([400, 880])
         self.setCentralWidget(splitter)
 
@@ -226,6 +234,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_surface_group())
         layout.addWidget(self._build_geometry_group())
         layout.addWidget(self._build_psi_group())
+        # Task 4d: view-mode toggle (3D scene vs pipeline stages).
+        layout.addWidget(self._build_view_mode_group())
         # Task 4b additions: display-mode toggle + error stats panel.
         layout.addWidget(self._build_display_mode_group())
         layout.addWidget(self._build_error_stats_group())
@@ -233,6 +243,23 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
 
         return panel
+
+    def _build_view_mode_group(self) -> QGroupBox:
+        """`3D Scene` / `Pipeline Stages` radio toggle. Default 3D."""
+        box = QGroupBox("View Mode")
+        layout = QVBoxLayout(box)
+        self.view_mode_3d = QRadioButton("3D Scene")
+        self.view_mode_stages = QRadioButton("Pipeline Stages")
+        self.view_mode_3d.setChecked(True)
+
+        # QButtonGroup makes the two exclusive without parent-coupling.
+        self._view_mode_group = QButtonGroup(self)
+        self._view_mode_group.addButton(self.view_mode_3d)
+        self._view_mode_group.addButton(self.view_mode_stages)
+
+        layout.addWidget(self.view_mode_3d)
+        layout.addWidget(self.view_mode_stages)
+        return box
 
     def _build_display_mode_group(self) -> QGroupBox:
         """`Show error overlay` checkbox. Default unchecked."""
@@ -401,15 +428,31 @@ class MainWindow(QMainWindow):
         return box
 
     # ------------------------------------------------------------------
-    # Right pane — warning banner + 3D surface preview + error colorbar
+    # Right pane — QStackedWidget with two pages (3D scene / stages)
     # ------------------------------------------------------------------
-    def _build_view_3d(self) -> QWidget:
-        """Build the right-pane container.
+    def _build_right_pane(self) -> QWidget:
+        """Build the right pane as a QStackedWidget with two pages.
 
-        Stack (top to bottom):
-          1. self.warning_banner  (QLabel, hidden by default)
-          2. self.view_3d          (SurfacePreview, fills remaining)
-          3. self.error_colorbar   (custom QWidget, hidden by default)
+        Page 0 (default): the 3D scene (banner + SurfacePreview +
+        error colorbar) — the right pane that existed prior to task 4d.
+        Page 1: StagesView, the 2x3 grid of pipeline-stage images.
+
+        The View Mode radio buttons in the left pane toggle the
+        stack's current index.
+        """
+        page_3d = self._build_3d_scene_page()
+
+        self.stages_view = StagesView()
+
+        self.right_pane_stack = QStackedWidget()
+        self.right_pane_stack.addWidget(page_3d)             # index 0
+        self.right_pane_stack.addWidget(self.stages_view)    # index 1
+        self.right_pane_stack.setCurrentIndex(0)
+
+        return self.right_pane_stack
+
+    def _build_3d_scene_page(self) -> QWidget:
+        """Build the 3D scene page (banner + view_3d + colorbar).
 
         Returns the container; `self.view_3d` continues to refer to
         the SurfacePreview instance directly so existing callers
@@ -492,6 +535,11 @@ class MainWindow(QMainWindow):
         # Stage 4a task 4b addition: error overlay toggle.
         self.show_error_overlay.toggled.connect(self._on_overlay_toggled)
 
+        # Stage 4a task 4d addition: view-mode radio toggle.
+        # Connecting just view_mode_3d.toggled is enough — it fires on
+        # both check and uncheck thanks to the QButtonGroup exclusivity.
+        self.view_mode_3d.toggled.connect(self._on_view_mode_changed)
+
     def _all_surface_sliders(self) -> list[LabeledFloatSlider]:
         return [
             self.tilt_slope_x,
@@ -505,7 +553,7 @@ class MainWindow(QMainWindow):
         ]
 
     def _refresh_surface_preview(self, *_args: object) -> None:
-        """Recompute heightmap, run the pipeline, push to view.
+        """Recompute heightmap, run the pipeline, push to current view.
 
         Accepts any number of signal args (`currentIndexChanged(int)`,
         `valueChanged(float)` from LabeledFloatSlider, and
@@ -515,15 +563,20 @@ class MainWindow(QMainWindow):
         Degenerate short-circuit (task 4c): if
         |tan(θ_proj) + tan(θ_cam)| < DEGENERATE_TAN_SUM_THRESHOLD,
         the pipeline is NOT run (recovery would be NaN); the warning
-        banner is shown, the colorbar is hidden, and the 3D view
-        keeps its last good frame.
+        banner is shown, the colorbar is hidden, and neither view
+        updates (both keep their last good frame).
 
-        Otherwise, branches on `self.show_error_overlay`:
-        - OFF: render recovered surface with viridis-on-height (task 3
-          default). Colorbar hidden.
-        - ON:  render recovered surface colored by signed error
-          (recovered - heightmap) with the diverging colormap, update
-          the error-statistics labels, and show the colorbar.
+        Otherwise:
+        - In stages view (task 4d): push all five intermediate arrays
+          into StagesView panels. The 3D scene's view_3d + colorbar
+          stay frozen on their last good state; colorbar is hidden
+          since it's not visible anyway.
+        - In 3D scene view: branches on `self.show_error_overlay`:
+          * OFF: render recovered surface with viridis-on-height
+            (task 3 default). Colorbar hidden.
+          * ON:  render recovered surface colored by signed error
+            (recovered - heightmap) with the diverging colormap,
+            update the error-statistics labels, and show the colorbar.
         """
         heightmap = self._compute_current_heightmap()
         geometry = self._build_geometry()
@@ -539,12 +592,29 @@ class MainWindow(QMainWindow):
             return
         self.warning_banner.setVisible(False)
 
-        recovered = run_pipeline(
+        # Always request stages: the dict is cheap (references, not
+        # copies) and the stages page may be visible.
+        recovered, stages = run_pipeline(
             heightmap=heightmap,
             geometry=geometry,
             n_psi_steps=self.psi_steps.value(),
+            return_stages=True,
         )
 
+        if self.view_mode_stages.isChecked():
+            # Stages page is current — push to it. Hide colorbar
+            # (it belongs to the 3D scene page anyway).
+            self.stages_view.update_stages(
+                ground_truth=stages["ground_truth"],
+                fringe_frame=stages["fringe_frame"],
+                wrapped_phase=stages["wrapped_phase"],
+                unwrapped_phase=stages["unwrapped_phase"],
+                recovered=recovered,
+            )
+            self.error_colorbar.setVisible(False)
+            return
+
+        # 3D scene page is current.
         if self.show_error_overlay.isChecked():
             error = recovered - heightmap
             self.view_3d.update_heightmap(recovered, error_mm=error)
@@ -558,6 +628,21 @@ class MainWindow(QMainWindow):
     def _on_overlay_toggled(self, checked: bool) -> None:
         """Show/hide the stats panel and re-render."""
         self.error_stats_group.setVisible(checked)
+        self._refresh_surface_preview()
+
+    def _on_view_mode_changed(self, _checked: bool) -> None:
+        """Switch the right-pane stack page and refresh.
+
+        `toggled` fires on both check and uncheck of view_mode_3d.
+        We dispatch on whichever button is checked rather than
+        on the signal's boolean argument.
+        """
+        if self.view_mode_3d.isChecked():
+            self.right_pane_stack.setCurrentIndex(0)
+        else:
+            self.right_pane_stack.setCurrentIndex(1)
+        # Newly-visible page may have stale data if sliders moved
+        # while it was hidden.
         self._refresh_surface_preview()
 
     def _update_error_stats(self, error: np.ndarray) -> float:
