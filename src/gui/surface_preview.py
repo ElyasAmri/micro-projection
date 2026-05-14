@@ -13,6 +13,19 @@ Matches `src/test_surfaces.py`:
       y = (r - (H-1)/2) * pixel_size_mm
 - Pixel pitch fixed at 0.1 mm for Stage 4a; tying it to a
   hardware-derived value comes later when the info panel goes live.
+- Z is scaled by `Z_EXAGGERATION` (display-only) before rendering.
+  `self._last_heightmap` caches the unscaled array; error statistics
+  in `main_window` operate on unscaled values.
+
+Rendering modes
+---------------
+`update_heightmap(heightmap_mm)` (default): renders the surface
+colored by height via the viridis colormap.
+
+`update_heightmap(heightmap_mm, error_mm=err)`: renders the
+**heightmap's shape** but colors the surface by the **signed error
+array** via a diverging blue-white-red colormap, symmetric about zero.
+Used for the error-overlay toggle in main_window.
 
 pyqtgraph axis + colors quirk
 -----------------------------
@@ -43,6 +56,29 @@ from PyQt6.QtWidgets import QWidget
 # panel exposes hardware-derived pitch.
 DEFAULT_PIXEL_SIZE_MM = 0.1
 
+# Display-only Z scale factor. Real test surfaces in fringe projection
+# are sub-millimeter to a few mm tall on a 50+ mm wide field — without
+# exaggeration, the surface renders as a near-flat sheet. 20× is the
+# visual sweet spot at the launch defaults (0.5 mm Gaussian on a
+# 64x48 mm grid); tune if needed.
+Z_EXAGGERATION: float = 20.0
+
+
+def _build_diverging_colormap() -> pg.ColorMap:
+    """Return a blue-white-red diverging colormap for signed errors.
+
+    Primary: pyqtgraph's bundled CET-D1 (perceptually balanced).
+    Fallback: hand-rolled blue->white->red ramp if CET-D1 fails to
+    load (e.g., a pyqtgraph install missing its color-map data).
+    """
+    try:
+        return pg.colormap.get("CET-D1")
+    except Exception:
+        return pg.ColorMap(
+            pos=[0.0, 0.5, 1.0],
+            color=[(20, 60, 200, 255), (255, 255, 255, 255), (200, 30, 30, 255)],
+        )
+
 
 class SurfacePreview(gl.GLViewWidget):
     """3D surface plot of a (H, W) heightmap with reference grid."""
@@ -56,8 +92,12 @@ class SurfacePreview(gl.GLViewWidget):
         self._x: Optional[np.ndarray] = None
         self._y: Optional[np.ndarray] = None
         self._z_shape: Optional[tuple[int, int]] = None
+        # Cached unscaled heightmap from the last update_heightmap call.
+        # Task 4c may use this for the degenerate-warning logic.
+        self._last_heightmap: Optional[np.ndarray] = None
 
-        self._cmap = pg.colormap.get("viridis")
+        self._cmap_height = pg.colormap.get("viridis")
+        self._cmap_error = _build_diverging_colormap()
 
         self._add_reference_grid()
         self._surface_item = gl.GLSurfacePlotItem(
@@ -66,7 +106,8 @@ class SurfacePreview(gl.GLViewWidget):
         self.addItem(self._surface_item)
 
         # Camera tuned for the launch default — Gaussian (amp 0.5 mm,
-        # sigma 8 mm) on a 480x640 grid (~64x48 mm footprint).
+        # sigma 8 mm) on a 480x640 grid (~64x48 mm footprint), with
+        # Z_EXAGGERATION = 20 making a 10-display-mm peak.
         self.setCameraPosition(distance=110, elevation=30, azimuth=45)
 
     def _add_reference_grid(self) -> None:
@@ -76,23 +117,44 @@ class SurfacePreview(gl.GLViewWidget):
         grid.setSpacing(x=10, y=10)
         self.addItem(grid)
 
-    def update_heightmap(self, heightmap_mm: np.ndarray) -> None:
+    def update_heightmap(
+        self,
+        heightmap_mm: np.ndarray,
+        error_mm: Optional[np.ndarray] = None,
+    ) -> None:
         """Replace the rendered surface with the given (H, W) heightmap.
 
-        Called by main_window on dropdown / slider changes. Recomputes
-        per-vertex colors via the cached viridis colormap and pushes
-        the new (x, y, z, colors) into the GLSurfacePlotItem.
+        Parameters
+        ----------
+        heightmap_mm : (H, W) ndarray
+            Height in mm. Used for surface geometry; Z is scaled by
+            `Z_EXAGGERATION` before rendering.
+        error_mm : (H, W) ndarray, optional
+            Signed error in mm. When provided, surface is colored by
+            the error via a diverging colormap symmetric about zero;
+            otherwise colored by height via viridis.
 
-        Performance note: at (480, 640) = 307,200 vertices, each call
-        does one O(H*W) colormap lookup and one OpenGL buffer upload.
-        If slider drag feels sluggish, downsample inside this method
-        as a future optimization.
+            All-NaN: falls back to height-viridis (no exception). The
+            user sees a normal-looking surface; task 4c handles
+            warning the user that the recovery is invalid.
+
+            All-zero (or |max| < 1e-15): fills with the mid-colormap
+            color (white for CET-D1) to avoid division-by-zero.
+
+        Side effects
+        ------------
+        Caches the unscaled `heightmap_mm` as `self._last_heightmap`
+        for task 4c hooks.
         """
+        heightmap_mm = np.asarray(heightmap_mm, dtype=np.float64)
+        self._last_heightmap = heightmap_mm
+
         H, W = heightmap_mm.shape
         if self._z_shape != (H, W):
             self._rebuild_coordinate_arrays((H, W))
 
-        colors = self._compute_colors(heightmap_mm)
+        colors = self._compute_colors(heightmap_mm, error_mm)
+        z_scaled = heightmap_mm * Z_EXAGGERATION
 
         # pyqtgraph wants z[x_idx, y_idx] -> transpose our (H, W) to (W, H).
         # colors must be flat (W*H, 4) in C-order matching the vertex
@@ -100,7 +162,7 @@ class SurfacePreview(gl.GLViewWidget):
         self._surface_item.setData(
             x=self._x,
             y=self._y,
-            z=heightmap_mm.T,
+            z=z_scaled.T,
             colors=colors.transpose(1, 0, 2).reshape(-1, 4),
         )
 
@@ -111,17 +173,47 @@ class SurfacePreview(gl.GLViewWidget):
         self._y = (np.arange(H, dtype=np.float64) - (H - 1) / 2.0) * ps
         self._z_shape = shape
 
-    def _compute_colors(self, z: np.ndarray) -> np.ndarray:
-        """Map heightmap z values to per-vertex RGBA via viridis.
+    def _compute_colors(
+        self,
+        z: np.ndarray,
+        error: Optional[np.ndarray],
+    ) -> np.ndarray:
+        """Map values to per-vertex RGBA, viridis-on-z or diverging-on-error.
 
-        Normalizes z to [0, 1] using its own min/max. Falls back to
-        zeros when z is constant (e.g., make_flat or amplitude_mm=0)
-        to avoid division-by-zero. Returns float32 (H, W, 4).
+        Returns float32 (H, W, 4).
         """
+        if error is not None and not np.all(np.isnan(error)):
+            return self._compute_error_colors(error)
+        return self._compute_height_colors(z)
+
+    def _compute_height_colors(self, z: np.ndarray) -> np.ndarray:
+        """Viridis colormap on height range (task 3 default)."""
         z_min = float(z.min())
         z_max = float(z.max())
         if z_max > z_min:
             z_norm = (z - z_min) / (z_max - z_min)
         else:
             z_norm = np.zeros_like(z)
-        return self._cmap.map(z_norm, mode="float").astype(np.float32)
+        return self._cmap_height.map(z_norm, mode="float").astype(np.float32)
+
+    def _compute_error_colors(self, error: np.ndarray) -> np.ndarray:
+        """Diverging colormap on signed error, symmetric about zero."""
+        abs_max = float(np.nanmax(np.abs(error)))
+        if abs_max < 1e-15:
+            # All-zero (or near-zero) error: fill with the mid-colormap
+            # color (0.5 lookup, the diverging center).
+            mid = self._cmap_error.map(
+                np.array([0.5], dtype=np.float64), mode="float"
+            )[0]
+            colors = np.broadcast_to(mid, error.shape + (4,)).astype(np.float32)
+            return np.ascontiguousarray(colors)
+        # Map error in [-abs_max, +abs_max] to lookup in [0, 1].
+        # Replace NaN (mixed NaN within otherwise-finite array — shouldn't
+        # happen under the all-NaN fall-through guard in _compute_colors,
+        # but defensive) with 0.5 so it lands on the colormap center.
+        normalized = np.where(
+            np.isnan(error),
+            0.5,
+            (error / abs_max + 1.0) / 2.0,
+        )
+        return self._cmap_error.map(normalized, mode="float").astype(np.float32)

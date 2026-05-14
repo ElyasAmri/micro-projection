@@ -1,22 +1,33 @@
-"""main_window.py — Stage 4a task 4 GUI: full pipeline integration.
+"""main_window.py — Stage 4a task 4b GUI: error overlay + Z exaggeration.
 
 QMainWindow with horizontal splitter:
 - Left pane: surface selector + per-surface param sliders, geometry
-  sliders, PSI step count, locked-hardware info panel.
-- Right pane: SurfacePreview rendering the RECOVERED height (the full
-  forward + inverse fringe-projection pipeline runs on every slider
-  change).
+  sliders, PSI step count, display-mode toggle, error-statistics
+  panel (hidden until overlay is on), locked-hardware info panel.
+- Right pane: SurfacePreview rendering the RECOVERED height, with
+  optional error-overlay coloring.
 
-Behavior wired in this commit (Stage 4a task 4)
------------------------------------------------
-- Surface QComboBox switches the QStackedWidget page (carried over
-  from task 2) AND triggers `_refresh_surface_preview` (task 3).
-- Every surface-param slider (8 total) triggers `_refresh_surface_preview`.
-- NEW: `theta_projector_deg`, `theta_camera_deg`, and `psi_steps`
-  now also trigger `_refresh_surface_preview`.
-- The refresh slot now runs the full pipeline (test_surfaces -> geometry
-  -> synth -> phase-shift -> unwrap -> calibrate -> reconstruct) and
-  pushes the RECOVERED heightmap into the 3D view.
+Stage 4a task 4b additions
+--------------------------
+- "Display Mode" groupbox with `Show error overlay` checkbox.
+- "Error Statistics" groupbox (hidden by default) showing mean, std,
+  max abs, RMS of recovered - true error in mm.
+- Toggling overlay re-routes coloring in `SurfacePreview`:
+  off -> viridis on height (task 3 behavior);
+  on  -> diverging blue-white-red on signed error, symmetric.
+- Z exaggeration (in SurfacePreview) magnifies sub-mm surfaces for
+  visibility.
+- Gaussian amplitude, Step height, Sphere cap-height slider maxes
+  bumped to 100 mm so the user can drive recovery into clearly-
+  visible regimes for the error-overlay demonstration.
+
+Pre-existing behaviors carried forward
+--------------------------------------
+- Surface dropdown switches QStackedWidget pages (task 2) AND
+  triggers `_refresh_surface_preview` (task 3).
+- Surface sliders + theta_projector + theta_camera + psi_steps all
+  trigger `_refresh_surface_preview`.
+- Full pipeline runs in `_refresh_surface_preview` (task 4).
 
 Still inert
 -----------
@@ -26,12 +37,11 @@ Still inert
 
 Hardcoded geometry constants
 ----------------------------
-M=11.1, p=2.0, a=50.0 in `_build_geometry()` match the info panel's
-locked values from task 2. These have a known dimensional mismatch
-with the math layer (which uses pixel-index X internally and modern-
-convention M); see commit 4/N message and PROJECT_CONTEXT Sec 12.
-They will move to a config object when the info panel exposes
-hardware-derived values.
+`_build_geometry()` uses notebook pixel-space values (M=1.0, p=40 px,
+a=2000 px) that match the math layer's conventions; the info panel's
+mm-space display values (M=11.1, p=2.0 mm, a=50 mm) are decorative
+for now and will be reconciled when real hardware arrives in Stage
+5/6. See commit 4/N message and PROJECT_CONTEXT Sec 12.
 """
 from __future__ import annotations
 
@@ -40,6 +50,7 @@ from typing import Optional
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QGridLayout,
     QGroupBox,
@@ -194,10 +205,57 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_surface_group())
         layout.addWidget(self._build_geometry_group())
         layout.addWidget(self._build_psi_group())
+        # Task 4b additions: display-mode toggle + error stats panel.
+        layout.addWidget(self._build_display_mode_group())
+        layout.addWidget(self._build_error_stats_group())
         layout.addWidget(self._build_info_panel())
         layout.addStretch(1)
 
         return panel
+
+    def _build_display_mode_group(self) -> QGroupBox:
+        """`Show error overlay` checkbox. Default unchecked."""
+        box = QGroupBox("Display Mode")
+        layout = QHBoxLayout(box)
+        self.show_error_overlay = QCheckBox("Show error overlay")
+        self.show_error_overlay.setChecked(False)
+        layout.addWidget(self.show_error_overlay)
+        layout.addStretch(1)
+        return box
+
+    def _build_error_stats_group(self) -> QGroupBox:
+        """Error statistics readout. Hidden until overlay is enabled."""
+        box = QGroupBox("Error Statistics")
+        grid = QGridLayout(box)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+
+        self.stat_mean = QLabel("—")
+        self.stat_std = QLabel("—")
+        self.stat_max_abs = QLabel("—")
+        self.stat_rms = QLabel("—")
+
+        rows = [
+            ("Mean error:", self.stat_mean),
+            ("Std error:", self.stat_std),
+            ("Max abs error:", self.stat_max_abs),
+            ("RMS error:", self.stat_rms),
+        ]
+        for row_idx, (name, value_label) in enumerate(rows):
+            name_label = QLabel(name)
+            name_label.setStyleSheet("color: #888;")
+            value_label.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            value_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            grid.addWidget(name_label, row_idx, 0)
+            grid.addWidget(value_label, row_idx, 1)
+
+        box.setVisible(False)
+        self.error_stats_group = box
+        return box
 
     def _build_surface_group(self) -> QGroupBox:
         box = QGroupBox("Test Surface")
@@ -243,8 +301,10 @@ class MainWindow(QMainWindow):
     def _build_gaussian_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        # Range widened to 0..100 mm in task 4b so the user can drive
+        # recovery into clearly-visible regimes for the error overlay.
         self.gaussian_amplitude = LabeledFloatSlider(
-            "amplitude_mm", 0.0, 2.0, 0.5, 0.01
+            "amplitude_mm", 0.0, 100.0, 0.5, 0.01
         )
         self.gaussian_sigma = LabeledFloatSlider("sigma_mm", 1.0, 30.0, 8.0, 0.1)
         layout.addWidget(self.gaussian_amplitude)
@@ -254,7 +314,8 @@ class MainWindow(QMainWindow):
     def _build_step_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.step_height = LabeledFloatSlider("height_mm", -2.0, 2.0, 0.5, 0.01)
+        # Range widened to +/-100 mm in task 4b (see Gaussian amplitude).
+        self.step_height = LabeledFloatSlider("height_mm", -100.0, 100.0, 0.5, 0.01)
         self.step_edge_x = LabeledFloatSlider("edge_x_mm", -30.0, 30.0, 0.0, 0.1)
         layout.addWidget(self.step_height)
         layout.addWidget(self.step_edge_x)
@@ -263,8 +324,9 @@ class MainWindow(QMainWindow):
     def _build_sphere_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
+        # Range widened to 0.01..100 mm in task 4b (see Gaussian amplitude).
         self.sphere_cap_height = LabeledFloatSlider(
-            "cap_height_mm", 0.01, 2.0, 0.5, 0.01
+            "cap_height_mm", 0.01, 100.0, 0.5, 0.01
         )
         self.sphere_footprint = LabeledFloatSlider(
             "footprint_radius_mm", 1.0, 30.0, 20.0, 0.1
@@ -351,6 +413,9 @@ class MainWindow(QMainWindow):
         self.theta_camera.valueChanged.connect(self._refresh_surface_preview)
         self.psi_steps.valueChanged.connect(self._refresh_surface_preview)
 
+        # Stage 4a task 4b addition: error overlay toggle.
+        self.show_error_overlay.toggled.connect(self._on_overlay_toggled)
+
     def _all_surface_sliders(self) -> list[LabeledFloatSlider]:
         return [
             self.tilt_slope_x,
@@ -364,12 +429,19 @@ class MainWindow(QMainWindow):
         ]
 
     def _refresh_surface_preview(self, *_args: object) -> None:
-        """Recompute heightmap, run the pipeline, push recovered to view.
+        """Recompute heightmap, run the pipeline, push to view.
 
         Accepts any number of signal args (`currentIndexChanged(int)`,
         `valueChanged(float)` from LabeledFloatSlider, and
         `valueChanged(int)` from QSpinBox all connect here) and
         discards them.
+
+        Branches on `self.show_error_overlay`:
+        - OFF: render recovered surface with viridis-on-height (task 3
+          default).
+        - ON:  render recovered surface colored by signed error
+          (recovered - heightmap) with the diverging colormap, and
+          update the error-statistics labels.
         """
         heightmap = self._compute_current_heightmap()
         geometry = self._build_geometry()
@@ -378,7 +450,42 @@ class MainWindow(QMainWindow):
             geometry=geometry,
             n_psi_steps=self.psi_steps.value(),
         )
-        self.view_3d.update_heightmap(recovered)
+
+        if self.show_error_overlay.isChecked():
+            error = recovered - heightmap
+            self.view_3d.update_heightmap(recovered, error_mm=error)
+            self._update_error_stats(error)
+        else:
+            self.view_3d.update_heightmap(recovered)
+
+    def _on_overlay_toggled(self, checked: bool) -> None:
+        """Show/hide the stats panel and re-render."""
+        self.error_stats_group.setVisible(checked)
+        self._refresh_surface_preview()
+
+    def _update_error_stats(self, error: np.ndarray) -> None:
+        """Refresh the four QLabels in the Error Statistics groupbox.
+
+        Uses NaN-safe reductions so the degenerate λ_eq case (error
+        all NaN) shows `—` instead of crashing.
+        """
+        if np.all(np.isnan(error)):
+            for label in (
+                self.stat_mean, self.stat_std,
+                self.stat_max_abs, self.stat_rms,
+            ):
+                label.setText("—")
+            return
+
+        mean = float(np.nanmean(error))
+        std = float(np.nanstd(error))
+        max_abs = float(np.nanmax(np.abs(error)))
+        rms = float(np.sqrt(np.nanmean(error ** 2)))
+
+        self.stat_mean.setText(f"{mean:.5f} mm")
+        self.stat_std.setText(f"{std:.5f} mm")
+        self.stat_max_abs.setText(f"{max_abs:.5f} mm")
+        self.stat_rms.setText(f"{rms:.5f} mm")
 
     def _build_geometry(self) -> HybridGeometry:
         """Construct a HybridGeometry from current slider values.
