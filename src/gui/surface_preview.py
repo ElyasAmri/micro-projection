@@ -52,6 +52,8 @@ import pyqtgraph.opengl as gl
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QWidget
 
+from src.gui.hardware_scene import HardwareScene
+
 
 # Locked at the launch-default Stage 4a grid. Revisit when the info
 # panel exposes hardware-derived pitch.
@@ -197,19 +199,54 @@ class SurfacePreview(gl.GLViewWidget):
         )
         self.addItem(self._surface_item)
 
+        # Stage 4b task 3: hardware bodies live in the same scene as
+        # the recovered surface. `HardwareScene` adds 4 GLMeshItems
+        # (camera body + lens, projector body + lens) at identity
+        # transforms; main_window calls `update_hardware_pose` once
+        # after construction to position them at slider defaults.
+        self._hardware_scene = HardwareScene(self)
+
         # Camera tuned for the launch default — Gaussian (amp 0.5 mm,
         # sigma 8 mm) on a 480x640 grid (~64x48 mm footprint), with
-        # Z_EXAGGERATION = 2 making a ~1-display-mm peak. Distance
-        # dropped from 110 (task 4b's 20× setup) to 80 to keep the
-        # subtler dome readable.
-        self.setCameraPosition(distance=80, elevation=30, azimuth=45)
+        # Z_EXAGGERATION = 2 making a ~1-display-mm peak. Stage 4b
+        # task 3: distance pulled back from 80 to 600 so the camera
+        # assembly fits in frame. With WD=157 mm and a 200 mm lens,
+        # the camera body sits 157 + 215 = 372 mm from the surface
+        # along its arm — the scene now spans ~400 mm in z.
+        self.setCameraPosition(distance=600, elevation=20, azimuth=45)
 
     def _add_reference_grid(self) -> None:
-        """XY plane at z=0, 80x80 mm with 10 mm spacing."""
+        """XY plane at z=0, sized large enough to read the lab apparatus.
+
+        Stage 4b task 3: grid bumped from 80x80 mm (Stage 4a default,
+        sized just for the surface footprint) to 300x300 mm so the
+        camera/projector bodies at ~150 mm distance have a visible
+        floor beneath them in the same scene.
+        """
         grid = gl.GLGridItem()
-        grid.setSize(x=80, y=80)
-        grid.setSpacing(x=10, y=10)
+        grid.setSize(x=300, y=300)
+        grid.setSpacing(x=25, y=25)
         self.addItem(grid)
+
+    def update_hardware_pose(
+        self,
+        theta_camera_deg: float,
+        theta_projector_deg: float,
+        projector_distance_mm: float,
+        camera_distance_mm: float,
+    ) -> None:
+        """Push fresh poses into the four hardware GLMeshItems.
+
+        Thin pass-through to `HardwareScene.update_pose`. Kept on the
+        SurfacePreview class so main_window doesn't reach across into
+        the HardwareScene directly.
+        """
+        self._hardware_scene.update_pose(
+            theta_camera_deg=theta_camera_deg,
+            theta_projector_deg=theta_projector_deg,
+            projector_distance_mm=projector_distance_mm,
+            camera_distance_mm=camera_distance_mm,
+        )
 
     def update_heightmap(
         self,

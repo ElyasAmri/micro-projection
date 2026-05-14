@@ -205,6 +205,15 @@ class LabeledFloatSlider(QWidget):
         """Current slider value as a float."""
         return self._slider.value() / self._scale
 
+    def set_value(self, v: float) -> None:
+        """Programmatically set the slider value.
+
+        Clamps to the slider's int range under the hood and emits
+        `valueChanged(float)` if the new value differs from the
+        current one. Used by smoke tests and any future automation.
+        """
+        self._slider.setValue(int(round(v * self._scale)))
+
 
 class MainWindow(QMainWindow):
     """Top-level window. Horizontal splitter; left = controls, right = 3D."""
@@ -223,6 +232,11 @@ class MainWindow(QMainWindow):
         self._wire_surface_refresh()
         # Initial render — pushes the default Gaussian into the view.
         self._refresh_surface_preview()
+        # Stage 4b task 3: position the four hardware bodies at the
+        # initial slider values. Without this, the bodies sit at
+        # identity transforms (overlapping at the world origin) until
+        # the first slider drag.
+        self._on_pose_changed()
 
     # ------------------------------------------------------------------
     # Left pane — control panel
@@ -392,12 +406,26 @@ class MainWindow(QMainWindow):
         self.theta_camera = LabeledFloatSlider(
             "theta_camera_deg", -60.0, 60.0, 30.0, 1.0, suffix="°"
         )
+        # Stage 4b task 3: distance sliders use the optics convention —
+        # lens-front to surface (NOT body-center to surface). The
+        # `compute_arm_transforms` math adds the body+lens offset
+        # internally so the lens front lands at the slider value above
+        # the surface.
         self.projector_distance = LabeledFloatSlider(
-            "projector_distance_mm", 50.0, 200.0, 150.0, 1.0, suffix=" mm"
+            "projector_throw_mm", 50.0, 200.0, 150.0, 1.0, suffix=" mm"
+        )
+        # `camera_distance` is the Edmund #58-259 working distance.
+        # The lens stays in focus across 132-182 mm; the bias math
+        # treats M as locked across this range (telecentric property),
+        # so this slider only drives the lab-view scene, not the
+        # pipeline. Default 157 mm = mid-range.
+        self.camera_distance = LabeledFloatSlider(
+            "camera_wd_mm", 132.0, 182.0, 157.0, 1.0, suffix=" mm"
         )
         layout.addWidget(self.theta_projector)
         layout.addWidget(self.theta_camera)
         layout.addWidget(self.projector_distance)
+        layout.addWidget(self.camera_distance)
         return box
 
     def _build_psi_group(self) -> QGroupBox:
@@ -509,17 +537,27 @@ class MainWindow(QMainWindow):
     # Surface refresh wiring (task 3)
     # ------------------------------------------------------------------
     def _wire_surface_refresh(self) -> None:
-        """Connect every control whose change should re-run the pipeline.
+        """Connect every control whose change should re-run the pipeline
+        and / or update the hardware-body poses in the 3D scene.
+
+        Two slots fan out from the geometry sliders now (Stage 4b task 3):
+
+        - `_refresh_surface_preview` (existing, expensive — full math
+          pipeline). Connected for theta sliders only; the distance
+          sliders don't drive the bias math (M is locked by the
+          telecentric camera lens, and `a` is fixed inside the
+          projector — PROJECT_CONTEXT Sec 12).
+
+        - `_on_pose_changed` (new, cheap — three matrix multiplies and
+          four `setTransform` calls). Connected for all four pose
+          sliders: both theta sliders, both distance sliders. Drives
+          the hardware-body positions / orientations in the 3D scene
+          in lockstep with slider drags.
 
         Sliders on non-visible surface pages still emit signals when
         (rarely) their values change programmatically; the slot reads
         only the currently-visible page's values, so non-visible
         emissions are harmless no-ops.
-
-        Note: `projector_distance` is intentionally NOT connected — it
-        affects coverage / lab-view geometry only, not the bias math
-        (PROJECT_CONTEXT Sec 12). Wiring it would trigger pointless
-        pipeline re-runs.
         """
         self.surface_combo.currentIndexChanged.connect(
             self._refresh_surface_preview
@@ -531,6 +569,15 @@ class MainWindow(QMainWindow):
         self.theta_projector.valueChanged.connect(self._refresh_surface_preview)
         self.theta_camera.valueChanged.connect(self._refresh_surface_preview)
         self.psi_steps.valueChanged.connect(self._refresh_surface_preview)
+
+        # Stage 4b task 3: pose sliders drive the hardware-body scene.
+        # Theta sliders ALREADY trigger pipeline reruns above; this adds
+        # the (cheap) pose-update path on top. Distance sliders trigger
+        # ONLY the pose update — they don't enter the math layer.
+        self.theta_projector.valueChanged.connect(self._on_pose_changed)
+        self.theta_camera.valueChanged.connect(self._on_pose_changed)
+        self.projector_distance.valueChanged.connect(self._on_pose_changed)
+        self.camera_distance.valueChanged.connect(self._on_pose_changed)
 
         # Stage 4a task 4b addition: error overlay toggle.
         self.show_error_overlay.toggled.connect(self._on_overlay_toggled)
@@ -629,6 +676,23 @@ class MainWindow(QMainWindow):
         """Show/hide the stats panel and re-render."""
         self.error_stats_group.setVisible(checked)
         self._refresh_surface_preview()
+
+    def _on_pose_changed(self, *_args: object) -> None:
+        """Push fresh hardware-body poses into the 3D scene.
+
+        Stage 4b task 3 slot. Cheap path (3 matrix multiplies + 4
+        `setTransform` calls). Fires on every pose-slider drag,
+        independent of the math-pipeline rerun.
+
+        Accepts variadic args so it can be connected directly to
+        `valueChanged(float)`-emitting sliders without an adapter.
+        """
+        self.view_3d.update_hardware_pose(
+            theta_camera_deg=self.theta_camera.value(),
+            theta_projector_deg=self.theta_projector.value(),
+            projector_distance_mm=self.projector_distance.value(),
+            camera_distance_mm=self.camera_distance.value(),
+        )
 
     def _on_view_mode_changed(self, _checked: bool) -> None:
         """Switch the right-pane stack page and refresh.
