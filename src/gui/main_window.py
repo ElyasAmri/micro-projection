@@ -1,30 +1,37 @@
-"""main_window.py — Stage 4a task 3 GUI: surface controls wired to 3D preview.
+"""main_window.py — Stage 4a task 4 GUI: full pipeline integration.
 
 QMainWindow with horizontal splitter:
 - Left pane: surface selector + per-surface param sliders, geometry
   sliders, PSI step count, locked-hardware info panel.
-- Right pane: SurfacePreview (3D heightmap render with viridis
-  colormap).
+- Right pane: SurfacePreview rendering the RECOVERED height (the full
+  forward + inverse fringe-projection pipeline runs on every slider
+  change).
 
-Behavior wired in this commit (Stage 4a task 3)
+Behavior wired in this commit (Stage 4a task 4)
 -----------------------------------------------
 - Surface QComboBox switches the QStackedWidget page (carried over
-  from task 2).
-- Surface QComboBox change ALSO triggers `_refresh_surface_preview`
-  (new), which reads the current page's slider values and pushes a
-  freshly-computed heightmap into the 3D view.
-- Every surface-param slider (8 total across 4 pages) triggers
-  `_refresh_surface_preview` via the new `LabeledFloatSlider.valueChanged`
-  signal.
+  from task 2) AND triggers `_refresh_surface_preview` (task 3).
+- Every surface-param slider (8 total) triggers `_refresh_surface_preview`.
+- NEW: `theta_projector_deg`, `theta_camera_deg`, and `psi_steps`
+  now also trigger `_refresh_surface_preview`.
+- The refresh slot now runs the full pipeline (test_surfaces -> geometry
+  -> synth -> phase-shift -> unwrap -> calibrate -> reconstruct) and
+  pushes the RECOVERED heightmap into the 3D view.
 
-Still inert (deferred to task 4)
---------------------------------
-Geometry sliders (theta_projector, theta_camera, projector_distance),
-PSI step count, info-panel labels.
+Still inert
+-----------
+- `projector_distance_mm` slider — affects coverage / lab view only,
+  not the bias math (PROJECT_CONTEXT Sec 12).
+- Info-panel labels — readonly display.
 
-First math-module import: `src.test_surfaces`. The task-2 "no math
-imports" constraint is deliberately lifted here — wiring those
-generators into the GUI is the point of this task.
+Hardcoded geometry constants
+----------------------------
+M=11.1, p=2.0, a=50.0 in `_build_geometry()` match the info panel's
+locked values from task 2. These have a known dimensional mismatch
+with the math layer (which uses pixel-index X internally and modern-
+convention M); see commit 4/N message and PROJECT_CONTEXT Sec 12.
+They will move to a config object when the info panel exposes
+hardware-derived values.
 """
 from __future__ import annotations
 
@@ -47,6 +54,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from geometry import HybridGeometry
+from pipeline import run_pipeline
 from src.gui.surface_preview import SurfacePreview
 from src.test_surfaces import (
     make_flat,
@@ -61,6 +70,19 @@ from src.test_surfaces import (
 # hardware-derived values.
 SURFACE_SHAPE: tuple[int, int] = (480, 640)
 SURFACE_PIXEL_SIZE_MM: float = 0.1
+
+# Hardcoded geometry constants in NOTEBOOK PIXEL-SPACE UNITS.
+# The math layer (synthetic_fringes.project's X = np.arange(W),
+# geometry.py's M_modern convention) was written in pixel-space, so
+# these values match the notebook/regression-fixture conventions —
+# NOT the info panel's mm-space display values (M=11.1, p=2.0 mm,
+# a=50 mm). Unit reconciliation between info panel and math layer
+# is a deferred Stage 5/6 concern; when real hardware arrives, these
+# constants will be derived from the info panel + the camera's
+# object-space pixel pitch. See module docstring.
+GEOMETRY_M: float = 1.0
+GEOMETRY_P_PX: float = 40.0
+GEOMETRY_A_PX: float = 2000.0
 
 
 # Locked hardware values for the info panel (PROJECT_CONTEXT Sec 2 +
@@ -306,18 +328,28 @@ class MainWindow(QMainWindow):
     # Surface refresh wiring (task 3)
     # ------------------------------------------------------------------
     def _wire_surface_refresh(self) -> None:
-        """Connect dropdown + every surface slider to the refresh slot.
+        """Connect every control whose change should re-run the pipeline.
 
-        Sliders on non-visible pages still emit signals when (rarely)
-        their values change programmatically; the slot reads only the
-        currently-visible page's values, so non-visible emissions are
-        harmless no-ops.
+        Sliders on non-visible surface pages still emit signals when
+        (rarely) their values change programmatically; the slot reads
+        only the currently-visible page's values, so non-visible
+        emissions are harmless no-ops.
+
+        Note: `projector_distance` is intentionally NOT connected — it
+        affects coverage / lab-view geometry only, not the bias math
+        (PROJECT_CONTEXT Sec 12). Wiring it would trigger pointless
+        pipeline re-runs.
         """
         self.surface_combo.currentIndexChanged.connect(
             self._refresh_surface_preview
         )
         for slider in self._all_surface_sliders():
             slider.valueChanged.connect(self._refresh_surface_preview)
+
+        # Stage 4a task 4 additions: geometry sliders + PSI step count.
+        self.theta_projector.valueChanged.connect(self._refresh_surface_preview)
+        self.theta_camera.valueChanged.connect(self._refresh_surface_preview)
+        self.psi_steps.valueChanged.connect(self._refresh_surface_preview)
 
     def _all_surface_sliders(self) -> list[LabeledFloatSlider]:
         return [
@@ -332,13 +364,40 @@ class MainWindow(QMainWindow):
         ]
 
     def _refresh_surface_preview(self, *_args: object) -> None:
-        """Recompute the heightmap from current controls and push to view.
+        """Recompute heightmap, run the pipeline, push recovered to view.
 
-        Accepts any number of signal args (`currentIndexChanged(int)`
-        and `valueChanged(float)` both connect here) and discards them.
+        Accepts any number of signal args (`currentIndexChanged(int)`,
+        `valueChanged(float)` from LabeledFloatSlider, and
+        `valueChanged(int)` from QSpinBox all connect here) and
+        discards them.
         """
         heightmap = self._compute_current_heightmap()
-        self.view_3d.update_heightmap(heightmap)
+        geometry = self._build_geometry()
+        recovered = run_pipeline(
+            heightmap=heightmap,
+            geometry=geometry,
+            n_psi_steps=self.psi_steps.value(),
+        )
+        self.view_3d.update_heightmap(recovered)
+
+    def _build_geometry(self) -> HybridGeometry:
+        """Construct a HybridGeometry from current slider values.
+
+        M, p, a are hardcoded notebook pixel-space values (M=1.0,
+        p=40 px, a=2000 px) that match the math layer's expected
+        conventions. The info panel's display values (M=11.1
+        chapter, p=2.0 mm, a=50 mm) are decorative for now and
+        will be reconciled with the math layer when real hardware
+        arrives in Stage 5/6. Only the two arm-tilt angles come
+        from sliders.
+        """
+        return HybridGeometry(
+            M=GEOMETRY_M,
+            p=GEOMETRY_P_PX,
+            a=GEOMETRY_A_PX,
+            theta_projector=float(np.deg2rad(self.theta_projector.value())),
+            theta_camera=float(np.deg2rad(self.theta_camera.value())),
+        )
 
     def _compute_current_heightmap(self) -> np.ndarray:
         """Dispatch on current dropdown text -> matching make_* call."""
