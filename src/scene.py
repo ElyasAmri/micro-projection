@@ -6,15 +6,27 @@ already shows the recovered surface. This module produces the raw
 geometry primitives; the GUI layer wraps each `(verts, faces)` tuple
 into a `pyqtgraph.opengl.GLMeshItem` separately.
 
-Scope (sub-task 1)
-------------------
-- `make_camera_body()`   — FLIR Blackfly S body, 29 x 29 x 30 mm.
-- `make_projector_body()`— Pico Genie Impact 2.0 Plus Elite cube,
-                           55 x 55 x 55 mm.
+Scope (sub-tasks 1 and 2)
+-------------------------
+- `make_camera_body()`   — FLIR Blackfly S body, 29 x 29 x 30 mm box.
+- `make_projector_body()`— Pico Genie Impact 2.0 Plus Elite, 55 mm cube.
+- `make_camera_lens()`   — Edmund Optics #58-259 stepped lens body,
+                           total length 200 mm along local +Z.
+- `make_projector_lens()`— Short 20 x 5 mm stub cylinder.
 
-Both bodies are centered on the origin of the scene frame. Pose
-(translation + rotation into the lab frame) is sub-task 2's concern;
-this module just produces geometrically correct boxes.
+All bodies and lenses are centered on the origin of their own local
+frame. Pose (translation + rotation into the lab/world frame) is the
+concern of `scene_compose.py`; this module just produces geometrically
+correct primitives in local frames.
+
+Lens-local frame convention
+---------------------------
+Lenses are oriented along their local +Z axis (length runs from
+z = -L/2 to z = +L/2). The composition layer in `scene_compose.py`
+assumes "+Z is the optical axis pointing OUT of the lens (toward the
+test surface)." For the camera lens, the wider front element (110 mm
+dia) sits at +Z (closer to the surface) and the rear mount (55 mm
+dia) sits at -Z (closer to the camera body). The taper sits between.
 
 Return contract
 ---------------
@@ -138,3 +150,312 @@ def make_projector_body() -> Tuple[np.ndarray, np.ndarray]:
         CCW outward winding.
     """
     return _centered_box(55.0, 55.0, 55.0)
+
+
+# ---------------------------------------------------------------------------
+# Cylindrical primitives — used by lens builders.
+# ---------------------------------------------------------------------------
+
+def _cylinder(
+    diameter_mm: float, length_mm: float, n_segments: int = 32
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build a closed uniform cylinder along the local +Z axis, centered.
+
+    The cylinder spans `z in [-length/2, +length/2]` and has radius
+    `diameter/2`. Both ends are capped (closed solid).
+
+    Mesh layout (with `N = n_segments`):
+
+    - Vertices (total `2N + 2`):
+        - `verts[0 : N]`     — bottom ring at `z = -L/2`
+        - `verts[N : 2N]`    — top ring at `z = +L/2`
+        - `verts[2N]`        — bottom cap center
+        - `verts[2N + 1]`    — top cap center
+
+    - Faces (total `4N`):
+        - Side surface: `2N` triangles. For each angular segment `i`,
+          two triangles `(bot_i, bot_{i+1}, top_{i+1})` and
+          `(bot_i, top_{i+1}, top_i)`. Outward normals point radially.
+        - Bottom cap: `N` triangles fanning from `verts[2N]` to the
+          bottom ring, wound so the outward normal is `-Z`.
+        - Top cap: `N` triangles fanning from `verts[2N + 1]` to the
+          top ring, wound so the outward normal is `+Z`.
+
+    For `N = 32`: 66 verts, 128 triangles.
+
+    Parameters
+    ----------
+    diameter_mm : float
+        Cylinder diameter. Must be > 0.
+    length_mm : float
+        Cylinder length along the local +Z axis. Must be > 0.
+    n_segments : int
+        Number of angular subdivisions of the side surface. Must be >= 3.
+        Default 32 — smooth enough for a digital-twin scene; bump for
+        finer renders if needed.
+
+    Returns
+    -------
+    verts : (2N + 2, 3) float32, units mm
+    faces : (4N, 3) uint32
+        CCW outward winding.
+    """
+    n = int(n_segments)
+    r = float(diameter_mm) / 2.0
+    half_l = float(length_mm) / 2.0
+
+    angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False, dtype=np.float64)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+
+    verts = np.empty((2 * n + 2, 3), dtype=np.float32)
+    verts[:n, 0] = r * cos_a
+    verts[:n, 1] = r * sin_a
+    verts[:n, 2] = -half_l
+    verts[n : 2 * n, 0] = r * cos_a
+    verts[n : 2 * n, 1] = r * sin_a
+    verts[n : 2 * n, 2] = +half_l
+    verts[2 * n] = (0.0, 0.0, -half_l)         # bottom cap center
+    verts[2 * n + 1] = (0.0, 0.0, +half_l)     # top cap center
+
+    faces = _build_cylinder_faces(bot_offset=0, top_offset=n,
+                                  bot_center=2 * n, top_center=2 * n + 1,
+                                  n_segments=n)
+    return verts, faces
+
+
+def _stepped_cylinder(
+    sections, n_segments: int = 32
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build a closed multi-section solid of revolution along local +Z.
+
+    Each section is a `(d_start, d_end, length)` triple:
+    - `d_start == d_end`  -> uniform cylinder section
+    - `d_start != d_end`  -> conical frustum section
+    Sections are concatenated along the local +Z axis from `z = -total/2`
+    to `z = +total/2`. The solid is closed by end caps at the first
+    section's start and the last section's end.
+
+    Note on API
+    -----------
+    The original sub-task-2 prompt specified `(diameter, length)` 2-tuples,
+    which cannot express a section with a non-zero-length taper between
+    different diameters (a section with one diameter is a uniform
+    cylinder; transitions between sections of different diameters would
+    form zero-length frustum walls). The 3-tuple form `(d_start, d_end,
+    length)` is the smallest extension that lets a single section
+    represent either a cylinder OR a tapered frustum of finite length —
+    which the camera lens needs.
+
+    Mesh layout (with `N = n_segments` and `K = len(sections)`):
+
+    - Ring layers along z: `K + 1` rings of `N` verts each. Ring `k`
+      sits at `z = -total/2 + sum(section_lengths[:k])` and has radius
+      derived from section diameters (ring 0 uses `sections[0][0]`;
+      ring K uses `sections[K-1][1]`; interior ring `k` uses
+      `sections[k-1][1]` which equals `sections[k][0]` for C0-continuous
+      profiles).
+    - Plus 2 cap centers: bottom center at `z = -total/2`,
+      top center at `z = +total/2`.
+    - Total verts: `(K + 1) * N + 2`.
+
+    - Side faces: between each consecutive ring pair, `2N` triangles
+      (one trapezoidal quad per angular segment, split into 2 tris).
+      Total side tris: `2 K N`.
+    - Cap faces: `N` tris each for bottom and top caps. Total: `2N`.
+    - Total faces: `2N (K + 1)`.
+
+    For the camera lens (K = 3, N = 32): 130 verts, 256 triangles.
+
+    Parameters
+    ----------
+    sections : sequence of (float, float, float)
+        Triples of `(d_start, d_end, length)` in mm. All values must be
+        positive. The list must be non-empty.
+    n_segments : int
+        Angular subdivision count. Must be >= 3.
+
+    Returns
+    -------
+    verts : ((K+1)*N + 2, 3) float32, units mm
+    faces : (2N*(K+1), 3) uint32
+        CCW outward winding.
+    """
+    n = int(n_segments)
+    secs = [(float(a), float(b), float(L)) for a, b, L in sections]
+    if not secs:
+        raise ValueError("sections must be non-empty")
+    total_length = sum(L for _, _, L in secs)
+    half_l = total_length / 2.0
+
+    # Ring radii: K+1 layers. Layer k uses the d_start of section k for
+    # k < K, and the d_end of the last section for k == K. (For C0-
+    # continuous profiles, sections[k-1].d_end == sections[k].d_start.)
+    radii = [secs[0][0] / 2.0]
+    for _, d_end, _ in secs:
+        radii.append(d_end / 2.0)
+
+    # Ring z-positions: cumulative sum of section lengths, shifted so
+    # the assembly is centered on origin.
+    z_positions = [-half_l]
+    cumulative = 0.0
+    for _, _, L in secs:
+        cumulative += L
+        z_positions.append(-half_l + cumulative)
+
+    angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False, dtype=np.float64)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+
+    n_rings = len(radii)
+    verts = np.empty((n_rings * n + 2, 3), dtype=np.float32)
+    for k in range(n_rings):
+        r_k = radii[k]
+        z_k = z_positions[k]
+        verts[k * n : (k + 1) * n, 0] = r_k * cos_a
+        verts[k * n : (k + 1) * n, 1] = r_k * sin_a
+        verts[k * n : (k + 1) * n, 2] = z_k
+    verts[n_rings * n] = (0.0, 0.0, z_positions[0])      # bottom cap center
+    verts[n_rings * n + 1] = (0.0, 0.0, z_positions[-1]) # top cap center
+
+    # Build side faces between each consecutive ring pair, plus caps at
+    # the first and last rings.
+    face_lists = []
+    for k in range(n_rings - 1):
+        face_lists.append(
+            _build_side_faces(bot_offset=k * n, top_offset=(k + 1) * n, n_segments=n)
+        )
+    face_lists.append(
+        _build_cap_faces(ring_offset=0,
+                         center_index=n_rings * n,
+                         n_segments=n, outward_z=-1)
+    )
+    face_lists.append(
+        _build_cap_faces(ring_offset=(n_rings - 1) * n,
+                         center_index=n_rings * n + 1,
+                         n_segments=n, outward_z=+1)
+    )
+    faces = np.concatenate(face_lists, axis=0).astype(np.uint32, copy=False)
+    return verts, faces
+
+
+# --- Cylinder/frustum face-builder helpers ---------------------------------
+
+def _build_side_faces(bot_offset: int, top_offset: int, n_segments: int) -> np.ndarray:
+    """Two triangles per angular segment between bottom and top rings.
+
+    Winding: outward normals point radially away from the z-axis.
+    Concretely, for angular segment i (bottom-left to top-right pair):
+        tri1 = (bot_i,     bot_{i+1}, top_{i+1})
+        tri2 = (bot_i,     top_{i+1}, top_i)
+    Both have `cross(e1, e2)` pointing radially outward when the bottom
+    ring is below the top ring along +Z. This also produces outward
+    normals for tapered frustums where bottom and top radii differ.
+    """
+    n = n_segments
+    faces = np.empty((2 * n, 3), dtype=np.uint32)
+    for i in range(n):
+        i_next = (i + 1) % n
+        b0, b1 = bot_offset + i, bot_offset + i_next
+        t0, t1 = top_offset + i, top_offset + i_next
+        faces[2 * i]     = (b0, b1, t1)
+        faces[2 * i + 1] = (b0, t1, t0)
+    return faces
+
+
+def _build_cap_faces(
+    ring_offset: int, center_index: int, n_segments: int, outward_z: int
+) -> np.ndarray:
+    """Fan-triangulate a cap from `center_index` out to the ring.
+
+    `outward_z = +1` means the cap's outward normal points +Z (top cap);
+    `outward_z = -1` means -Z (bottom cap). The winding flips between
+    the two so `cross(e1, e2)` lands in the requested direction.
+    """
+    n = n_segments
+    faces = np.empty((n, 3), dtype=np.uint32)
+    for i in range(n):
+        i_next = (i + 1) % n
+        if outward_z > 0:
+            # Top cap: viewed from +Z, ring vertices in CCW order.
+            faces[i] = (center_index, ring_offset + i, ring_offset + i_next)
+        else:
+            # Bottom cap: viewed from -Z, ring vertices need CW order
+            # (so the cross product points -Z).
+            faces[i] = (center_index, ring_offset + i_next, ring_offset + i)
+    return faces
+
+
+def _build_cylinder_faces(
+    bot_offset: int, top_offset: int, bot_center: int, top_center: int,
+    n_segments: int
+) -> np.ndarray:
+    """Combined side + bottom-cap + top-cap face list for a uniform cylinder."""
+    return np.concatenate(
+        [
+            _build_side_faces(bot_offset, top_offset, n_segments),
+            _build_cap_faces(bot_offset, bot_center, n_segments, outward_z=-1),
+            _build_cap_faces(top_offset, top_center, n_segments, outward_z=+1),
+        ],
+        axis=0,
+    ).astype(np.uint32, copy=False)
+
+
+# ---------------------------------------------------------------------------
+# Lens builders.
+# ---------------------------------------------------------------------------
+
+def make_camera_lens() -> Tuple[np.ndarray, np.ndarray]:
+    """Build the Edmund Optics #58-259 telecentric lens mesh.
+
+    Stepped profile along local +Z (front element at +Z, rear mount at
+    -Z; the rear mount is the side that meets the camera body):
+
+        Rear cylinder:    55 mm diameter,  76 mm long   (at -Z, meets body)
+        Taper:             55 mm -> 110 mm,  59 mm long (widens going +Z)
+        Front cylinder:  110 mm diameter,  65 mm long   (at +Z, faces surface)
+        Total length:                     200 mm
+
+    Centered origin in lens-local frame; the bounding box spans
+    [-100, +100] mm on z and [-55, +55] mm on x and y.
+
+    The hardware values for length (65 / 59 / 76) are estimates pending
+    the physical measurement called out in PROJECT_CONTEXT.md Sec 8
+    item 8; the visible shape (fat front, taper, thin rear, ~200 mm
+    total) is what matters for the digital-twin scene.
+
+    Returns
+    -------
+    verts : (130, 3) float32, units mm
+    faces : (256, 3) uint32
+        CCW outward winding.
+    """
+    sections = [
+        ( 55.0,  55.0, 76.0),   # rear mount at -Z (meets camera body)
+        ( 55.0, 110.0, 59.0),   # taper widens going +Z
+        (110.0, 110.0, 65.0),   # front element at +Z (faces surface)
+    ]
+    return _stepped_cylinder(sections)
+
+
+def make_projector_lens() -> Tuple[np.ndarray, np.ndarray]:
+    """Build the Pico Genie projector lens mesh.
+
+    Uniform cylinder: 20 mm diameter, 5 mm long along local +Z.
+    Centered origin in lens-local frame; bounding box spans
+    [-10, +10] on x and y, [-2.5, +2.5] on z.
+
+    The Pico Genie's measured lens position is OFF-CENTER on the
+    projector body's front face (X = -6.5 mm relative to body center).
+    That horizontal offset is composed at scene-assembly time in
+    `scene_compose.py`, not encoded in this mesh — the lens mesh is
+    a centered cylinder; the GUI applies the offset translation when
+    composing the projector assembly.
+
+    Returns
+    -------
+    verts : (66, 3) float32, units mm
+    faces : (128, 3) uint32
+        CCW outward winding.
+    """
+    return _cylinder(20.0, 5.0)

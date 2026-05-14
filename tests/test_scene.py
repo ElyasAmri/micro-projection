@@ -1,48 +1,86 @@
 """Unit tests for src/scene.py — Stage 4b hardware-body mesh builders.
 
-Coverage (Stage 4b sub-task 1)
-------------------------------
-Six parametrized checks per builder, two builders -> 12 cases:
+Coverage
+--------
+Six universal checks parametrized over six builders -> 36 cases:
 
   1. test_return_contract             — verts (N, 3) float32; faces (M, 3) uint32
-  2. test_vertex_and_face_counts      — exactly 8 verts and 12 faces (closed box)
+  2. test_vertex_and_face_counts      — exact N and M per builder
   3. test_bounding_box                 — min == -dim/2, max == +dim/2 per axis
   4. test_face_indices_in_range       — all indices in [0, N)
   5. test_no_degenerate_triangles     — each face has 3 distinct vertex indices
   6. test_winding_outward              — cross(e1, e2) for every face points
-                                         away from the body center (origin),
-                                         catching inverted CCW winding which
-                                         would render as dark / inside-out
-                                         under pyqtgraph's 'shaded' shader.
+                                         away from the body center (origin)
 
-The bounding box is tested at `atol=1e-6` (mm). The dimensions are
-encoded as Python floats, the box is constructed in float32, so the
-worst-case round-trip error is ~`max(dim) * float32_eps` ~ 55 * 6e-8
-~ 3e-6 mm. The 1e-6 tolerance is set with the convention that we'd
-notice anything substantially worse than a single ULP of round-off.
+Parametrized builders
+---------------------
+- `make_camera_body`         — 29 x 29 x 30 mm box
+- `make_projector_body`      — 55 mm cube
+- `_cylinder` reference      — 40 x 40 x 100 mm uniform cylinder (n_segments=32)
+- `_stepped_cylinder` ref    — 30 mm dia x 60 mm long (2 uniform sections)
+- `make_camera_lens`         — 110 mm front / 55 mm rear stepped lens, 200 mm
+- `make_projector_lens`      — 20 x 20 x 5 mm uniform cylinder
+
+The reference cylinder/stepped builders use different parameters from the
+public lens builders to cover the helper code paths with distinct inputs.
+
+Tolerances
+----------
+- Bounding box: `atol=1e-6` mm (worst-case float32 round-off for the largest
+  coordinate (110 mm) is ~7e-6 mm; the test tolerance is set at "ULP-scale
+  on the largest dimension" which the camera lens just barely passes —
+  see test_bounding_box's atol if it ever needs to widen).
+- The cylinder builders rely on `n_segments = 32` producing exact ±r
+  extents on x and y because the angle grid `np.linspace(0, 2 pi, 32,
+  endpoint=False)` includes 0, pi/2, pi, 3 pi/2 — placing one vertex
+  per quadrant axis. Any n_segments divisible by 4 has the same property;
+  non-multiples-of-4 would shrink the bounding box slightly.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from scene import make_camera_body, make_projector_body
+from scene import (
+    _cylinder,
+    _stepped_cylinder,
+    make_camera_body,
+    make_camera_lens,
+    make_projector_body,
+    make_projector_lens,
+)
 
 
-# (builder, dimensions, id) tuples for parametrization.
+# Each builder entry: (callable, bbox_dims_mm, expected_verts, expected_faces, id)
+# bbox_dims_mm is (Lx, Ly, Lz); the bounding box is [-Lx/2, +Lx/2] etc.
 BUILDERS = [
-    (make_camera_body, (29.0, 29.0, 30.0), "camera"),
-    (make_projector_body, (55.0, 55.0, 55.0), "projector"),
+    (make_camera_body,    (29.0, 29.0, 30.0),    8,  12, "camera_body"),
+    (make_projector_body, (55.0, 55.0, 55.0),    8,  12, "projector_body"),
+    # _cylinder reference: 40 dia x 100 long, n=32 -> 2*32+2=66 verts, 4*32=128 tris
+    (lambda: _cylinder(40.0, 100.0),
+                          (40.0, 40.0, 100.0),   66, 128, "cylinder_ref"),
+    # _stepped_cylinder reference: K=2 uniform-diameter sections of 30 dia.
+    # Lengths 20 + 40 = 60 total. (K+1)*N + 2 = 3*32+2 = 98 verts.
+    # 2*N*(K+1) = 2*32*3 = 192 faces.
+    (lambda: _stepped_cylinder(
+        [(30.0, 30.0, 20.0), (30.0, 30.0, 40.0)]),
+                          (30.0, 30.0, 60.0),    98, 192, "stepped_cylinder_ref"),
+    # camera lens: 3 sections (65 + 59 + 76 = 200). Max diameter 110 in the
+    # front cylinder section. (K=3, N=32) -> 4*32+2=130 verts, 2*32*4=256 faces.
+    (make_camera_lens,    (110.0, 110.0, 200.0), 130, 256, "camera_lens"),
+    # projector lens: _cylinder(20, 5). 66 verts, 128 faces.
+    (make_projector_lens, (20.0, 20.0, 5.0),     66, 128, "projector_lens"),
 ]
-BUILDER_IDS = [b[2] for b in BUILDERS]
-BUILDER_PARAMS = [(b, d) for b, d, _ in BUILDERS]
+BUILDER_IDS = [b[4] for b in BUILDERS]
+# Trim entries for tests that don't need every field — keep parametrize concise.
+BUILDER_PARAMS = [(b[0], b[1], b[2], b[3]) for b in BUILDERS]
 
 
 # ---------------------------------------------------------------------------
 # Check 1 — Return contract: shapes and dtypes.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder,dims", BUILDER_PARAMS, ids=BUILDER_IDS)
-def test_return_contract(builder, dims):
+@pytest.mark.parametrize("builder,dims,n_verts,n_faces", BUILDER_PARAMS, ids=BUILDER_IDS)
+def test_return_contract(builder, dims, n_verts, n_faces):
     verts, faces = builder()
 
     assert isinstance(verts, np.ndarray), "verts is not an ndarray"
@@ -55,35 +93,41 @@ def test_return_contract(builder, dims):
 
 
 # ---------------------------------------------------------------------------
-# Check 2 — Exactly 8 vertices and 12 triangle faces (a closed box).
+# Check 2 — Exact vertex and face counts per builder.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder,dims", BUILDER_PARAMS, ids=BUILDER_IDS)
-def test_vertex_and_face_counts(builder, dims):
+@pytest.mark.parametrize("builder,dims,n_verts,n_faces", BUILDER_PARAMS, ids=BUILDER_IDS)
+def test_vertex_and_face_counts(builder, dims, n_verts, n_faces):
     verts, faces = builder()
-    assert verts.shape[0] == 8, f"expected 8 vertices, got {verts.shape[0]}"
-    assert faces.shape[0] == 12, f"expected 12 faces, got {faces.shape[0]}"
+    assert verts.shape[0] == n_verts, (
+        f"expected {n_verts} vertices, got {verts.shape[0]}"
+    )
+    assert faces.shape[0] == n_faces, (
+        f"expected {n_faces} faces, got {faces.shape[0]}"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Check 3 — Bounding box: dimensions correct and centered on origin.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder,dims", BUILDER_PARAMS, ids=BUILDER_IDS)
-def test_bounding_box(builder, dims):
+@pytest.mark.parametrize("builder,dims,n_verts,n_faces", BUILDER_PARAMS, ids=BUILDER_IDS)
+def test_bounding_box(builder, dims, n_verts, n_faces):
     verts, _ = builder()
     lx, ly, lz = dims
     expected_min = np.array([-lx / 2.0, -ly / 2.0, -lz / 2.0], dtype=np.float64)
     expected_max = np.array([+lx / 2.0, +ly / 2.0, +lz / 2.0], dtype=np.float64)
     actual_min = verts.min(axis=0).astype(np.float64)
     actual_max = verts.max(axis=0).astype(np.float64)
-    np.testing.assert_allclose(actual_min, expected_min, atol=1e-6)
-    np.testing.assert_allclose(actual_max, expected_max, atol=1e-6)
+    # 1e-5 mm tolerance accommodates float32 round-off on the largest coord
+    # (110 mm * float32_eps ~= 7e-6 mm worst case).
+    np.testing.assert_allclose(actual_min, expected_min, atol=1e-5)
+    np.testing.assert_allclose(actual_max, expected_max, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
 # Check 4 — Every face index addresses a real vertex.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder,dims", BUILDER_PARAMS, ids=BUILDER_IDS)
-def test_face_indices_in_range(builder, dims):
+@pytest.mark.parametrize("builder,dims,n_verts,n_faces", BUILDER_PARAMS, ids=BUILDER_IDS)
+def test_face_indices_in_range(builder, dims, n_verts, n_faces):
     verts, faces = builder()
     n = verts.shape[0]
     assert faces.min() >= 0, f"negative face index: min={faces.min()}"
@@ -93,8 +137,8 @@ def test_face_indices_in_range(builder, dims):
 # ---------------------------------------------------------------------------
 # Check 5 — No triangle reuses the same vertex index (no degenerate face).
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder,dims", BUILDER_PARAMS, ids=BUILDER_IDS)
-def test_no_degenerate_triangles(builder, dims):
+@pytest.mark.parametrize("builder,dims,n_verts,n_faces", BUILDER_PARAMS, ids=BUILDER_IDS)
+def test_no_degenerate_triangles(builder, dims, n_verts, n_faces):
     _, faces = builder()
     for k, face in enumerate(faces):
         assert len(set(face.tolist())) == 3, (
@@ -118,8 +162,8 @@ def test_no_degenerate_triangles(builder, dims):
 # deliberate about the order so a future reader doesn't misread it
 # as a subtle bug.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("builder,dims", BUILDER_PARAMS, ids=BUILDER_IDS)
-def test_winding_outward(builder, dims):
+@pytest.mark.parametrize("builder,dims,n_verts,n_faces", BUILDER_PARAMS, ids=BUILDER_IDS)
+def test_winding_outward(builder, dims, n_verts, n_faces):
     verts, faces = builder()
     body_center = np.zeros(3, dtype=np.float64)  # bodies are centered
 
