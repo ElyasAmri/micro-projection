@@ -1,22 +1,35 @@
-"""main_window.py — Stage 4a task 4b GUI: error overlay + Z exaggeration.
+"""main_window.py — Stage 4a task 4c GUI: warning banner + colorbar + Z tune.
 
 QMainWindow with horizontal splitter:
 - Left pane: surface selector + per-surface param sliders, geometry
   sliders, PSI step count, display-mode toggle, error-statistics
   panel (hidden until overlay is on), locked-hardware info panel.
-- Right pane: SurfacePreview rendering the RECOVERED height, with
-  optional error-overlay coloring.
+- Right pane container: degenerate-case warning banner (hidden by
+  default) + SurfacePreview + error colorbar (hidden when overlay
+  is off).
 
-Stage 4a task 4b additions
+Stage 4a task 4c additions
 --------------------------
+- Degenerate-case warning banner: appears in red at the top of the
+  right pane when |tan(θ_proj) + tan(θ_cam)| < 1e-3, explaining why
+  recovery is invalid. The 3D view keeps its last good frame.
+- Error colorbar widget below view_3d showing the diverging colormap
+  with numeric labels (min / 0 / max), visible only when the error
+  overlay is on AND geometry is non-degenerate.
+- Z exaggeration in SurfacePreview tuned 20× -> 2× to prepare for
+  Stage 4b's real-scale hardware bodies.
+- Error stats auto-format to scientific notation when sub-precision
+  (< 1e-4 mm), so machine-precision residuals don't render as
+  "0.00000 mm".
+
+Stage 4a task 4b features (carried forward)
+-------------------------------------------
 - "Display Mode" groupbox with `Show error overlay` checkbox.
 - "Error Statistics" groupbox (hidden by default) showing mean, std,
   max abs, RMS of recovered - true error in mm.
 - Toggling overlay re-routes coloring in `SurfacePreview`:
   off -> viridis on height (task 3 behavior);
   on  -> diverging blue-white-red on signed error, symmetric.
-- Z exaggeration (in SurfacePreview) magnifies sub-mm surfaces for
-  visibility.
 - Gaussian amplitude, Step height, Sphere cap-height slider maxes
   bumped to 100 mm so the user can drive recovery into clearly-
   visible regimes for the error-overlay demonstration.
@@ -45,6 +58,7 @@ for now and will be reconciled when real hardware arrives in Stage
 """
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -67,7 +81,7 @@ from PyQt6.QtWidgets import (
 
 from geometry import HybridGeometry
 from pipeline import run_pipeline
-from src.gui.surface_preview import SurfacePreview
+from src.gui.surface_preview import ErrorColorbar, SurfacePreview
 from src.test_surfaces import (
     make_flat,
     make_gaussian,
@@ -75,6 +89,13 @@ from src.test_surfaces import (
     make_step,
     make_tilt,
 )
+
+
+# Below this threshold, |tan(theta_proj) + tan(theta_cam)| is treated
+# as degenerate (the warning banner fires, the pipeline is short-
+# circuited). 1e-3 is conservative — only the immediate neighborhood
+# of the actual zero-crossing triggers.
+DEGENERATE_TAN_SUM_THRESHOLD: float = 1e-3
 
 
 # Locked at Stage 4a launch defaults; revisit when info panel exposes
@@ -380,11 +401,66 @@ class MainWindow(QMainWindow):
         return box
 
     # ------------------------------------------------------------------
-    # Right pane — 3D surface preview
+    # Right pane — warning banner + 3D surface preview + error colorbar
     # ------------------------------------------------------------------
     def _build_view_3d(self) -> QWidget:
+        """Build the right-pane container.
+
+        Stack (top to bottom):
+          1. self.warning_banner  (QLabel, hidden by default)
+          2. self.view_3d          (SurfacePreview, fills remaining)
+          3. self.error_colorbar   (custom QWidget, hidden by default)
+
+        Returns the container; `self.view_3d` continues to refer to
+        the SurfacePreview instance directly so existing callers
+        (`update_heightmap`) work unchanged.
+        """
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.warning_banner = self._build_warning_banner()
+        layout.addWidget(self.warning_banner)
+
         self.view_3d = SurfacePreview()
-        return self.view_3d
+        layout.addWidget(self.view_3d, 1)
+
+        self.error_colorbar = ErrorColorbar()
+        self.error_colorbar.setVisible(False)
+        layout.addWidget(self.error_colorbar)
+
+        return container
+
+    def _build_warning_banner(self) -> QLabel:
+        """Degenerate-geometry warning banner. Hidden until needed.
+
+        The banner shows the textbook form of Eq. 2-51:
+            λ_eq = Mp / (tan θ_proj + tan θ_cam)
+        The code's internal `equivalent_wavelength()` returns
+        λ_textbook / (2π) (the 2π from Eq. 2-51's `× ψ/(2π)` has been
+        pre-folded in). The banner mirrors the textbook so users
+        matching banner text to the chapter PDF see the same
+        equation. See geometry.py for the implementation convention.
+        """
+        banner = QLabel()
+        banner.setTextFormat(Qt.TextFormat.RichText)
+        banner.setText(
+            "<b>⚠ No height sensitivity</b><br/>"
+            "λ_eq = Mp / (tan θ_proj + tan θ_cam) → ∞<br/>"
+            "Denominator: tan θ_proj + tan θ_cam ≈ 0<br/>"
+            "Adjust either angle to restore triangulation. (Eq. 2-51)"
+        )
+        banner.setStyleSheet(
+            "background-color: rgba(180, 30, 30, 200);"
+            " color: white;"
+            " padding: 8px;"
+            " border: 2px solid rgb(220, 60, 60);"
+            " font-family: monospace;"
+            " font-size: 11px;"
+        )
+        banner.setVisible(False)
+        return banner
 
     # ------------------------------------------------------------------
     # Surface refresh wiring (task 3)
@@ -436,15 +512,33 @@ class MainWindow(QMainWindow):
         `valueChanged(int)` from QSpinBox all connect here) and
         discards them.
 
-        Branches on `self.show_error_overlay`:
+        Degenerate short-circuit (task 4c): if
+        |tan(θ_proj) + tan(θ_cam)| < DEGENERATE_TAN_SUM_THRESHOLD,
+        the pipeline is NOT run (recovery would be NaN); the warning
+        banner is shown, the colorbar is hidden, and the 3D view
+        keeps its last good frame.
+
+        Otherwise, branches on `self.show_error_overlay`:
         - OFF: render recovered surface with viridis-on-height (task 3
-          default).
+          default). Colorbar hidden.
         - ON:  render recovered surface colored by signed error
-          (recovered - heightmap) with the diverging colormap, and
-          update the error-statistics labels.
+          (recovered - heightmap) with the diverging colormap, update
+          the error-statistics labels, and show the colorbar.
         """
         heightmap = self._compute_current_heightmap()
         geometry = self._build_geometry()
+
+        # Degenerate-geometry check (task 4c).
+        tan_sum = abs(
+            math.tan(geometry.theta_projector)
+            + math.tan(geometry.theta_camera)
+        )
+        if tan_sum < DEGENERATE_TAN_SUM_THRESHOLD:
+            self.warning_banner.setVisible(True)
+            self.error_colorbar.setVisible(False)
+            return
+        self.warning_banner.setVisible(False)
+
         recovered = run_pipeline(
             heightmap=heightmap,
             geometry=geometry,
@@ -454,20 +548,31 @@ class MainWindow(QMainWindow):
         if self.show_error_overlay.isChecked():
             error = recovered - heightmap
             self.view_3d.update_heightmap(recovered, error_mm=error)
-            self._update_error_stats(error)
+            abs_max = self._update_error_stats(error)
+            self.error_colorbar.set_range(abs_max)
+            self.error_colorbar.setVisible(True)
         else:
             self.view_3d.update_heightmap(recovered)
+            self.error_colorbar.setVisible(False)
 
     def _on_overlay_toggled(self, checked: bool) -> None:
         """Show/hide the stats panel and re-render."""
         self.error_stats_group.setVisible(checked)
         self._refresh_surface_preview()
 
-    def _update_error_stats(self, error: np.ndarray) -> None:
-        """Refresh the four QLabels in the Error Statistics groupbox.
+    def _update_error_stats(self, error: np.ndarray) -> float:
+        """Refresh the four QLabels and return abs_max for the colorbar.
 
         Uses NaN-safe reductions so the degenerate λ_eq case (error
-        all NaN) shows `—` instead of crashing.
+        all NaN) shows `—` instead of crashing — though task 4c's
+        degenerate short-circuit already prevents this method from
+        being called in that case.
+
+        Returns
+        -------
+        float
+            np.nanmax(np.abs(error)), or 0.0 if all-NaN. The
+            colorbar uses this to set its symmetric range.
         """
         if np.all(np.isnan(error)):
             for label in (
@@ -475,17 +580,31 @@ class MainWindow(QMainWindow):
                 self.stat_max_abs, self.stat_rms,
             ):
                 label.setText("—")
-            return
+            return 0.0
 
         mean = float(np.nanmean(error))
         std = float(np.nanstd(error))
         max_abs = float(np.nanmax(np.abs(error)))
         rms = float(np.sqrt(np.nanmean(error ** 2)))
 
-        self.stat_mean.setText(f"{mean:.5f} mm")
-        self.stat_std.setText(f"{std:.5f} mm")
-        self.stat_max_abs.setText(f"{max_abs:.5f} mm")
-        self.stat_rms.setText(f"{rms:.5f} mm")
+        self.stat_mean.setText(self._format_error_value(mean))
+        self.stat_std.setText(self._format_error_value(std))
+        self.stat_max_abs.setText(self._format_error_value(max_abs))
+        self.stat_rms.setText(self._format_error_value(rms))
+        return max_abs if np.isfinite(max_abs) else 0.0
+
+    @staticmethod
+    def _format_error_value(value: float) -> str:
+        """Auto-format: scientific notation for sub-precision values.
+
+        Pre-task-4c the format was always `{value:.5f} mm`, which
+        rounded machine-precision residuals (~1e-13) to `0.00000`.
+        Sci notation for |value| < 1e-4 (and non-zero) makes those
+        residuals readable.
+        """
+        if abs(value) < 1e-4 and value != 0.0:
+            return f"{value:.3e} mm"
+        return f"{value:.5f} mm"
 
     def _build_geometry(self) -> HybridGeometry:
         """Construct a HybridGeometry from current slider values.

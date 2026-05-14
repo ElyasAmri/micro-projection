@@ -49,6 +49,7 @@ from typing import Optional
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QWidget
 
 
@@ -56,12 +57,12 @@ from PyQt6.QtWidgets import QWidget
 # panel exposes hardware-derived pitch.
 DEFAULT_PIXEL_SIZE_MM = 0.1
 
-# Display-only Z scale factor. Real test surfaces in fringe projection
-# are sub-millimeter to a few mm tall on a 50+ mm wide field — without
-# exaggeration, the surface renders as a near-flat sheet. 20× is the
-# visual sweet spot at the launch defaults (0.5 mm Gaussian on a
-# 64x48 mm grid); tune if needed.
-Z_EXAGGERATION: float = 20.0
+# Display-only Z scale factor. Sub-mm surfaces on a 50+ mm field
+# would render as near-flat sheets at 1×. 2× is mild enough that
+# when Stage 4b adds camera/projector bodies at real scale, the
+# surface still reads as a physical surface rather than a towering
+# spike. Tunable; revisit when Stage 4b lands.
+Z_EXAGGERATION: float = 2.0
 
 
 def _build_diverging_colormap() -> pg.ColorMap:
@@ -78,6 +79,95 @@ def _build_diverging_colormap() -> pg.ColorMap:
             pos=[0.0, 0.5, 1.0],
             color=[(20, 60, 200, 255), (255, 255, 255, 255), (200, 30, 30, 255)],
         )
+
+
+# Module-level diverging colormap shared between SurfacePreview's error
+# overlay and main_window's colorbar widget. Single source of truth so
+# the legend matches the surface colors exactly.
+ERROR_COLORMAP: pg.ColorMap = _build_diverging_colormap()
+
+
+class ErrorColorbar(QWidget):
+    """Horizontal colorbar showing the diverging colormap with labels.
+
+    Rendered as a 16-px-tall color gradient strip with three numeric
+    labels (left = -abs_max, center = 0, right = +abs_max) beneath it.
+    Hidden by default; visibility and range are driven by
+    `MainWindow._refresh_surface_preview`.
+    """
+
+    BAR_HEIGHT_PX: int = 16
+    LABEL_AREA_PX: int = 18
+
+    def __init__(
+        self,
+        cmap: pg.ColorMap = ERROR_COLORMAP,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._cmap = cmap
+        self._abs_max: float = 0.0
+        self.setFixedHeight(self.BAR_HEIGHT_PX + self.LABEL_AREA_PX)
+
+    def set_range(self, abs_max: float) -> None:
+        """Set the displayed range. Triggers a repaint."""
+        self._abs_max = float(abs_max)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: D401, ARG002
+        painter = QPainter(self)
+        try:
+            self._paint(painter)
+        finally:
+            painter.end()
+
+    def _paint(self, painter: QPainter) -> None:
+        w = self.width()
+
+        # Build a QLinearGradient by sampling the colormap.
+        gradient = QLinearGradient(0, 0, w, 0)
+        N = 32
+        for k in range(N + 1):
+            t = k / N
+            rgba = self._cmap.map(
+                np.array([t], dtype=np.float64), mode="float"
+            )[0]
+            gradient.setColorAt(t, QColor.fromRgbF(
+                float(rgba[0]), float(rgba[1]), float(rgba[2]),
+                float(rgba[3]),
+            ))
+        painter.fillRect(0, 0, w, self.BAR_HEIGHT_PX, gradient)
+
+        # Labels — left aligned, center, right aligned.
+        painter.setPen(QColor("white"))
+        font = painter.font()
+        font.setFamily("monospace")
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        label_y = self.BAR_HEIGHT_PX + 14
+        am = self._abs_max
+        if not np.isfinite(am):
+            am = 0.0
+        left_text = self._format_label(-am)
+        right_text = self._format_label(+am)
+        if am > 0:
+            right_text = "+" + right_text.lstrip()
+        center_text = "0"
+
+        metrics = painter.fontMetrics()
+        painter.drawText(2, label_y, left_text)
+        cw = metrics.horizontalAdvance(center_text)
+        painter.drawText((w - cw) // 2, label_y, center_text)
+        rw = metrics.horizontalAdvance(right_text)
+        painter.drawText(w - rw - 2, label_y, right_text)
+
+    @staticmethod
+    def _format_label(value: float) -> str:
+        """Match main_window's error-stat auto-format style."""
+        if abs(value) < 1e-4 and value != 0.0:
+            return f"{value:.2e}"
+        return f"{value:.4f}"
 
 
 class SurfacePreview(gl.GLViewWidget):
@@ -97,7 +187,9 @@ class SurfacePreview(gl.GLViewWidget):
         self._last_heightmap: Optional[np.ndarray] = None
 
         self._cmap_height = pg.colormap.get("viridis")
-        self._cmap_error = _build_diverging_colormap()
+        # Use the module-level diverging cmap so the colorbar legend
+        # in main_window draws from the same source.
+        self._cmap_error = ERROR_COLORMAP
 
         self._add_reference_grid()
         self._surface_item = gl.GLSurfacePlotItem(
@@ -107,8 +199,10 @@ class SurfacePreview(gl.GLViewWidget):
 
         # Camera tuned for the launch default — Gaussian (amp 0.5 mm,
         # sigma 8 mm) on a 480x640 grid (~64x48 mm footprint), with
-        # Z_EXAGGERATION = 20 making a 10-display-mm peak.
-        self.setCameraPosition(distance=110, elevation=30, azimuth=45)
+        # Z_EXAGGERATION = 2 making a ~1-display-mm peak. Distance
+        # dropped from 110 (task 4b's 20× setup) to 80 to keep the
+        # subtler dome readable.
+        self.setCameraPosition(distance=80, elevation=30, azimuth=45)
 
     def _add_reference_grid(self) -> None:
         """XY plane at z=0, 80x80 mm with 10 mm spacing."""
