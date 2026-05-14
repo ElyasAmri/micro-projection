@@ -15,7 +15,7 @@ The user's deliverables:
 2. The **math/processing core** behind the UI.
 3. Eventually: **integration with real hardware** in the lab.
 
-The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1, 2, 3 have been completed (see Section 12). The notebook is the starting point for refactoring, not a thing to start over.
+The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 4a have been completed (see Section 12). The notebook is the starting point for refactoring, not a thing to start over.
 
 ---
 
@@ -28,6 +28,7 @@ The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.i
 - 1280 × 1024 pixels at 4.8 µm pitch
 - Up to 170 fps
 - 1/2" sensor format (active area 6.14 × 4.92 mm)
+- Body: 29 × 29 × 30 mm (used in Stage 4b's hardware-bodies-in-scene rendering)
 - C-mount
 - **SDK: Spinnaker / PySpin** (Python bindings)
 - Sold by Edmund Optics as stock #36-451
@@ -37,6 +38,7 @@ The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.i
 - 132–182 mm working distance (focusable)
 - < 0.2° telecentricity
 - 1/2" sensor format
+- Physical lens length and diameter: **not yet measured** (Stage 4b prep — see Section 8 open items)
 - **Confirmed telecentric.** Note: telecentric means **M is constant regardless of object distance** (the lens's defining property). It does NOT mean the camera body must be mounted vertical or at any specific tilt — the camera body's physical tilt angle (θ_camera) is independent of the lens's optical properties.
 
 **Projector (placeholder unit, will be upgraded): Pico Genie Impact 2.0 Plus Elite**
@@ -124,7 +126,7 @@ In real hardware, λ_eq is calibrated empirically against a step-height gauge, s
 |---|---|---|
 | 2-44 | Full intensity equation `I(x₁, h)` (general non-telecentric) | `synthetic_fringes` (forward model) |
 | 2-46 / 2-47 | Phase → height + λ_eq (general) | `reconstruction` |
-| **2-51** | **λ_eq general two-angle form: `Mp / [2π·(tan θ₁ + tan θ₂)]`** — **operational formula for the project's math layer** | `reconstruction` / `geometry` |
+| **2-51** | **λ_eq general two-angle form: `Mp / (tan θ₁ + tan θ₂)` (textbook form). The code's internal `equivalent_wavelength()` returns `λ_textbook / (2π)`** — the `× ψ/(2π)` from Eq. 2-51 is pre-folded into the wavelength constant. See Section 9 for the naming convention note. | `reconstruction` / `geometry` |
 | 2-52 | Simplified λ_eq (symmetric case, θ₁ = θ₂) | `reconstruction` (sanity check) |
 | 2-54 | Inverse grating period p₂(x₁) — theoretical reference | `pattern_generator` |
 | 2-57 | Phase → height with inverse grating | `reconstruction` |
@@ -159,13 +161,13 @@ In real hardware, λ_eq is calibrated empirically against a step-height gauge, s
 - Markdown summary of all three checks
 
 ### Cell 14 caveat
-Cell 14 uses the symmetric `λ_eq = (p1·M) / (4π sin θ)` formula (Eq. 4-11). The simulation still converges correctly because one consistent θ is used everywhere; the formula is superseded by Stage 4's two-angle form from Eq. 2-51.
+Cell 14 uses the symmetric `λ_eq = (p1·M) / (4π sin θ)` formula (Eq. 4-11). The simulation still converges correctly because one consistent θ is used everywhere; the formula is superseded by Stage 3.5's two-angle form from Eq. 2-51.
 
 **Stage 2 update:** the notebook itself is unchanged — Stage 2 refactored the formula into `geometry.py` (both `HybridGeometry` and `SymmetricGeometry` implementations), not into the notebook. The notebook remains as a historical reference and as the source of the regression fixture (`tests/regression_data.npz`).
 
 **Stage 3 update:** notebook cell 25 (Stage 1-S.1) is the spec for the exact-form forward model. The `+u` denominator convention adopted by `project(model='exact')` is documented there and in the function's docstring. Cell 25 stays as the authoritative reference for the sign convention.
 
-**Stage 4 pre-task update:** the one-angle hybrid form `λ_eq = Mp / tan(θ_projector)` (Stage 2 Decision 3) is being replaced with the two-angle form `λ_eq = Mp / [2π·(tan θ_projector + tan θ_camera)]` (Eq. 2-51). The Stage 2 form assumed θ_camera = 0° — a hidden assumption from conflating "telecentric lens" with "camera mounted vertical." Telecentric only locks the lens magnification; the camera body's tilt angle is independent.
+**Stage 3.5 update (now complete):** the one-angle hybrid form `λ_eq = Mp / tan(θ_projector)` (Stage 2 Decision 3) was replaced with the two-angle form (Eq. 2-51). The Stage 2 form assumed θ_camera = 0° — a hidden assumption from conflating "telecentric lens" with "camera mounted vertical." Telecentric only locks the lens magnification; the camera body's tilt angle is independent.
 
 ---
 
@@ -190,12 +192,29 @@ Fringe_Projection_Project_Phase1/
 │   ├── unwrapping.py
 │   ├── calibration.py
 │   ├── reconstruction.py
+│   ├── pipeline.py                # Stage 4a — end-to-end pipeline composition
 │   ├── io_utils.py
 │   ├── test_surfaces.py           # Stage 4a — heightmap generators
-│   ├── scene.py                   # Stage 4b — 3D scene primitives
-│   └── gui/                       # Stage 4 — PyQt6 GUI modules
+│   ├── scene.py                   # Stage 4b — 3D scene primitives (planned)
+│   └── gui/                       # Stage 4a — PyQt6 GUI package
+│       ├── __init__.py
+│       ├── __main__.py            # `python -m src.gui` entry
+│       ├── app.py
+│       ├── main_window.py
+│       ├── surface_preview.py     # SurfacePreview + ErrorColorbar
+│       └── stages_view.py         # 2×3 grid of pipeline-stage images
 ├── tests/
-│   └── test_pipeline_synthetic.py
+│   ├── test_geometry.py
+│   ├── test_synthetic_fringes.py
+│   ├── test_phase_shifting.py
+│   ├── test_unwrapping.py
+│   ├── test_calibration.py
+│   ├── test_reconstruction.py
+│   ├── test_test_surfaces.py
+│   ├── test_pipeline.py
+│   ├── test_pipeline_synthetic.py
+│   ├── regression_data.npz
+│   └── conftest.py
 ├── scripts/                       # standalone runnable scripts
 ├── data/                          # synthetic frames, calibration files
 ├── docs/
@@ -216,8 +235,9 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | 1 | Close simulation loop in notebook (add `project()` function) | No | ✅ Done |
 | 2 | Refactor notebook into Python modules | No | ✅ Done |
 | 3 | Upgrade forward model to exact Eq. 2-44 | No | ✅ Done |
-| **3.5** | **Math layer upgrade: two-angle λ_eq (Eq. 2-51)** | No | ⏳ Next (Stage 4 pre-task) |
-| 4 | Build PyQt6 GUI (digital twin) with two 3D views | No | After 3.5 |
+| 3.5 | Math layer upgrade: two-angle λ_eq (Eq. 2-51) | No | ✅ Done |
+| **4a** | **PyQt6 GUI digital twin: surface library + pipeline + recovered-height view + error overlay + warning banner + stages viewer** | No | ✅ Done |
+| 4b | Lab setup view: add camera + projector hardware bodies into the same unified 3D scene | No | ⏳ Next |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
 
@@ -240,7 +260,7 @@ class Geometry(Protocol):
 Concrete implementations: `HybridGeometry` (default for this project), `SymmetricTelecentricGeometry`, `NonTelecentricGeometry`.
 
 ### 7.2 — No hardware coupling in math modules
-`pattern_generator`, `synthetic_fringes`, `phase_shifting`, `unwrapping`, `calibration`, `reconstruction`, `geometry` should be **pure Python with no hardware dependencies**. They take/return NumPy arrays. This means:
+`pattern_generator`, `synthetic_fringes`, `phase_shifting`, `unwrapping`, `calibration`, `reconstruction`, `geometry`, `pipeline` should be **pure Python with no hardware dependencies**. They take/return NumPy arrays. This means:
 - They can be tested entirely with synthetic data.
 - They are reusable (the user's friend is building a separate Three.js geometric simulation — these same math functions support that work).
 
@@ -257,18 +277,24 @@ class Projector(Protocol):
 
 Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector` (saves PNGs / writes to extended display). Real implementations: `FLIRCamera` (PySpin wrapper), `RealProjector` (extended display).
 
-**Note (Stage 4 deferral):** the `Camera` / `Projector` protocols and their mock implementations are deliberately deferred to Stage 5/6, not Stage 4. The Stage 4 GUI calls math modules directly. Rationale: the hardware shape isn't finalized (upgraded projector pending), so designing protocols against unknown specs is premature. When real hardware arrives, the protocols get designed against actual SDK calls and frame formats.
+**Note (Stage 4 deferral):** the `Camera` / `Projector` protocols and their mock implementations are deliberately deferred to Stage 5/6, not Stage 4. The Stage 4a GUI calls math modules directly. Rationale: the hardware shape isn't finalized (upgraded projector pending), so designing protocols against unknown specs is premature. When real hardware arrives, the protocols get designed against actual SDK calls and frame formats.
 
 ---
 
 ## 8. Open Questions for Supervisor (not blocking)
 
 1. Is the upgraded projector telecentric? If yes, the hybrid case collapses to symmetric-telecentric (still two angles though).
-2. ~~Simplified `λ_eq` formula for the hybrid case?~~ **Resolved at Stage 4 planning:** use Eq. 2-51's two-angle general form `Mp / [2π·(tan θ_proj + tan θ_cam)]`. In real hardware, also calibrate empirically against a step gauge per Chapter 4 §4.3.1.
+2. ~~Simplified `λ_eq` formula for the hybrid case?~~ **Resolved at Stage 4 planning:** use Eq. 2-51's two-angle general form. Real hardware will also calibrate empirically against a step gauge per Chapter 4 §4.3.1.
 3. Software post-correction (subtract bias from measurement) or hardware pre-correction (project inverse pattern)? Both are mathematically equivalent. Chapter uses pre-correction.
-4. How many phase-shift steps (4 or 8)? Notebook uses 4; chapter uses 8. (Stage 4 GUI exposes this as a toggle.)
+4. How many phase-shift steps (4 or 8)? Notebook uses 4; chapter uses 8. (Stage 4a GUI exposes this as a toggle, 3–8 range.)
 5. What calibration artifacts are available in the lab vs. need to be ordered?
 6. ~~GUI framework preference?~~ **Resolved:** PyQt6 (per roadmap + Stage 4 plan).
+7. **Mount geometry decision:** what are the intended mounting angles for both camera and projector? Chapter 4 Fig. 4-4 shows symmetric (~15° each); Chapter 5 shows asymmetric (camera vertical at 0°, projector at 60°). User mentioned professor's preference for vertical projector — but that requires non-vertical camera to triangulate. Worth deciding before committing physical mount hardware.
+8. **Stage 4b prep — physical dimensions to measure:**
+   - Camera lens length (front of camera body → front of lens)
+   - Camera lens outer diameter
+   - Projector lens diameter
+   - Body sizes and lens optical-axis positions are already documented. The lens body dimensions are visual decoration for the unified 3D scene; the geometry-driving values (FOV, throw ratio, working distance) are known. 5 minutes with a ruler in the lab.
 
 ---
 
@@ -280,8 +306,27 @@ Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector
 - **Phase units**: radians.
 - **Length units**: SI in equations; pixels in synthetic notebook. Document units explicitly in every function docstring.
 - **Forward-model bias sign (`project()`):** Taylor branch subtracts a positive bias `(4π/p)·x²·tan(θ)/a`. Exact branch uses `+u` denominator `1 + 2x·tan(θ)/a` to match (notebook cell 25). Textbook Ch.4 Eq. 4-6 prints `−u` — treated as a sign typo, see Section 12 Stage 3 notes.
-- **Arm angles**: θ_projector and θ_camera are measured from the test surface normal to the optical axis of the respective arm. θ = 0° means the arm is pointing straight down at the surface (normal-incident). Positive vs negative sign indicates which side of the normal the arm sits.
+- **Arm angles**: θ_projector and θ_camera are measured from the test surface normal to the optical axis of the respective arm. θ = 0° means the arm is pointing straight down at the surface (normal-incident). Positive sign = arm tilted to the +X side of the surface; negative sign = arm tilted to the −X side. |θ| = magnitude of tilt from vertical, sign = which side.
 - **Lab setup reference frame**: test surface center is the world origin. Surface normal (vertical line through center) is the z-axis. Both arms (projector and camera) are positioned by (angle, distance) where angle is measured from the surface normal and distance is along the arm's optical axis. Both arms remain aimed at the surface center regardless of their angle and distance — these are the only degrees of freedom for arm positioning in the simulator.
+
+### λ_eq naming convention (Stage 4a clarification)
+
+The code's `Geometry.equivalent_wavelength()` returns a value numerically equal to **`λ_textbook / (2π)`**, not the textbook's λ_eq directly. The `× ψ/(2π)` factor from Eq. 2-51's `h = λ_eq × (ψ / 2π)` has been algebraically pre-folded into the wavelength constant, so `phase_to_height(ψ)` is implemented as `ψ × equivalent_wavelength()` — no separate `/ (2π)` needed downstream. Mathematically the pipeline output matches Eq. 2-51 exactly; only the *variable named* `lambda_eq` is conceptually `height-per-radian-of-phase`, not the textbook's wavelength.
+
+This is documented in `geometry.py` and was confirmed correct by trace verification during Stage 4a task 4c (no physics bug; only the variable naming is potentially confusing to a reader cross-referencing the chapter PDF). The Stage 4a GUI's degenerate-case warning banner displays the **textbook form** of Eq. 2-51 (`λ_eq = Mp / (tan θ_proj + tan θ_cam)`) so users reading the warning while consulting the chapter see the same equation.
+
+A rename of `equivalent_wavelength()` → `height_per_radian()` is a deferred cosmetic improvement; not blocking, not scheduled.
+
+### Unit conventions: math layer vs. info-panel display (Stage 4a unresolved)
+
+The math layer was written in **notebook pixel-space units** (M = 1, p in pixels, a in pixels, X = np.arange(W) for the carrier). The Stage 4a GUI's info panel displays **mm-space hardware values** (M = 11.1 chapter convention, p = 2.0 mm, a = 50 mm). These two unit systems are currently **not reconciled** — they coexist as parallel descriptions:
+
+- `_build_geometry()` in `main_window.py` constructs `HybridGeometry` with hardcoded notebook-unit values (M=1.0, p=40.0, a=2000.0). These produce sensible recovery output.
+- The info panel labels display the mm-space hardware values. They're decorative — they don't drive the math.
+
+Reconciliation is a Stage 5/6 concern. When real hardware arrives, the math-layer constants will be derived from the info panel's mm values + the camera's object-space pixel pitch (~53 µm/pixel). At that point both views become consistent. For now, both are honest descriptions of what's true at their respective layer.
+
+The mismatch was surfaced during Stage 4a task 4 when literal info-panel values were initially plugged into the math layer, producing recovery output ~3000× the input magnitude (Nyquist-aliased carrier × ~123× λ_eq inflation). Magnitude sanity check caught it before commit.
 
 ---
 
@@ -319,7 +364,7 @@ For each module, write **clear docstrings** with units, dimensions, and referenc
 
 ---
 
-## 12. Stage 1 Completion Notes & Stage 2 / Stage 3 / Stage 4 Decisions
+## 12. Stage Completion Notes & Architectural Decisions
 
 ### Stage 1 — Done
 
@@ -338,7 +383,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 1. **Default geometry: `HybridGeometry`** (telecentric camera lens, non-telecentric projector lens), matching the actual hardware.
 2. **Replace toy parameter values** with real hardware values from Section 2 of this file (M = 0.09 modern / 11.1 chapter, sensor 1280×1024 at 4.8 µm pitch, pixel pitch on test surface ~53 µm, projector parameters from real geometry once measured).
-3. ~~**`λ_eq` formula:** use `M·p / tan(θ_projector)` (reduction of Eq. 2-51 with θ_camera → 0).~~ **SUPERSEDED by Stage 3.5 pre-task:** use Eq. 2-51's full two-angle form `λ_eq = Mp / [2π·(tan θ_projector + tan θ_camera)]`. The original Stage 2 simplification conflated "telecentric camera lens" with "camera mounted vertical (θ_camera = 0°)" — these are different things. Telecentric only locks the lens magnification; the arm tilt is independent and must be a separate input.
+3. ~~**`λ_eq` formula:** use `M·p / tan(θ_projector)` (reduction of Eq. 2-51 with θ_camera → 0).~~ **SUPERSEDED by Stage 3.5:** use Eq. 2-51's full two-angle form. The original Stage 2 simplification conflated "telecentric camera lens" with "camera mounted vertical (θ_camera = 0°)" — these are different things.
 4. **Keep `SymmetricGeometry`** as an alternative implementation for textbook reference / cross-validation, but it's not the operational default.
 5. **Document the geometry choice** explicitly in `geometry.py` docstrings, including the camera/projector telecentricity status and which equations apply.
 6. **Forward model stays Taylor for Stage 2;** exact Eq. 2-44 form is Stage 3 work. The `project()` interface should be designed to accept a `model={'taylor', 'exact'}` parameter even if only `'taylor'` is implemented now.
@@ -355,7 +400,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 - **Module order swapped from Section 11.** Calibration was refactored before reconstruction (not the order suggested in Section 11) so each module's tests naturally consume the previous module's output. Section 11's order was an early draft; Section 12 supersedes it.
 
-- **`project()` is `λ_eq`-independent.** The Taylor forward model reads only `p`, `theta_projector`, and `a` from the Geometry — never `lambda_eq`. This means `HybridGeometry` and `SymmetricGeometry` produce bit-identical `project()` output (test `test_project_is_lambda_eq_independent` locks this invariant). `λ_eq` enters only at the height↔phase boundary in `reconstruction.py`. **Stage 3's exact-Eq.-2-44 forward model preserves this invariant** (test `test_project_exact_lambda_eq_independent`, atol=1e-15). **Stage 3.5 will preserve it too** — adding `theta_camera` to `HybridGeometry` doesn't affect `project()`, only `equivalent_wavelength()`.
+- **`project()` is `λ_eq`-independent.** The Taylor forward model reads only `p`, `theta_projector`, and `a` from the Geometry — never `lambda_eq`. This means `HybridGeometry` and `SymmetricGeometry` produce bit-identical `project()` output (test `test_project_is_lambda_eq_independent` locks this invariant). `λ_eq` enters only at the height↔phase boundary in `reconstruction.py`. **Stage 3's exact-Eq.-2-44 forward model preserves this invariant** (test `test_project_exact_lambda_eq_independent`, atol=1e-15). **Stage 3.5 preserved it too** — adding `theta_camera` to `HybridGeometry` doesn't affect `project()`, only `equivalent_wavelength()`.
 
 - **Two tilt fits live in `calibration.py`, not one. They are NOT interchangeable on non-trivial inputs.**
   - `fit_tilt_plane` (2D lstsq, `[x, y, 1]` design matrix): for flat references or any measurement where genuine y-tilt may be present.
@@ -385,137 +430,167 @@ Simulation validation can only catch bugs where the test path uses *different* l
 - **Denominator-positivity guard.** Raises `ValueError` if `1 + 2x·tan(θ)/a ≤ 0` anywhere on the grid.
 - **Object leg of the integration test still skips `project()`.** Per the documented Stage 2.6 deviation. The test confirms "the pipeline runs under both models without crashing"; it does NOT independently verify that exact's calibration cancels exact's bias.
 
-### Stage 3.5 — Math layer upgrade: two-angle λ_eq (pre-task before Stage 4)
+### Stage 3.5 — Done (Math layer upgrade: two-angle λ_eq)
 
-**Why this exists.** Stage 4 planning surfaced that `HybridGeometry.equivalent_wavelength()` currently uses `λ_eq = Mp / tan(θ_projector)` — the Eq. 2-51 form with `θ_camera = 0°` assumed. The Stage 2 reasoning for this simplification ("telecentric camera → drop θ_camera") was wrong: telecentric only locks the lens magnification; the camera body's tilt angle is independent. To support a GUI with separate θ_projector and θ_camera sliders, the math layer needs Eq. 2-51's full form.
+**Why this existed.** Stage 4 planning surfaced that `HybridGeometry.equivalent_wavelength()` was using `λ_eq = Mp / tan(θ_projector)` — the Eq. 2-51 form with `θ_camera = 0°` assumed. The Stage 2 reasoning for this simplification ("telecentric camera → drop θ_camera") was wrong: telecentric only locks the lens magnification; the camera body's tilt angle is independent.
 
-**Task scope (one Claude Code task, one commit):**
+**What landed (commit `658f331`, pushed, not tagged — pre-task to 4a):**
 
-1. **`src/geometry.py`:**
-   - `HybridGeometry.__init__` gains a new arg `theta_camera` (radians). Default value: same as current `theta_projector` (symmetric default — matches existing fixture's effective behavior at θ_camera = θ_projector, which is what Eq. 2-52 collapses to).
-   - `HybridGeometry.equivalent_wavelength()` updated to: `λ_eq = M·p / (2π·(tan θ_proj + tan θ_cam))`.
-   - Same change to `SymmetricGeometry` (gains `theta_camera` arg; sets θ_camera = θ_projector by default to preserve symmetric behavior).
-   - Docstrings updated with Eq. 2-51 reference and the typo note about Stage 2 Decision 3.
+- `HybridGeometry` and `SymmetricGeometry` both gained `theta_camera` as a constructor arg with default `= theta_projector` (preserves fixture compatibility — the symmetric default matches Eq. 2-52, which is what the old single-angle form effectively computed).
+- `equivalent_wavelength()` now returns `M·p / (2π·(tan θ_proj + tan θ_cam))`. Note: this is `λ_textbook / (2π)`, not λ_textbook itself — see Section 9 "λ_eq naming convention."
+- Degenerate case (`tan θ_proj + tan θ_cam = 0`) returns `float('inf')`, no exception.
+- 30 tests passing (17 baseline + 13 new in `tests/test_geometry.py`).
 
-2. **`tests/test_geometry.py` (or wherever λ_eq tests live):**
-   - Existing test for hybrid λ_eq updated to use `theta_camera=0` explicitly (keeps the test's intent: "what hybrid degenerates to when camera is vertical").
-   - New test: at `theta_camera = theta_projector`, the two-angle form matches Eq. 2-52's symmetric form (`λ_eq = Mp / (2π·2·tan θ)`).
-   - New test: λ_eq → ∞ when `tan θ_proj + tan θ_cam = 0` (both zero, or equal-opposite). GUI uses this as the "no height sensitivity" warning trigger.
-
-3. **`tests/test_pipeline_synthetic.py`:**
-   - Verify integration test still passes. The fixture was generated with the old one-angle formula; we expect it to still pass because the default `theta_camera = theta_projector` makes the new formula symmetric, which matches the fixture's setup. **If the fixture breaks**, regenerate it deliberately, documenting in the commit message what changed and why.
-
-4. **All other tests:** must continue to pass without modification.
+**Spec deviation worth noting:** `tests/test_reconstruction.py` needed a small update because it was reading `phi3_unwrapped` directly from the regression fixture (generated on the old Eq. 4-11 sin formula). After the Stage 3.5 math change, the cross-coupled `λ_eq` leaked ~1e-6 residual. Fix: derive `phi3_unwrapped` internally via PSI extract + unwrap, matching the integration test's pattern. The fixture itself was untouched.
 
 **Architectural invariants preserved:**
-- `project()` stays `λ_eq`-independent. `test_project_is_lambda_eq_independent` and `test_project_exact_lambda_eq_independent` both stay at atol=1e-15.
+- `project()` stays `λ_eq`-independent at atol=1e-15.
 - HybridGeometry and SymmetricGeometry remain bit-identical in their `project()` output.
 
-**Commit message format:**
-```
-Stage 3.5: two-angle λ_eq (Eq. 2-51), supersede Stage 2 Decision 3
+### Stage 4a — Done (PyQt6 GUI digital twin)
 
-- HybridGeometry / SymmetricGeometry gain theta_camera arg
-- equivalent_wavelength() now Mp / (2π·(tan θ_proj + tan θ_cam))
-- Default theta_camera = theta_projector (preserves fixture)
-- 17 tests still passing (or N+M if new tests added)
-- Math layer now matches paper's Eq. 2-51 exactly
-```
+**Goal achieved.** A PyQt6 GUI that operates as a digital twin of the lab's fringe projection setup, with the following deliverables landed:
 
-Tag: not needed — this is a pre-task to Stage 4, not a stage close.
+1. Heightmap generator library (5 surfaces: flat, tilt, Gaussian, step, sphere)
+2. PyQt6 + PyQtGraph GUI with live slider-driven updates
+3. Full pipeline integration (forward model → PSI extract → unwrap → calibrate → reconstruct)
+4. Error overlay toggle with diverging colormap, colorbar legend, and stats panel (mean / std / max abs / RMS)
+5. Degenerate-case warning banner (when tan θ_proj + tan θ_cam ≈ 0)
+6. Pipeline stages viewer — 2×3 grid showing all intermediate stages as live camera-view images with equations: ground truth → projected fringes → wrapped phase → unwrapped phase → recovered height
+7. View mode toggle (3D Scene ↔ Pipeline Stages)
 
-### Stage 4 plan (pre-implementation — drafted in strategy chat, awaiting Stage 3.5 + Claude Code execution)
+**Stage 4a sub-task table:**
 
-**Goal:** A PyQt6 GUI that operates as a **digital twin** of the lab's fringe projection setup. The user adjusts hardware-realistic controls and sees both:
-1. A **recovered-height view** showing true vs. recovered surface with an error map.
-2. A **lab setup view** showing the full physical setup as a 3D scene the user can orbit around.
+| Task | Commit | What landed |
+|---|---|---|
+| 1 (surface library) | `f4bd4fb` | `src/test_surfaces.py` — 5 pure-NumPy heightmap generators with `_centered_grid_mm` helper. 30 unit tests in `tests/test_test_surfaces.py`. Centered (H, W) float64 outputs in mm. |
+| 2 (GUI skeleton) | `e45bff5` | `src/gui/` package with `__init__.py`, `__main__.py`, `app.py`, `main_window.py`. PyQt6 + PyQtGraph + PyOpenGL added to `environment.yml` pip section. QMainWindow with QSplitter, all widget tree built layout-only with one wired behavior (dropdown → QStackedWidget page). |
+| 3 (live preview wiring) | `cfa0772` | `src/gui/surface_preview.py` — `SurfacePreview(GLViewWidget)` with reference grid + `GLSurfacePlotItem` + viridis colormap + 'shaded' shader. Surface controls wired to live 3D rendering of ground-truth heightmap. First math import in GUI (`src.test_surfaces`). Pyqtgraph `GLSurfacePlotItem` colors quirk documented (upstream `colors=` docstring is wrong; flat `(N_vertices, 4)` is required). |
+| 4 (pipeline integration) | `fa12e30` | `src/pipeline.py` — `run_pipeline()` end-to-end. `_build_geometry()` constructs `HybridGeometry` from slider values. `theta_projector`, `theta_camera`, `psi_steps` wired. `projector_distance_mm` intentionally inert (lab view concern). `SurfacePreview` now renders recovered height. 8 new pipeline tests. Geometry constants use **notebook pixel-space units** (M=1, p=40 px, a=2000 px); info panel's mm-space values are decorative — reconciliation deferred to Stage 5/6. |
+| 4b (error overlay) | `f224a4f` | "Display Mode" groupbox with overlay checkbox. "Error Statistics" groupbox (hidden when overlay off) with mean/std/max-abs/RMS labels. Diverging CET-D1 colormap on signed error. `SurfacePreview.update_heightmap(error_mm=...)` overlay path. `Z_EXAGGERATION = 20.0`. Amplitude slider maxes bumped to 100 mm (Gaussian amplitude, Step height, Sphere cap height). |
+| 4c (warning banner) | `03ed339` | Degenerate-case warning banner (red rich-text QLabel) at the top of the right pane when `\|tan θ_proj + tan θ_cam\| < 1e-3`. Pipeline short-circuits in degenerate state; 3D view keeps last good frame. `ErrorColorbar` widget below `view_3d` showing colormap range with `-max / 0 / +max` labels. `Z_EXAGGERATION` dropped to 2.0 (prep for Stage 4b's real-scale hardware bodies). Error stats auto-format to scientific notation when sub-precision (< 1e-4 mm). |
+| 4d (stages viewer) | `13a4372` | `src/gui/stages_view.py` — `StagesView(QWidget)` with 2×3 grid of 5 panels (ground truth, projected fringes, wrapped phase, unwrapped phase, recovered height) each with title + `pyqtgraph.ImageView` + equation label. Last cell empty per spec. `src/pipeline.py` refactored: `run_pipeline(..., return_stages=True)` returns `(recovered, stages_dict)` with refs to intermediates (no extra computation). "View Mode" groupbox with `3D Scene` / `Pipeline Stages` radio buttons. Right pane wrapped in `QStackedWidget`. CET-C1 cyclic colormap on wrapped phase; manual black-to-white gray ramp on fringe frame (pyqtgraph 0.14.0 doesn't bundle 'gray' or 'hsv'). 2 new pipeline tests for `return_stages` (70 total). |
+| 4e (close) | this commit | Docs update + tag `stage-4a-complete`. |
 
-Stage 4 is split into 4a (the scientific tool) and 4b (the lab visualization). Each ships and tags separately. Math modules are called by the GUI, not modified (except for the Stage 3.5 pre-task).
+**Architectural decisions worth carrying forward from Stage 4a:**
 
-#### Stage 4 controls (locked)
+- **Working model held up.** Strategy chat drafts prompt → user pastes to Claude Code → Claude Code summarizes back → implements + tests + commits → user pastes diff back to strategy chat for review. Pattern worked across all 7 sub-tasks. "Summarize back" caught real issues (the unit-mismatch in task 4, the colormap-name unavailability in task 4b/4d) before commits landed.
+
+- **`run_pipeline` is the entry point for any caller that needs end-to-end fringe projection.** GUI calls it. Future scripts call it. `return_stages` kwarg exposes intermediates without imposing the cost on default callers.
+
+- **The 8 pipeline tests in `tests/test_pipeline.py` lock the contract** but are λ-cancellation-immune (self-cal recovery is structurally independent of λ_eq). A 2π-magnitude bug would not be caught by these tests. Real magnitude validation needs cross-implementation comparison or hardware. This is acknowledged in `tests/test_pipeline_synthetic.py` and `tests/test_reconstruction.py` docstrings.
+
+- **The fringe-frame equation displayed in the stages viewer matches what the code actually computes**, not the textbook Taylor form. The pipeline's object leg skips `project()` (matches integration test's deliberate omission); the rendered fringe frame is `I = A + B·cos[2π·x/p + h/λ_eq + δ_k]`. This is honest.
+
+- **Z_EXAGGERATION is a known temporary value (2.0)** sized for stand-alone surface rendering. When Stage 4b adds hardware bodies at real scale, Z exaggeration will need re-tuning so the surface still reads as a 3D shape next to the camera/projector bodies (which give the scene reference scale). The exaggeration may drop further or stay at 2.0.
+
+- **The "View Mode" radio toggle lives on the left pane**, not as an overlay on the right. Keeps the right pane pure visualization, no UI chrome. Locked design decision.
+
+- **`projector_distance_mm` is intentionally inert in Stage 4a.** It becomes live in Stage 4b when the lab view renders projector body translation.
+
+- **STL-import flow (deferred to a later stage)** will plug into the existing `make_*` surface contract `(shape, pixel_size_mm) → (H, W) float64 heightmap in mm`. Any STL importer that produces this contract slots into the existing GUI with zero changes elsewhere. File picker via `QFileDialog`, one-shot config dialog for viewing axis + scaling, then the mesh rasterizes once into a `(H, W)` heightmap that behaves identically to the analytical surfaces.
+
+### Stage 4b plan (next — unified hardware-bodies scene)
+
+**Goal:** Add the lab's physical apparatus to the same 3D scene that already shows the recovered surface. No mode switching needed; the right pane stays one unified 3D view. Dragging θ_projector physically rotates the projector body in the scene; dragging θ_camera rotates the camera; dragging projector_distance_mm moves the projector closer/farther.
+
+**This supersedes the earlier Stage 4b design** that described a "separate lab setup view" toggled by a second 3D view widget. The unified-scene approach is cleaner:
+- One coordinate system, no context switching
+- Hardware bodies provide visual reference scale (Z exaggeration can drop further toward honest)
+- Projector_distance_mm slider becomes meaningful (lab-view changes)
+- User can see the recovered surface and the rig that produced it simultaneously
+
+**Implementation approach: schematic primitives with measured proportions and physically-accurate cones.**
+
+- **Camera body:** rectangular box at 29 × 29 × 30 mm proportions
+- **Camera lens:** cylinder protruding from camera body; length + diameter to be measured (Section 8 item 8)
+- **Projector body:** 55 × 55 × 55 mm cube; lens cylinder offset to measured (21, 45) mm position on front face
+- **Projection cone:** wireframe wedge from projector lens showing where light goes, dimensions driven by 1.2:1 throw ratio
+- **Viewing cone:** wireframe wedge from camera lens showing 68×55 mm FOV at working distance
+- **Test surface:** the recovered-surface 3D render (current task 4a output) sits at the geometric origin where the two cones intersect
+
+**What this is NOT:**
+- Not photorealistic mesh imports. STL files for the actual hardware models don't necessarily exist; photo-realistic textures add nothing pedagogical.
+- Not a separate widget or page. Same 3D scene, more items in it.
+
+**Stage 4b sub-tasks (to be drafted when ready):**
+
+- `src/scene.py` — translates geometry params into 3D scene primitives (camera body, projector body, projection cone, viewing cone). Pure NumPy mesh-builder functions.
+- `main_window` updates — add new sliders if needed (camera_distance), wire all positional sliders to scene-primitive updates, fold scene items into the existing `SurfacePreview` (or a successor widget).
+- Z_EXAGGERATION re-tune now that hardware bodies provide scale reference.
+- `stage-4b-complete` tag (closes Stage 4 entirely).
+
+**Camera lens dimensions to measure before Stage 4b (Section 8 item 8).** Lens body is visual decoration only; cones are geometry-driven.
+
+### Stage 4 controls (locked as of Stage 4a close)
 
 **Sliders / dropdowns in the GUI:**
 
-| Control | Type | Range / Options | Notes |
+| Control | Type | Range / Options | Status (4a) |
 |---|---|---|---|
-| Surface type | dropdown | flat, tilt, Gaussian, step, sphere | Drives `src/test_surfaces.py`. |
-| Per-surface params | sliders | depends on surface | Hidden/shown by dropdown. ~2–3 sliders per surface (e.g. Gaussian: amplitude, width; step: height, edge position). Always centered on grid. |
-| **θ_projector** | slider | ~−60° to +60° | Projector arm tilt from surface normal. Triangulation angle. Updates λ_eq live. |
-| **θ_camera** | slider | ~−60° to +60° | Camera arm tilt from surface normal. Independent of projector. Triangulation angle. Updates λ_eq live. |
-| Projector distance from surface | slider | ~50–200 mm | Does NOT affect chapter's bias math. Drives only the lab view + a coverage indicator. **Lab-design tool**. |
-| PSI step count | dropdown | 4 or 8 | Trade-off between speed and noise immunity. |
+| Surface type | dropdown | flat, tilt, Gaussian, step, sphere | ✅ Wired |
+| Per-surface params | sliders | depends on surface | ✅ Wired. Amplitude/height maxes 100 mm. |
+| **θ_projector** | slider | −60° to +60° | ✅ Wired (Eq. 2-51 triangulation). |
+| **θ_camera** | slider | −60° to +60° | ✅ Wired (Eq. 2-51 triangulation). |
+| Projector distance from surface | slider | 50–200 mm | ⏳ Inert (becomes live in 4b lab scene). |
+| PSI step count | spinbox | 3–8 | ✅ Wired. |
+| View Mode | radio | 3D Scene / Pipeline Stages | ✅ Wired. |
+| Show error overlay | checkbox | on/off | ✅ Wired. |
 
 **Locked in code, shown in read-only info panel:**
 
 | Quantity | Value | Source |
 |---|---|---|
-| Camera M | 0.09× | Edmund Optics #58-259 lens spec |
+| Camera M (modern) | 0.09× | Edmund Optics #58-259 lens spec |
+| Camera M (chapter) | 11.1× | 1/0.09 — info panel display |
 | Camera distance to surface | 157 mm | Middle of telecentric WD range (132–182 mm) |
 | Camera FOV | 68 × 55 mm | Derived: sensor 6.14×4.92 mm / M |
 | Pixel pitch on surface | ~53 µm | Derived: 4.8 µm / M |
 | Sensor | 1280×1024 at 4.8 µm | FLIR Blackfly spec |
 | Projector throw ratio | 1.2:1 | Pico Genie spec |
-| Projector FOV | live | Derived: throw_distance / throw_ratio |
-| Coverage indicator | live | Compares projector FOV vs camera FOV |
-| `a` (projector internal) | placeholder (2000 px) | Fixed inside projector hardware, NOT a slider |
-| `p` (fringe period) | placeholder | Fixed |
-| `λ_eq` | live | Derived: `Mp / [2π·(tan θ_proj + tan θ_cam)]` |
-| Forward model | `'taylor'` | Stage 3 default |
-| Resolution | 480×640 | Live updates |
+| `a` (projector internal, math layer) | 2000 px | Notebook fixture units |
+| `p` (fringe period, math layer) | 40 px | Notebook fixture units |
+| `a` (projector internal, info panel display) | 50 mm | Hardware estimate (Stage 5/6 reconcile) |
+| `p` (fringe period, info panel display) | 2.0 mm | Hardware estimate (Stage 5/6 reconcile) |
+| `λ_eq` | live (internal) | Derived: `Mp / [2π·(tan θ_proj + tan θ_cam)]` (code form, = λ_textbook/(2π); see Section 9) |
+| Forward model | `'taylor'` | Stage 3 default; toggle in GUI deferred |
+| GUI resolution | 480×640 | Live updates |
 
-**Degenerate case handling:**
-- When `tan(θ_proj) + tan(θ_cam) → 0` (both zero, or equal-and-opposite — both arms looking from the same direction), λ_eq → ∞ → "no height sensitivity, cannot measure"
-- Info panel shows clear warning; recovered-height view is grayed out or shows "undefined."
+**Degenerate case handling (implemented):**
+- When `|tan(θ_proj) + tan(θ_cam)| < 1e-3`, the pipeline short-circuits; warning banner shows with textbook-form Eq. 2-51 and the explanation that triangulation requires angular separation.
+- The 3D view (or stages view) keeps the last good frame so the user can drag back without seeing a crash or NaN garbage.
 
-#### Critical reasoning that drove the slider list (preserve this — easy to forget)
+### Critical reasoning that drove the slider list (preserve this — easy to forget)
 
 - **The chapter's `M = l/b` (Eq. 2-41) is a camera-arm ratio.** Projectors don't have an "M" in the chapter's framework. They have `a` (internal grating-to-lens distance) and a throw ratio (lab-side). Conflating camera-M with projector behavior was a planning false start.
 - **`a` is fixed by projector hardware.** It's the physical distance from DMD chip to projector lens. Moving the projector in the lab does NOT change `a`. Therefore "projector distance" cannot drive `a` and cannot affect the chapter's bias math.
-- **Telecentric camera: M and distance are independent.** Within 132–182 mm WD, M stays at 0.09× regardless of camera position. Moving the camera only affects focus, not FOV. FOV is locked at 68×55 mm. **But the camera's tilt angle is independent of M** — telecentric doesn't mean "mounted vertical." This was a separate false start (Stage 2 Decision 3's hidden assumption) that Stage 3.5 corrects.
-- **Projector distance affects coverage, not math.** The slider exists for lab-design intuition.
+- **Telecentric camera: M and distance are independent.** Within 132–182 mm WD, M stays at 0.09× regardless of camera position. Moving the camera only affects focus, not FOV. FOV is locked at 68×55 mm. **But the camera's tilt angle is independent of M** — telecentric doesn't mean "mounted vertical." This was a separate false start (Stage 2 Decision 3's hidden assumption) that Stage 3.5 corrected.
+- **Projector distance affects coverage, not math.** The slider exists for lab-design intuition; becomes meaningful in Stage 4b's unified scene.
 - **Symmetric assumption (Fig. 4-4) is expository, not required.** The chapter writes derivations under symmetric arms for clarity, but Eq. 2-51 is the general two-angle form. Asymmetric arms (different angles, different distances) are fine; the math handles them.
-- **Both arm angles are independent.** Stage 4's GUI exposes both θ_projector and θ_camera as sliders. The user can explore symmetric, asymmetric, vertical-projector, vertical-camera, and degenerate configurations.
+- **Both arm angles are independent.** Stage 4a's GUI exposes both θ_projector and θ_camera as sliders. The user can explore symmetric, asymmetric, vertical-projector, vertical-camera, and degenerate configurations.
 
-#### Stage 4a — Surface library + GUI + recovered-height view
-
-1. `src/test_surfaces.py` — 5 pure-function generators: `make_flat`, `make_tilt`, `make_gaussian`, `make_step`, `make_sphere`. Unit tested. Each takes shape + params, returns `(H, W)` heightmap. Centered on grid by construction.
-2. `src/gui/` package — PyQt6 main window: control panel (sliders + dropdowns + info panel) + recovered-height 3D view. GUI calls math modules directly. No Camera/Projector protocols.
-3. Live updates on slider drag (480×640 resolution). Pipeline re-runs end-to-end each update.
-4. Default surface on launch: Gaussian (matches existing regression fixture).
-5. Ship and tag `stage-4a-complete`.
-
-#### Stage 4b — Lab setup view
-
-6. `src/scene.py` — translates geometry params (θ_proj, θ_cam, projector distance, camera distance, projector throw ratio, test surface dimensions) into 3D scene primitives (camera body, projector body, test surface plane, projection cone, viewing cone).
-7. Add lab setup 3D view to GUI as a second view. User orbits the entire scene with mouse. Updates live as sliders move.
-8. Ship and tag `stage-4-complete`.
-
-#### Deferred from Stage 4
+### Deferred from Stage 4 (still deferred)
 
 - **MockCamera, MockProjector, Camera/Projector protocols** → Stage 5/6.
-- **File-loaded and multi-bump surfaces** → if/when needed.
+- **STL / multi-bump / file-loaded surfaces** → after Stage 4b; the `(shape, pixel_size_mm) → (H, W) float64 mm` contract from Stage 4a's surface library supports this with zero math-layer changes.
 - **Taylor/exact model toggle in GUI** → adds two lines later; not v1.
 - **Resolution toggle (480×640 vs 1280×1024)** → adds a "Compute at full res" button later.
-- **Three.js embed for lab view** → explicitly rejected; lab view is native PyQt6.
+- **Three.js embed for lab view** → explicitly rejected; lab view is native PyQt6 (now part of unified scene).
 - **Object position offset** → locked at center.
+- **`equivalent_wavelength()` → `height_per_radian()` rename** → cosmetic; documented in code instead.
+- **Unit reconciliation between info panel mm-values and math-layer pixel-values** → Stage 5/6 when real hardware arrives.
 
-#### Architectural notes for Stage 4
+### When real hardware arrives (Stage 6 prep)
 
-- The math layer's existing invariants (especially `test_project_is_lambda_eq_independent`) must continue to pass after Stage 3.5.
-- 3D viewer backend: **PyQtGraph (OpenGL)** is the strong default — fast live updates, good orbital camera, single dependency for both views.
-- All slider updates re-run the pipeline. At 480×640 this is millisecond-scale.
-
-#### When real hardware arrives (Stage 6 prep)
-
-- Update `HybridGeometry` defaults to real measured values (`a`, `p`, θ_projector_actual, θ_camera_actual, distances).
-- Update info-panel constants in GUI to match.
+- Update `HybridGeometry` defaults to real measured values (`a`, `p`, θ_projector_actual, θ_camera_actual, distances) — in physically-consistent units after deciding the unit story.
+- Reconcile the math-layer pixel-space constants with the info-panel mm-space display.
 - Empirically calibrate `λ_eq` against a step gauge; override formula-derived value if needed.
 - `test_project_is_lambda_eq_independent` must still pass after the update — `HybridGeometry` and `SymmetricGeometry` defaults must change in lockstep.
-- Scene primitives in `src/scene.py` update to reflect real lab layout.
+- Scene primitives in `src/scene.py` (Stage 4b) update to reflect real lab layout.
 
-### Future-stage hooks deferred during Stage 2 / Stage 3 / Stage 4
+### Future-stage hooks deferred during Stages 2–4
 
-- **`pattern_generator.py`** (Decision 7): empty stub. Stage 5+.
+- **`pattern_generator.py`** (Stage 2 Decision 7): empty stub. Stage 5+.
 - **`io_utils.py`**: empty stub. Adds frame I/O when capture loop lands.
 - **`scripts/compare_forward_models.py`**: deliberately not created.
 - **`MockCamera` / `MockProjector` / Camera-Projector protocols**: deferred to Stage 5/6.
