@@ -195,3 +195,52 @@ def body_lens_offset(body_size_mm: float, lens_length_mm: float) -> np.ndarray:
     """
     tz = float(body_size_mm) / 2.0 + float(lens_length_mm) / 2.0
     return _translation(0.0, 0.0, tz)
+
+
+def cone_local_to_world_transform(
+    arm_transform_4x4: np.ndarray,
+    lens_length_mm: float,
+    body_depth_mm: float,
+    x_offset_mm: float = 0.0,
+) -> np.ndarray:
+    """Place a cone's local origin at the lens-front in world coords.
+
+    The cone builders (`make_*_cone_wireframe`) put the cone's local
+    origin at the lens-front (projection-cone apex / viewing-cone
+    front-face center) and open along local +Z toward the surface.
+    The arm transform already orients body-local +Z toward the
+    surface (after the R_x(pi) flip). So placing the cone is just a
+    translation along body-local +Z from the body center out to the
+    lens-front:
+
+        tz = body_depth_mm / 2 + lens_length_mm
+
+    (Note: this is the lens-FRONT offset — `body/2 + lens_length` —
+    not the lens-CENTER offset `body/2 + lens_length/2` that
+    `body_lens_offset` uses. The cone starts at the front of the
+    lens, not its midpoint.)
+
+    `x_offset_mm` handles the Pico Genie's off-center lens (X = -6.5
+    mm in body-centered frame); pass 0.0 for the camera.
+
+    Parameters
+    ----------
+    arm_transform_4x4 : (4, 4) float32
+        Output of `camera_arm_transform` / `projector_arm_transform`.
+    lens_length_mm : float
+        Lens length along its own local +Z (camera 200, projector 5).
+    body_depth_mm : float
+        Body depth along body-local +Z (camera 30, projector 55).
+    x_offset_mm : float
+        Body-local horizontal lens offset. Camera: 0.0. Projector:
+        -6.5 (Pico Genie measured).
+
+    Returns
+    -------
+    (4, 4) float32, row-major.
+    """
+    tz = float(body_depth_mm) / 2.0 + float(lens_length_mm)
+    t = _translation(float(x_offset_mm), 0.0, tz)
+    return (np.asarray(arm_transform_4x4, dtype=np.float32) @ t).astype(
+        np.float32, copy=False
+    )

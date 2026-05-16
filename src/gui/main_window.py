@@ -400,11 +400,14 @@ class MainWindow(QMainWindow):
     def _build_geometry_group(self) -> QGroupBox:
         box = QGroupBox("Geometry")
         layout = QVBoxLayout(box)
+        # Range extended from ±60° to ±75° in Stage 4b task 4 to make
+        # surface-clip cases reachable (a tilted lens-front disc only
+        # reaches z=0 past ~67° at minimum WD); default ±30° unchanged.
         self.theta_projector = LabeledFloatSlider(
-            "theta_projector_deg", -60.0, 60.0, 30.0, 1.0, suffix="°"
+            "theta_projector_deg", -75.0, 75.0, 30.0, 1.0, suffix="°"
         )
         self.theta_camera = LabeledFloatSlider(
-            "theta_camera_deg", -60.0, 60.0, 30.0, 1.0, suffix="°"
+            "theta_camera_deg", -75.0, 75.0, 30.0, 1.0, suffix="°"
         )
         # Stage 4b task 3: distance sliders use the optics convention —
         # lens-front to surface (NOT body-center to surface). The
@@ -494,6 +497,13 @@ class MainWindow(QMainWindow):
         self.warning_banner = self._build_warning_banner()
         layout.addWidget(self.warning_banner)
 
+        # Stage 4b task 4: clip-detection banner. Sits directly below
+        # the degenerate-λ_eq banner; the two are independent and can
+        # show simultaneously (a degenerate pose can also be a clipping
+        # pose). Same red visual treatment, top of the 3D scene page.
+        self.clip_banner = self._build_clip_banner()
+        layout.addWidget(self.clip_banner)
+
         self.view_3d = SurfacePreview()
         layout.addWidget(self.view_3d, 1)
 
@@ -532,6 +542,41 @@ class MainWindow(QMainWindow):
         )
         banner.setVisible(False)
         return banner
+
+    def _build_clip_banner(self) -> QLabel:
+        """Clip-detection warning banner. Hidden until a clip fires.
+
+        Unlike the degenerate-λ_eq banner (which short-circuits the
+        pipeline because λ_eq is infinite), clip warnings are advisory:
+        the math keeps running, the rig is just not physically
+        buildable. Text is set live by `_update_clip_warning` from the
+        ClipState message list (one line per triggered check).
+        """
+        banner = QLabel()
+        banner.setTextFormat(Qt.TextFormat.RichText)
+        banner.setStyleSheet(
+            "background-color: rgba(180, 30, 30, 200);"
+            " color: white;"
+            " padding: 8px;"
+            " border: 2px solid rgb(220, 60, 60);"
+            " font-family: monospace;"
+            " font-size: 11px;"
+        )
+        banner.setVisible(False)
+        return banner
+
+    def _update_clip_warning(self, messages: list[str]) -> None:
+        """Show/hide the clip banner from a ClipState message list.
+
+        Empty list -> hide. Non-empty -> show all messages, one per
+        line, prefixed with a warning glyph on the first line.
+        """
+        if not messages:
+            self.clip_banner.setVisible(False)
+            return
+        body = "<br/>".join(messages)
+        self.clip_banner.setText(f"<b>⚠ Physical clip</b><br/>{body}")
+        self.clip_banner.setVisible(True)
 
     # ------------------------------------------------------------------
     # Surface refresh wiring (task 3)
@@ -686,13 +731,18 @@ class MainWindow(QMainWindow):
 
         Accepts variadic args so it can be connected directly to
         `valueChanged(float)`-emitting sliders without an adapter.
+
+        The returned ClipState drives the clip-warning banner. This is
+        independent of the degenerate-λ_eq banner (which is owned by
+        `_refresh_surface_preview`); both can be visible at once.
         """
-        self.view_3d.update_hardware_pose(
+        clip_state = self.view_3d.update_hardware_pose(
             theta_camera_deg=self.theta_camera.value(),
             theta_projector_deg=self.theta_projector.value(),
             projector_distance_mm=self.projector_distance.value(),
             camera_distance_mm=self.camera_distance.value(),
         )
+        self._update_clip_warning(clip_state.messages)
 
     def _on_view_mode_changed(self, _checked: bool) -> None:
         """Switch the right-pane stack page and refresh.

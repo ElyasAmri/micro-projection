@@ -459,3 +459,145 @@ def make_projector_lens() -> Tuple[np.ndarray, np.ndarray]:
         CCW outward winding.
     """
     return _cylinder(20.0, 5.0)
+
+
+# ---------------------------------------------------------------------------
+# Cone wireframe builders (Stage 4b task 4).
+#
+# These return (verts, edges) tuples — distinct from the (verts, faces)
+# mesh contract above. `edges` is (M, 2) uint32: each row is a pair of
+# vertex indices forming one line segment. The GUI renders these with
+# pyqtgraph's GLLinePlotItem(mode='lines'); there are no faces and no
+# winding convention (a wireframe has no orientable surface).
+# ---------------------------------------------------------------------------
+
+def make_projection_cone_wireframe(
+    throw_distance_mm: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Wireframe of the Pico Genie projection cone.
+
+    A rectangular pyramid: apex at the local origin (= projector
+    lens-front in lens-local frame), opening along local +Z to a
+    rectangular base at `z = +throw_distance_mm`.
+
+    Pico Genie spec: 1.2:1 throw ratio, 16:9 aspect. So at throw
+    distance L:
+
+        base_width  = L / 1.2
+        base_height = base_width * 9 / 16
+
+    Unlike the telecentric viewing cone, this one genuinely diverges
+    (non-telecentric consumer DLP optics) — the apex-to-base taper IS
+    the perspective projection visualized.
+
+    Vertices (5)
+    ------------
+        0 : apex at (0, 0, 0)
+        1 : (+w/2, +h/2, L)
+        2 : (-w/2, +h/2, L)
+        3 : (-w/2, -h/2, L)
+        4 : (+w/2, -h/2, L)
+
+    Edges (8): 4 apex->corner slants + 4 base-perimeter segments.
+
+    Parameters
+    ----------
+    throw_distance_mm : float
+        Projector lens-front to projected-image-plane distance. Must
+        be > 0.
+
+    Returns
+    -------
+    verts : (5, 3) float32, units mm
+    edges : (8, 2) uint32
+    """
+    L = float(throw_distance_mm)
+    w = L / 1.2
+    h = w * 9.0 / 16.0
+    hw, hh = w / 2.0, h / 2.0
+
+    verts = np.array(
+        [
+            [0.0, 0.0, 0.0],   # 0 apex
+            [+hw, +hh, L],     # 1
+            [-hw, +hh, L],     # 2
+            [-hw, -hh, L],     # 3
+            [+hw, -hh, L],     # 4
+        ],
+        dtype=np.float32,
+    )
+    edges = np.array(
+        [
+            [0, 1], [0, 2], [0, 3], [0, 4],   # apex -> base corners
+            [1, 2], [2, 3], [3, 4], [4, 1],   # base perimeter
+        ],
+        dtype=np.uint32,
+    )
+    return verts, edges
+
+
+def make_viewing_cone_wireframe(
+    working_distance_mm: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Wireframe of the Edmund #58-259 telecentric viewing volume.
+
+    This is a rectangular PRISM, not a true cone. The Edmund #58-259
+    is telecentric: the chief rays through its rear aperture stop are
+    constrained parallel, so the imaged field is the same size at every
+    object distance within the working range. The wireframe therefore
+    has identical front and back rectangles (68 x 55 mm — the FOV on
+    the test surface) connected by four parallel long edges.
+
+    The parallel sides ARE the telecentric property visualized: a
+    non-telecentric viewing cone would diverge from the lens toward
+    the object; this one does not, because magnification is constant
+    regardless of object distance. (Contrast the projection cone,
+    which genuinely diverges — the Pico Genie is non-telecentric.)
+
+    Front face at local z = 0 (= camera lens-front in lens-local
+    frame); back face at z = +working_distance_mm (the test surface).
+
+    Vertices (8)
+    ------------
+        0-3 : front rectangle at z=0     (+/-34, +/-27.5, 0)
+        4-7 : back rectangle  at z=WD    (+/-34, +/-27.5, WD)
+
+    Edges (12): 4 front-perimeter + 4 back-perimeter + 4 long parallels.
+
+    Parameters
+    ----------
+    working_distance_mm : float
+        Camera lens-front to test-surface distance (Edmund #58-259 WD
+        range 132-182 mm). Must be > 0.
+
+    Returns
+    -------
+    verts : (8, 3) float32, units mm
+    edges : (12, 2) uint32
+    """
+    wd = float(working_distance_mm)
+    # 68 x 55 mm FOV on the test surface (PROJECT_CONTEXT Sec 2).
+    hx, hy = 68.0 / 2.0, 55.0 / 2.0
+
+    verts = np.array(
+        [
+            [+hx, +hy, 0.0],   # 0 front
+            [-hx, +hy, 0.0],   # 1
+            [-hx, -hy, 0.0],   # 2
+            [+hx, -hy, 0.0],   # 3
+            [+hx, +hy, wd],    # 4 back
+            [-hx, +hy, wd],    # 5
+            [-hx, -hy, wd],    # 6
+            [+hx, -hy, wd],    # 7
+        ],
+        dtype=np.float32,
+    )
+    edges = np.array(
+        [
+            [0, 1], [1, 2], [2, 3], [3, 0],   # front perimeter
+            [4, 5], [5, 6], [6, 7], [7, 4],   # back perimeter
+            [0, 4], [1, 5], [2, 6], [3, 7],   # parallel long edges
+        ],
+        dtype=np.uint32,
+    )
+    return verts, edges

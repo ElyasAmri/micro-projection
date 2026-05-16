@@ -234,14 +234,15 @@ class SurfacePreview(gl.GLViewWidget):
         theta_projector_deg: float,
         projector_distance_mm: float,
         camera_distance_mm: float,
-    ) -> None:
-        """Push fresh poses into the four hardware GLMeshItems.
+    ):
+        """Push fresh poses into the hardware bodies + cones.
 
         Thin pass-through to `HardwareScene.update_pose`. Kept on the
         SurfacePreview class so main_window doesn't reach across into
-        the HardwareScene directly.
+        the HardwareScene directly. Returns the `ClipState` from the
+        pose update so main_window can drive the clip-warning banner.
         """
-        self._hardware_scene.update_pose(
+        return self._hardware_scene.update_pose(
             theta_camera_deg=theta_camera_deg,
             theta_projector_deg=theta_projector_deg,
             projector_distance_mm=projector_distance_mm,

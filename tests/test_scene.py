@@ -46,8 +46,10 @@ from scene import (
     _stepped_cylinder,
     make_camera_body,
     make_camera_lens,
+    make_projection_cone_wireframe,
     make_projector_body,
     make_projector_lens,
+    make_viewing_cone_wireframe,
 )
 
 
@@ -180,4 +182,131 @@ def test_winding_outward(builder, dims, n_verts, n_faces):
         assert dot > 0.0, (
             f"face {k} (verts {[int(a), int(b), int(c)]}) has inverted winding: "
             f"normal . outward = {dot:.3e}"
+        )
+
+
+# ===========================================================================
+# Stage 4b task 4 — cone WIREFRAME builders.
+#
+# These return (verts, edges) instead of (verts, faces). The winding
+# check above does NOT apply (wireframes have no orientable surface),
+# so they are intentionally NOT in BUILDERS — they get their own
+# parametrize list and a reduced set of universal checks (5, not 6).
+#
+# Each entry: (builder, arg, expected_dims, n_verts, n_edges, id).
+# `arg` is the single throw / WD argument; expected_dims is the
+# (full-x, full-y, full-z) extent of the wireframe bounding box (NOT
+# centered — cones run z in [0, length] with apex / front face at the
+# origin).
+# ===========================================================================
+WIREFRAME_BUILDERS = [
+    # Projection cone at throw=150: width = 150/1.2 = 125,
+    # height = 125 * 9/16 = 70.3125, length = 150. 5 verts, 8 edges.
+    (
+        make_projection_cone_wireframe, 150.0,
+        (125.0, 70.3125, 150.0), 5, 8, "projection_cone",
+    ),
+    # Viewing cone at WD=157: 68 x 55 mm prism, length 157.
+    # 8 verts, 12 edges.
+    (
+        make_viewing_cone_wireframe, 157.0,
+        (68.0, 55.0, 157.0), 8, 12, "viewing_cone",
+    ),
+]
+WIREFRAME_IDS = [b[5] for b in WIREFRAME_BUILDERS]
+WIREFRAME_PARAMS = [(b[0], b[1], b[2], b[3], b[4]) for b in WIREFRAME_BUILDERS]
+
+
+@pytest.mark.parametrize(
+    "builder,arg,dims,n_verts,n_edges", WIREFRAME_PARAMS, ids=WIREFRAME_IDS
+)
+def test_wireframe_return_contract(builder, arg, dims, n_verts, n_edges):
+    verts, edges = builder(arg)
+    assert isinstance(verts, np.ndarray) and verts.shape == (n_verts, 3)
+    assert verts.dtype == np.float32, f"verts dtype {verts.dtype}"
+    assert isinstance(edges, np.ndarray) and edges.shape == (n_edges, 2)
+    assert edges.dtype == np.uint32, f"edges dtype {edges.dtype}"
+
+
+@pytest.mark.parametrize(
+    "builder,arg,dims,n_verts,n_edges", WIREFRAME_PARAMS, ids=WIREFRAME_IDS
+)
+def test_wireframe_vertex_and_edge_counts(builder, arg, dims, n_verts, n_edges):
+    verts, edges = builder(arg)
+    assert verts.shape[0] == n_verts, (
+        f"expected {n_verts} verts, got {verts.shape[0]}"
+    )
+    assert edges.shape[0] == n_edges, (
+        f"expected {n_edges} edges, got {edges.shape[0]}"
+    )
+
+
+@pytest.mark.parametrize(
+    "builder,arg,dims,n_verts,n_edges", WIREFRAME_PARAMS, ids=WIREFRAME_IDS
+)
+def test_wireframe_bounding_box(builder, arg, dims, n_verts, n_edges):
+    """Cones are NOT centered: x/y span +/-dim/2 but z runs [0, length].
+
+    The apex (projection) / front face (viewing) sits at the local
+    origin; the cone opens toward +Z.
+    """
+    verts, _ = builder(arg)
+    dx, dy, dz = dims
+    mn = verts.min(axis=0).astype(np.float64)
+    mx = verts.max(axis=0).astype(np.float64)
+    np.testing.assert_allclose(mn, [-dx / 2.0, -dy / 2.0, 0.0], atol=1e-4)
+    np.testing.assert_allclose(mx, [+dx / 2.0, +dy / 2.0, dz], atol=1e-4)
+
+
+@pytest.mark.parametrize(
+    "builder,arg,dims,n_verts,n_edges", WIREFRAME_PARAMS, ids=WIREFRAME_IDS
+)
+def test_wireframe_edge_indices_in_range(builder, arg, dims, n_verts, n_edges):
+    verts, edges = builder(arg)
+    n = verts.shape[0]
+    assert edges.min() >= 0, f"negative edge index: {edges.min()}"
+    assert edges.max() < n, f"edge index out of range: {edges.max()}, N={n}"
+
+
+@pytest.mark.parametrize(
+    "builder,arg,dims,n_verts,n_edges", WIREFRAME_PARAMS, ids=WIREFRAME_IDS
+)
+def test_wireframe_no_degenerate_edges(builder, arg, dims, n_verts, n_edges):
+    _, edges = builder(arg)
+    for k, (a, b) in enumerate(edges):
+        assert a != b, f"edge {k} connects a vertex to itself: ({a}, {b})"
+
+
+# --- Cone-specific dimension checks at typical pose values. ---------------
+
+def test_projection_cone_obeys_throw_ratio_and_aspect():
+    """1.2:1 throw, 16:9 aspect at throw=150 -> base 125 x 70.3125."""
+    verts, _ = make_projection_cone_wireframe(150.0)
+    apex = verts[0]
+    np.testing.assert_allclose(apex, [0.0, 0.0, 0.0], atol=1e-6)
+    base = verts[1:]
+    base_w = float(base[:, 0].max() - base[:, 0].min())
+    base_h = float(base[:, 1].max() - base[:, 1].min())
+    assert base_w == pytest.approx(150.0 / 1.2, abs=1e-4)        # 125.0
+    assert base_h == pytest.approx((150.0 / 1.2) * 9 / 16, abs=1e-4)  # 70.3125
+    assert float(base[:, 2].min()) == pytest.approx(150.0, abs=1e-4)
+
+
+def test_viewing_cone_is_parallel_prism():
+    """Telecentric: front and back rectangles are identical (68 x 55).
+
+    The defining check — a non-telecentric cone would have a
+    different-sized back face. Here front (z=0) and back (z=WD)
+    rectangles must match exactly in x/y extent.
+    """
+    verts, _ = make_viewing_cone_wireframe(157.0)
+    front = verts[verts[:, 2] == 0.0]
+    back = verts[verts[:, 2] == 157.0]
+    assert front.shape[0] == 4 and back.shape[0] == 4
+    for arr in (front, back):
+        assert float(arr[:, 0].max() - arr[:, 0].min()) == pytest.approx(
+            68.0, abs=1e-4
+        )
+        assert float(arr[:, 1].max() - arr[:, 1].min()) == pytest.approx(
+            55.0, abs=1e-4
         )

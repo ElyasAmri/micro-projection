@@ -50,13 +50,20 @@ import pyqtgraph.opengl as gl
 from scene import (
     make_camera_body,
     make_camera_lens,
+    make_projection_cone_wireframe,
     make_projector_body,
     make_projector_lens,
+    make_viewing_cone_wireframe,
 )
 from scene_compose import (
     body_lens_offset,
     camera_arm_transform,
+    cone_local_to_world_transform,
     projector_arm_transform,
+)
+from src.gui.clip_detection import (
+    ClipState,
+    detect_clips,
 )
 
 
@@ -85,6 +92,10 @@ KEY_CAMERA_LENS = "camera_lens"
 KEY_PROJECTOR_BODY = "projector_body"
 KEY_PROJECTOR_LENS = "projector_lens"
 
+# Cone keys (wireframe GLLinePlotItems, not in the transforms dict).
+KEY_VIEWING_CONE = "viewing_cone"
+KEY_PROJECTION_CONE = "projection_cone"
+
 
 # Visual colors for the four bodies. Yellow / gold for the camera assembly,
 # cyan / teal for the projector assembly.
@@ -94,6 +105,18 @@ COLORS: Dict[str, tuple] = {
     KEY_PROJECTOR_BODY: (0.20, 0.80, 0.90, 1.0),
     KEY_PROJECTOR_LENS: (0.15, 0.65, 0.75, 1.0),
 }
+
+# Faded wireframe cone colors (alpha 0.4 = ghostly, doesn't compete
+# visually with the solid bodies).
+CONE_COLORS: Dict[str, tuple] = {
+    KEY_VIEWING_CONE:    (1.00, 0.90, 0.20, 0.4),   # faded yellow
+    KEY_PROJECTION_CONE: (0.20, 0.80, 0.90, 0.4),   # faded cyan
+}
+
+# Gray override applied to any body/cone involved in a clip.
+GRAY_RGBA: tuple = (0.4, 0.4, 0.4, 1.0)
+# Cones keep their ghostly alpha even when grayed.
+GRAY_CONE_RGBA: tuple = (0.4, 0.4, 0.4, 0.4)
 
 
 def _translation(tx: float, ty: float, tz: float) -> np.ndarray:
@@ -234,17 +257,49 @@ class HardwareScene:
             view.addItem(item)
             self._items[key] = item
 
+        # Two wireframe cones (GLLinePlotItem, mode='lines'). Vertices
+        # are rebuilt every pose because cone dimensions depend on the
+        # live throw / WD slider values. Initial empty pos; update_pose
+        # fills them.
+        self._cones: Dict[str, gl.GLLinePlotItem] = {}
+        for key in (KEY_VIEWING_CONE, KEY_PROJECTION_CONE):
+            line = gl.GLLinePlotItem(
+                pos=np.zeros((2, 3), dtype=np.float32),
+                color=CONE_COLORS[key],
+                width=1.0,
+                mode="lines",
+                antialias=True,
+            )
+            view.addItem(line)
+            self._cones[key] = line
+
+    @staticmethod
+    def _edges_to_segments(verts: np.ndarray, edges: np.ndarray) -> np.ndarray:
+        """Expand (verts, edges) to a (2M, 3) line-segment pos array.
+
+        GLLinePlotItem(mode='lines') consumes consecutive vertex pairs
+        as independent segments, so each edge (a, b) becomes the two
+        rows verts[a], verts[b].
+        """
+        return verts[edges.reshape(-1)].astype(np.float32, copy=False)
+
     def update_pose(
         self,
         theta_camera_deg: float,
         theta_projector_deg: float,
         projector_distance_mm: float,
         camera_distance_mm: float,
-    ) -> None:
-        """Recompute and apply the four arm transforms.
+    ) -> ClipState:
+        """Recompute and apply transforms; refresh cones; detect clips.
 
-        Cheap: three matrix multiplies plus four `setTransform` calls.
-        Safe to call on every slider tick.
+        Returns the `ClipState` so main_window can drive the warning
+        banner. Bodies (and their cones) involved in a clip are
+        recolored gray; un-clipped ones are restored to their normal
+        colors.
+
+        Still cheap: a handful of small matrix multiplies, four mesh
+        `setTransform` calls, two tiny wireframe rebuilds, and the
+        AABB / disc-edge clip arithmetic. Safe on every slider tick.
         """
         transforms = compute_arm_transforms(
             theta_camera_deg=theta_camera_deg,
@@ -254,3 +309,77 @@ class HardwareScene:
         )
         for key, item in self._items.items():
             item.setTransform(pg.Transform3D(transforms[key]))
+
+        # --- Cones: rebuild verts from live throw/WD, then place. ---
+        view_verts, view_edges = make_viewing_cone_wireframe(
+            camera_distance_mm
+        )
+        view_world = cone_local_to_world_transform(
+            transforms[KEY_CAMERA_BODY],
+            lens_length_mm=_CAMERA_LENS_LENGTH_MM,
+            body_depth_mm=_CAMERA_BODY_DEPTH_MM,
+            x_offset_mm=0.0,
+        )
+        self._cones[KEY_VIEWING_CONE].setData(
+            pos=self._edges_to_segments(view_verts, view_edges)
+        )
+        self._cones[KEY_VIEWING_CONE].setTransform(pg.Transform3D(view_world))
+
+        proj_verts, proj_edges = make_projection_cone_wireframe(
+            projector_distance_mm
+        )
+        proj_world = cone_local_to_world_transform(
+            transforms[KEY_PROJECTOR_BODY],
+            lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
+            body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
+            x_offset_mm=PROJECTOR_LENS_X_OFFSET_MM,
+        )
+        self._cones[KEY_PROJECTION_CONE].setData(
+            pos=self._edges_to_segments(proj_verts, proj_edges)
+        )
+        self._cones[KEY_PROJECTION_CONE].setTransform(
+            pg.Transform3D(proj_world)
+        )
+
+        # --- Clip detection + gray override. ---
+        clip_state = detect_clips(transforms)
+        self._apply_clip_colors(clip_state)
+        return clip_state
+
+    def _apply_clip_colors(self, clip_state: ClipState) -> None:
+        """Recolor bodies/cones gray when clipping, else normal.
+
+        Camera-side items (camera body, camera lens, viewing cone) gray
+        out when the camera lens clips the surface OR the assemblies
+        overlap. Projector-side likewise. Body-overlap grays BOTH
+        assemblies (it's a mutual collision).
+        """
+        cam_clip = (
+            clip_state.camera_clipping_surface
+            or clip_state.bodies_overlapping
+        )
+        proj_clip = (
+            clip_state.projector_clipping_surface
+            or clip_state.bodies_overlapping
+        )
+
+        self._items[KEY_CAMERA_BODY].setColor(
+            GRAY_RGBA if cam_clip else COLORS[KEY_CAMERA_BODY]
+        )
+        self._items[KEY_CAMERA_LENS].setColor(
+            GRAY_RGBA if cam_clip else COLORS[KEY_CAMERA_LENS]
+        )
+        self._items[KEY_PROJECTOR_BODY].setColor(
+            GRAY_RGBA if proj_clip else COLORS[KEY_PROJECTOR_BODY]
+        )
+        self._items[KEY_PROJECTOR_LENS].setColor(
+            GRAY_RGBA if proj_clip else COLORS[KEY_PROJECTOR_LENS]
+        )
+        self._cones[KEY_VIEWING_CONE].setData(
+            color=GRAY_CONE_RGBA if cam_clip
+            else CONE_COLORS[KEY_VIEWING_CONE]
+        )
+        self._cones[KEY_PROJECTION_CONE].setData(
+            color=GRAY_CONE_RGBA if proj_clip
+            else CONE_COLORS[KEY_PROJECTION_CONE]
+        )
