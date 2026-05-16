@@ -610,6 +610,19 @@ class MainWindow(QMainWindow):
         for slider in self._all_surface_sliders():
             slider.valueChanged.connect(self._refresh_surface_preview)
 
+        # Stage 4b task 4 (2/2): surface-shape changes alter the
+        # surface peak, which feeds the surface-vs-lens contact
+        # checks. Connect surface controls to _on_pose_changed too
+        # (after _refresh_surface_preview, so the refresh runs first;
+        # _on_pose_changed recomputes the peak itself so order is not
+        # load-bearing, but refresh-first stays consistent). NOT
+        # chained inside _refresh_surface_preview because that slot
+        # early-returns in the degenerate-λ_eq case, and the
+        # hardware-pose / clip update must still run there.
+        self.surface_combo.currentIndexChanged.connect(self._on_pose_changed)
+        for slider in self._all_surface_sliders():
+            slider.valueChanged.connect(self._on_pose_changed)
+
         # Stage 4a task 4 additions: geometry sliders + PSI step count.
         self.theta_projector.valueChanged.connect(self._refresh_surface_preview)
         self.theta_camera.valueChanged.connect(self._refresh_surface_preview)
@@ -735,12 +748,21 @@ class MainWindow(QMainWindow):
         The returned ClipState drives the clip-warning banner. This is
         independent of the degenerate-λ_eq banner (which is owned by
         `_refresh_surface_preview`); both can be visible at once.
+
+        The current surface peak (unscaled mm) feeds the surface-vs-
+        lens contact checks. Recomputed here via
+        `_compute_current_heightmap()` (cheap analytic call) rather
+        than cached, so this slot is order-independent of
+        `_refresh_surface_preview` and unaffected by its degenerate-
+        λ_eq early return.
         """
+        surface_peak = float(self._compute_current_heightmap().max())
         clip_state = self.view_3d.update_hardware_pose(
             theta_camera_deg=self.theta_camera.value(),
             theta_projector_deg=self.theta_projector.value(),
             projector_distance_mm=self.projector_distance.value(),
             camera_distance_mm=self.camera_distance.value(),
+            surface_peak_mm=surface_peak,
         )
         self._update_clip_warning(clip_state.messages)
 

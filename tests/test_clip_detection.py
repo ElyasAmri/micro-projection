@@ -34,7 +34,9 @@ from gui.clip_detection import (
     KEY_PROJECTOR_LENS,
     MSG_BODY_OVERLAP,
     MSG_CAMERA_SURFACE,
+    MSG_CAMERA_SURFACE_HIT,
     MSG_PROJECTOR_SURFACE,
+    MSG_PROJECTOR_SURFACE_HIT,
     detect_clips,
 )
 from gui.hardware_scene import compute_arm_transforms
@@ -160,3 +162,69 @@ def test_multiple_clips_at_pathological_pose():
     assert MSG_PROJECTOR_SURFACE in state.messages
     assert MSG_BODY_OVERLAP in state.messages
     assert len(state.messages) == 3
+    # The disc_lowest_z > 0 guard keeps the surface-HIT checks silent
+    # here (both lenses are below z=0), so no double-fire.
+    assert not state.camera_lens_hit_by_surface
+    assert not state.projector_lens_hit_by_surface
+
+
+# ===========================================================================
+# Stage 4b task 4 (2/2) — surface-peak vs lens contact (3 new cases).
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 7 — Tall surface reaches up to the camera lens.
+# Clean V-rig, camera at min WD (132). Camera lens-front disc lowest
+# world-z ~ 132 cos20 - 55 sin20 ~ 124 - 18.8 ~ 105 mm (> 0, lens
+# above the plane). A 200 mm surface peak reaches it.
+# ---------------------------------------------------------------------------
+def test_camera_lens_hit_by_tall_surface():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=35.0,
+        projector_distance_mm=150.0,
+        camera_distance_mm=132.0,
+    )
+    state = detect_clips(t, surface_peak_mm=200.0)
+    assert state.camera_lens_hit_by_surface
+    assert MSG_CAMERA_SURFACE_HIT in state.messages
+    # Lens is above the plane, so the surface-PLANE check stays off.
+    assert not state.camera_clipping_surface
+
+
+# ---------------------------------------------------------------------------
+# 8 — Tall surface reaches up to the projector lens. Projector at low
+# throw (50) + mild tilt; disc lowest ~ 50 cos20 - 10 sin20 ~ 44 mm.
+# A 100 mm peak hits it. Camera at clean WD=157 stays clear (its disc
+# lowest ~ 129 mm > 100), isolating the projector flag.
+# ---------------------------------------------------------------------------
+def test_projector_lens_hit_by_tall_surface():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=20.0,
+        projector_distance_mm=50.0,
+        camera_distance_mm=157.0,
+    )
+    state = detect_clips(t, surface_peak_mm=100.0)
+    assert state.projector_lens_hit_by_surface
+    assert MSG_PROJECTOR_SURFACE_HIT in state.messages
+    assert not state.camera_lens_hit_by_surface
+    assert not state.projector_clipping_surface
+
+
+# ---------------------------------------------------------------------------
+# 9 — Default-ish V-rig, mid-range Gaussian peak (10 mm): nothing
+# contacts. Both new flags False, no messages.
+# ---------------------------------------------------------------------------
+def test_no_hit_at_default_surface_height():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=30.0,
+        projector_distance_mm=150.0,
+        camera_distance_mm=157.0,
+    )
+    state = detect_clips(t, surface_peak_mm=10.0)
+    assert not state.camera_lens_hit_by_surface
+    assert not state.projector_lens_hit_by_surface
+    assert not state.any_clip
+    assert state.messages == []

@@ -84,6 +84,14 @@ MSG_PROJECTOR_SURFACE = (
 MSG_BODY_OVERLAP = (
     "Camera and projector assemblies overlapping — pose not physically feasible"
 )
+MSG_CAMERA_SURFACE_HIT = (
+    "Test surface contacts camera lens — pose / surface height not "
+    "physically feasible"
+)
+MSG_PROJECTOR_SURFACE_HIT = (
+    "Test surface contacts projector lens — pose / surface height not "
+    "physically feasible"
+)
 
 
 def _local_bbox_corners(verts: np.ndarray) -> np.ndarray:
@@ -130,6 +138,11 @@ class ClipState:
     camera_clipping_surface: bool = False
     projector_clipping_surface: bool = False
     bodies_overlapping: bool = False
+    # Stage 4b task 4 (2/2): the test surface peak reaching UP to a
+    # lens that sits above the surface plane. Distinct from
+    # *_clipping_surface (lens dipping BELOW z=0).
+    camera_lens_hit_by_surface: bool = False
+    projector_lens_hit_by_surface: bool = False
     messages: List[str] = field(default_factory=list)
 
     @property
@@ -138,6 +151,8 @@ class ClipState:
             self.camera_clipping_surface
             or self.projector_clipping_surface
             or self.bodies_overlapping
+            or self.camera_lens_hit_by_surface
+            or self.projector_lens_hit_by_surface
         )
 
 
@@ -186,8 +201,11 @@ def _aabb_overlap(a_min, a_max, b_min, b_max) -> bool:
     )
 
 
-def detect_clips(transforms: Dict[str, np.ndarray]) -> ClipState:
-    """Run all three advisory clip checks on world-space body poses.
+def detect_clips(
+    transforms: Dict[str, np.ndarray],
+    surface_peak_mm: float = 0.0,
+) -> ClipState:
+    """Run all five advisory clip checks on world-space body poses.
 
     Parameters
     ----------
@@ -195,13 +213,27 @@ def detect_clips(transforms: Dict[str, np.ndarray]) -> ClipState:
         Mapping of mesh key -> (4,4) row-major world transform, as
         returned by `hardware_scene.compute_arm_transforms`. Keys:
         camera_body, camera_lens, projector_body, projector_lens.
+    surface_peak_mm : float
+        Max height of the (recovered / ground-truth) test surface, in
+        mm. Default 0.0 (flat / legacy callers): the surface-vs-lens
+        checks are then inert unless a lens is also dipping below z=0,
+        and even then the `disc_lowest_z > 0` guard suppresses them
+        so they don't double-fire with the surface-PLANE checks.
 
     Returns
     -------
     ClipState
-        Three booleans plus a `messages` list (one human-readable
-        line per triggered check, in a fixed order: camera-surface,
-        projector-surface, body-overlap).
+        Five booleans plus a `messages` list (one line per triggered
+        check, fixed order: camera-surface, projector-surface,
+        body-overlap, camera-surface-hit, projector-surface-hit).
+
+    Two distinct surface failure modes
+    ----------------------------------
+    - `*_clipping_surface`: the lens-front disc dips BELOW z=0 (the
+      lens has gone through the surface plane).
+    - `*_lens_hit_by_surface`: the lens sits ABOVE z=0 but the
+      surface PEAK reaches up to it. Guarded by `disc_lowest_z > 0`
+      so it never co-fires with the lens-below-plane case.
     """
     state = ClipState()
 
@@ -242,5 +274,17 @@ def detect_clips(transforms: Dict[str, np.ndarray]) -> ClipState:
     if _aabb_overlap(cam_min, cam_max, proj_min, proj_max):
         state.bodies_overlapping = True
         state.messages.append(MSG_BODY_OVERLAP)
+
+    # 4 & 5 — surface peak reaching UP to a lens that is ABOVE the
+    # plane. The `> 0` guard means: if the lens is already below z=0
+    # (checks 1/2 fired), this distinct mode stays silent — no
+    # double-message for the same physical situation.
+    if cam_low > 0.0 and surface_peak_mm >= cam_low:
+        state.camera_lens_hit_by_surface = True
+        state.messages.append(MSG_CAMERA_SURFACE_HIT)
+
+    if proj_low > 0.0 and surface_peak_mm >= proj_low:
+        state.projector_lens_hit_by_surface = True
+        state.messages.append(MSG_PROJECTOR_SURFACE_HIT)
 
     return state
