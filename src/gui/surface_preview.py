@@ -59,12 +59,21 @@ from src.gui.hardware_scene import HardwareScene
 # panel exposes hardware-derived pitch.
 DEFAULT_PIXEL_SIZE_MM = 0.1
 
-# Display-only Z scale factor. Sub-mm surfaces on a 50+ mm field
-# would render as near-flat sheets at 1×. 2× is mild enough that
-# when Stage 4b adds camera/projector bodies at real scale, the
-# surface still reads as a physical surface rather than a towering
-# spike. Tunable; revisit when Stage 4b lands.
-Z_EXAGGERATION: float = 2.0
+# Display Z scale factor. Set to 1.0 (honest scale) at Stage 4b
+# task 4 close: with the hardware bodies now in the scene at real
+# scale, the surface render IS a geometric ruler — when the user
+# sees the surface touch the (graying) lens, that must literally
+# mean the surface height equals the clip-detection threshold. Any
+# exaggeration would desync the visual from the clip math.
+#
+# Exaggeration (2.0) was useful in Stage 4a when the surface was
+# alone in the scene with nothing to scale against. Now the
+# hardware provides the scale reference, so exaggeration becomes
+# distortion. Trade-off accepted: sub-mm specimens visually vanish
+# in the 3D dome at 1×; the error overlay (diverging colormap) is
+# the tool for seeing fine surface variation — the 3D dome only
+# conveys macro shape.
+Z_EXAGGERATION: float = 1.0
 
 
 def _build_diverging_colormap() -> pg.ColorMap:
