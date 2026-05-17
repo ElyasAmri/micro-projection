@@ -289,7 +289,6 @@ class HardwareScene:
         theta_projector_deg: float,
         projector_distance_mm: float,
         camera_distance_mm: float,
-        surface_peak_mm: float = 0.0,
     ) -> ClipState:
         """Recompute and apply transforms; refresh cones; detect clips.
 
@@ -297,10 +296,6 @@ class HardwareScene:
         banner. Bodies (and their cones) involved in a clip are
         recolored gray; un-clipped ones are restored to their normal
         colors.
-
-        `surface_peak_mm` is the current surface's max height; it feeds
-        the surface-vs-lens contact checks (default 0.0 = no-op for
-        callers that don't pass it).
 
         Still cheap: a handful of small matrix multiplies, four mesh
         `setTransform` calls, two tiny wireframe rebuilds, and the
@@ -347,7 +342,7 @@ class HardwareScene:
         )
 
         # --- Clip detection + gray override. ---
-        clip_state = detect_clips(transforms, surface_peak_mm=surface_peak_mm)
+        clip_state = detect_clips(transforms)
         self._apply_clip_colors(clip_state)
         return clip_state
 
@@ -355,19 +350,16 @@ class HardwareScene:
         """Recolor bodies/cones gray when clipping, else normal.
 
         Camera-side items (camera body, camera lens, viewing cone) gray
-        out when the camera lens clips the surface, the surface peak
-        contacts the camera lens, OR the assemblies overlap.
-        Projector-side likewise. Body-overlap grays BOTH assemblies
-        (it's a mutual collision).
+        out when the camera lens clips the surface OR the assemblies
+        overlap. Projector-side likewise. Body-overlap grays BOTH
+        assemblies (it's a mutual collision).
         """
         cam_clip = (
             clip_state.camera_clipping_surface
-            or clip_state.camera_lens_hit_by_surface
             or clip_state.bodies_overlapping
         )
         proj_clip = (
             clip_state.projector_clipping_surface
-            or clip_state.projector_lens_hit_by_surface
             or clip_state.bodies_overlapping
         )
 
