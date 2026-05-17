@@ -5,14 +5,22 @@ layer purity principle (PROJECT_CONTEXT Sec 7.2) carries forward:
 this module imports only `scene` (itself pure NumPy) to read the
 hardware meshes' local bounding boxes.
 
-Three checks, all advisory (the math pipeline keeps running
+All checks are advisory (the math pipeline keeps running
 regardless — a silly rig still produces a valid forward/inverse
 simulation; these warnings just tell the user the geometry is not
-physically buildable):
+physically buildable, or the coverage is incomplete):
 
   1. Camera lens vs test-surface plane (z = 0).
   2. Projector lens vs test-surface plane.
   3. Camera assembly vs projector assembly (AABB overlap).
+  4. Surface extends outside the camera viewing prism (coverage).
+  5. Surface extends outside the projector cone (coverage).
+
+Checks 1-3 are physical impossibilities and gray the offending
+bodies. Checks 4-5 are measurement-incompleteness advisories: an
+11x11 surface sample is tested against the 3D prism / cone VOLUME
+(catching a tall peak poking out of a tilted prism, not just a
+wide z=0 footprint). They are banner-only and never gray.
 
 Surface-clip criterion: lens-front DISC edge, not center
 ---------------------------------------------------------
@@ -57,8 +65,10 @@ import numpy as np
 from scene import (
     make_camera_body,
     make_camera_lens,
+    make_projection_cone_wireframe,
     make_projector_body,
     make_projector_lens,
+    make_viewing_cone_wireframe,
 )
 
 
@@ -83,6 +93,17 @@ MSG_PROJECTOR_SURFACE = (
 )
 MSG_BODY_OVERLAP = (
     "Camera and projector assemblies overlapping — pose not physically feasible"
+)
+# Sub-task 4b.6: measurement-coverage advisories. Distinct from the
+# three "not physically feasible" collisions above — nothing is
+# colliding; the camera simply can't see / the projector can't light
+# the whole surface, so reconstruction values in the uncovered
+# region are simulation artifacts, not measurements. Banner-only.
+MSG_SURFACE_OUTSIDE_FOV = (
+    "Test surface extends outside camera FOV — region(s) not measurable"
+)
+MSG_SURFACE_OUTSIDE_CONE = (
+    "Test surface extends outside projector cone — region(s) not illuminated"
 )
 
 
@@ -123,6 +144,22 @@ _LENS_FRONT_RADIUS = {
 }
 
 
+# Coverage-advisory geometry, derived ONCE from the cone builders so
+# it tracks scene.py rather than duplicating the 68x55 / 1.2:1 / 16:9
+# spec numbers. Viewing prism is telecentric: a fixed rectangular
+# cross-section (front rect of make_viewing_cone_wireframe). The
+# projection cone diverges linearly: half-extents per unit axial
+# distance from the apex (base rect of make_projection_cone_wireframe
+# at L=1).
+_vc_verts, _ = make_viewing_cone_wireframe(100.0)
+_PRISM_HALF_U_MM = float(np.abs(_vc_verts[0:4, 0]).max())   # 34.0
+_PRISM_HALF_V_MM = float(np.abs(_vc_verts[0:4, 1]).max())   # 27.5
+
+_pc_verts, _ = make_projection_cone_wireframe(1.0)
+_CONE_HALF_U_PER_L = float(np.abs(_pc_verts[1:5, 0]).max())  # (1/1.2)/2
+_CONE_HALF_V_PER_L = float(np.abs(_pc_verts[1:5, 1]).max())  # *9/16
+
+
 @dataclass
 class ClipState:
     """Snapshot of which bodies are in collision and why."""
@@ -130,6 +167,11 @@ class ClipState:
     camera_clipping_surface: bool = False
     projector_clipping_surface: bool = False
     bodies_overlapping: bool = False
+    # Sub-task 4b.6: measurement-coverage advisories. No physical
+    # collision — the surface just extends past the camera FOV /
+    # projector lit volume. Advisory only (banner, no gray).
+    surface_outside_camera_fov: bool = False
+    surface_outside_projector_cone: bool = False
     messages: List[str] = field(default_factory=list)
 
     @property
@@ -138,6 +180,8 @@ class ClipState:
             self.camera_clipping_surface
             or self.projector_clipping_surface
             or self.bodies_overlapping
+            or self.surface_outside_camera_fov
+            or self.surface_outside_projector_cone
         )
 
 
@@ -186,8 +230,101 @@ def _aabb_overlap(a_min, a_max, b_min, b_max) -> bool:
     )
 
 
-def detect_clips(transforms: Dict[str, np.ndarray]) -> ClipState:
-    """Run all three advisory clip checks on world-space body poses.
+def _world_unit(M: np.ndarray, local_dir) -> np.ndarray:
+    """Local direction (w=0) -> world, normalized (row-major convention)."""
+    d = (np.asarray(M, dtype=np.float64) @ np.asarray(local_dir, float))[:3]
+    n = np.linalg.norm(d)
+    return d / n if n > 0 else d
+
+
+def _sample_surface_points(
+    heightmap_mm: np.ndarray, pixel_size_mm: float, n: int = 11
+) -> np.ndarray:
+    """(n*n, 3) world points sampled on an n x n grid over the surface.
+
+    World mapping mirrors surface_preview exactly: column index ->
+    x, row index -> y, height -> z. z is honest mm (the scene runs
+    at Z_EXAGGERATION = 1.0, so the rendered surface and these
+    sample points share one frame with the hardware/cones).
+    """
+    H, W = heightmap_mm.shape
+    rs = np.linspace(0, H - 1, n).round().astype(int)
+    cs = np.linspace(0, W - 1, n).round().astype(int)
+    rg, cg = np.meshgrid(rs, cs, indexing="ij")
+    x = (cg - (W - 1) / 2.0) * pixel_size_mm
+    y = (rg - (H - 1) / 2.0) * pixel_size_mm
+    z = heightmap_mm[rg, cg]
+    return np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+
+
+def _surface_exceeds_prism(
+    viewing_cone_world: np.ndarray, pts: np.ndarray
+) -> bool:
+    """Any sample point outside the telecentric viewing prism volume?
+
+    Telecentric => parallel sides => the along-axis coordinate is
+    irrelevant; only the two perpendicular cross-section offsets
+    matter (constant 68 x 55 mm regardless of working distance).
+    """
+    C = _apply(viewing_cone_world, np.array([[0.0, 0.0, 0.0]]))[0]
+    u = _world_unit(viewing_cone_world, [1.0, 0.0, 0.0, 0.0])
+    v = _world_unit(viewing_cone_world, [0.0, 1.0, 0.0, 0.0])
+    d = pts - C
+    du = d @ u
+    dv = d @ v
+    inside = (np.abs(du) <= _PRISM_HALF_U_MM) & (
+        np.abs(dv) <= _PRISM_HALF_V_MM
+    )
+    return bool(np.any(~inside))
+
+
+def _surface_exceeds_cone(
+    projection_cone_world: np.ndarray,
+    pts: np.ndarray,
+    throw_mm: float,
+) -> bool:
+    """Any sample point outside the diverging projection-cone volume?
+
+    The cone grows linearly from the apex; half-extents at axial
+    distance s from the apex are `(_CONE_HALF_*_PER_L) * s`. A point
+    is lit iff it is in front of the projector (s >= 0) and within
+    the angular cross-section at its own depth.
+
+    Note: there is deliberately NO `s <= throw` upper bound. `throw`
+    is only the nominal DLP focus distance; the light cone keeps
+    diverging past it. Bounding at the (tilted) throw plane would
+    false-flag the outer regions of a flat surface, which sit a few
+    mm beyond that plane yet are physically still illuminated. The
+    angular test is the correct coverage criterion. `throw_mm` is
+    accepted for API symmetry / future focus checks.
+    """
+    apex = _apply(projection_cone_world, np.array([[0.0, 0.0, 0.0]]))[0]
+    axis = _world_unit(projection_cone_world, [0.0, 0.0, 1.0, 0.0])
+    u = _world_unit(projection_cone_world, [1.0, 0.0, 0.0, 0.0])
+    v = _world_unit(projection_cone_world, [0.0, 1.0, 0.0, 0.0])
+
+    rel = pts - apex
+    s = rel @ axis
+    lat = rel - np.outer(s, axis)
+    lu = lat @ u
+    lv = lat @ v
+    hw = _CONE_HALF_U_PER_L * s
+    hh = _CONE_HALF_V_PER_L * s
+    inside = (s >= 0.0) & (np.abs(lu) <= hw) & (np.abs(lv) <= hh)
+    return bool(np.any(~inside))
+
+
+def detect_clips(
+    transforms: Dict[str, np.ndarray],
+    *,
+    heightmap_mm: "np.ndarray | None" = None,
+    surface_pixel_size_mm: float = 0.0,
+    camera_distance_mm: float = 0.0,
+    projector_distance_mm: float = 0.0,
+    viewing_cone_world: "np.ndarray | None" = None,
+    projection_cone_world: "np.ndarray | None" = None,
+) -> ClipState:
+    """Run the three collision checks plus two coverage advisories.
 
     Parameters
     ----------
@@ -195,13 +332,25 @@ def detect_clips(transforms: Dict[str, np.ndarray]) -> ClipState:
         Mapping of mesh key -> (4,4) row-major world transform, as
         returned by `hardware_scene.compute_arm_transforms`. Keys:
         camera_body, camera_lens, projector_body, projector_lens.
+    heightmap_mm : (H, W) array or None, keyword-only
+        Current surface heightmap in honest mm. Required for the
+        coverage advisories; None makes them inert.
+    surface_pixel_size_mm : float, keyword-only
+        Surface grid pitch (mm/px). 0.0 makes the advisories inert.
+    camera_distance_mm, projector_distance_mm : float, keyword-only
+        Live WD / throw. Throw bounds the projection-cone depth.
+    viewing_cone_world, projection_cone_world : (4,4) or None
+        Cone world transforms (as hardware_scene already computes).
+        Required for the respective advisory; None makes it inert.
 
     Returns
     -------
     ClipState
-        Three booleans plus a `messages` list (one human-readable
-        line per triggered check, in a fixed order: camera-surface,
-        projector-surface, body-overlap).
+        Three collision booleans + two coverage booleans, plus a
+        `messages` list (fixed order: camera-surface, projector-
+        surface, body-overlap, surface-outside-FOV, surface-
+        outside-cone). The coverage lines extend `any_clip` and emit
+        a banner line but do NOT gray the hardware (no collision).
     """
     state = ClipState()
 
@@ -242,5 +391,32 @@ def detect_clips(transforms: Dict[str, np.ndarray]) -> ClipState:
     if _aabb_overlap(cam_min, cam_max, proj_min, proj_max):
         state.bodies_overlapping = True
         state.messages.append(MSG_BODY_OVERLAP)
+
+    # 4 & 5 — measurement-coverage advisories (banner-only, no gray).
+    # Sample the surface on an 11x11 grid and test each 3D point
+    # against the camera viewing prism / projector cone VOLUME. This
+    # catches both lateral spill (wide surface) and vertical spill (a
+    # tall peak poking out of a tilted prism) — the 2D z=0 footprint
+    # approach missed the latter.
+    if heightmap_mm is not None and surface_pixel_size_mm > 0.0:
+        pts = _sample_surface_points(
+            np.asarray(heightmap_mm, dtype=np.float64),
+            float(surface_pixel_size_mm),
+        )
+        if viewing_cone_world is not None and _surface_exceeds_prism(
+            viewing_cone_world, pts
+        ):
+            state.surface_outside_camera_fov = True
+            state.messages.append(MSG_SURFACE_OUTSIDE_FOV)
+
+        if (
+            projection_cone_world is not None
+            and projector_distance_mm > 0.0
+            and _surface_exceeds_cone(
+                projection_cone_world, pts, projector_distance_mm
+            )
+        ):
+            state.surface_outside_projector_cone = True
+            state.messages.append(MSG_SURFACE_OUTSIDE_CONE)
 
     return state

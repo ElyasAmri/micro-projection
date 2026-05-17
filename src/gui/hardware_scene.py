@@ -289,6 +289,8 @@ class HardwareScene:
         theta_projector_deg: float,
         projector_distance_mm: float,
         camera_distance_mm: float,
+        heightmap_mm: "np.ndarray | None" = None,
+        surface_pixel_size_mm: float = 0.0,
     ) -> ClipState:
         """Recompute and apply transforms; refresh cones; detect clips.
 
@@ -297,9 +299,14 @@ class HardwareScene:
         recolored gray; un-clipped ones are restored to their normal
         colors.
 
+        `heightmap_mm` + `surface_pixel_size_mm` feed the 3D-volume
+        FOV / projector-cone coverage advisories (both default
+        inert for callers that don't pass them).
+
         Still cheap: a handful of small matrix multiplies, four mesh
-        `setTransform` calls, two tiny wireframe rebuilds, and the
-        AABB / disc-edge clip arithmetic. Safe on every slider tick.
+        `setTransform` calls, two tiny wireframe rebuilds, the
+        AABB / disc-edge clip arithmetic, and a 121-point volume
+        test. Safe on every slider tick.
         """
         transforms = compute_arm_transforms(
             theta_camera_deg=theta_camera_deg,
@@ -342,7 +349,15 @@ class HardwareScene:
         )
 
         # --- Clip detection + gray override. ---
-        clip_state = detect_clips(transforms)
+        clip_state = detect_clips(
+            transforms,
+            heightmap_mm=heightmap_mm,
+            surface_pixel_size_mm=surface_pixel_size_mm,
+            camera_distance_mm=camera_distance_mm,
+            projector_distance_mm=projector_distance_mm,
+            viewing_cone_world=view_world,
+            projection_cone_world=proj_world,
+        )
         self._apply_clip_colors(clip_state)
         return clip_state
 

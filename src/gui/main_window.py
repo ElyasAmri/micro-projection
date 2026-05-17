@@ -741,6 +741,8 @@ class MainWindow(QMainWindow):
             theta_projector_deg=self.theta_projector.value(),
             projector_distance_mm=self.projector_distance.value(),
             camera_distance_mm=self.camera_distance.value(),
+            heightmap_mm=self._compute_current_heightmap(),
+            surface_pixel_size_mm=SURFACE_PIXEL_SIZE_MM,
         )
         self._update_clip_warning(clip_state.messages)
 

@@ -15,13 +15,25 @@ surface plane at a very steep tilt). That's beyond the slider but
 valid for exercising the detection logic, which is what these unit
 tests verify — the slider clamp is a separate UI concern.
 
-6 cases:
-  1. test_no_clips_at_clean_pose
-  2. test_camera_clip_at_extreme_angle
-  3. test_projector_clip_at_extreme_angle
-  4. test_body_overlap_at_same_side_pose
-  5. test_no_body_overlap_at_v_rig
-  6. test_multiple_clips_at_pathological_pose
+10 cases:
+  1.  test_no_clips_at_clean_pose
+  2.  test_camera_clip_at_extreme_angle
+  3.  test_projector_clip_at_extreme_angle
+  4.  test_body_overlap_at_same_side_pose
+  5.  test_no_body_overlap_at_v_rig
+  6.  test_multiple_clips_at_pathological_pose
+  7.  test_surface_outside_camera_fov_lateral   (sub-task 4b.6)
+  8.  test_surface_outside_camera_fov_vertical  (sub-task 4b.6)
+  9.  test_surface_outside_projector_cone       (sub-task 4b.6)
+  10. test_clean_pose_no_coverage_warnings      (sub-task 4b.6)
+
+Sub-task 4b.6 (cases 7-10) — 3D-volume coverage advisories
+----------------------------------------------------------
+The surface is sampled on an 11x11 grid and each 3D point is tested
+against the camera viewing prism / projector cone VOLUME. Case 8 is
+the failure mode the old 2D z=0-footprint check missed: a tall
+narrow peak whose base is inside the footprint but whose tip pokes
+out of the tilted telecentric prism.
 """
 from __future__ import annotations
 
@@ -35,9 +47,41 @@ from gui.clip_detection import (
     MSG_BODY_OVERLAP,
     MSG_CAMERA_SURFACE,
     MSG_PROJECTOR_SURFACE,
+    MSG_SURFACE_OUTSIDE_CONE,
+    MSG_SURFACE_OUTSIDE_FOV,
     detect_clips,
 )
-from gui.hardware_scene import compute_arm_transforms
+from gui.hardware_scene import (
+    _CAMERA_BODY_DEPTH_MM,
+    _CAMERA_LENS_LENGTH_MM,
+    _PROJECTOR_BODY_DEPTH_MM,
+    _PROJECTOR_LENS_LENGTH_MM,
+    KEY_CAMERA_BODY as HS_KEY_CAMERA_BODY,
+    KEY_PROJECTOR_BODY as HS_KEY_PROJECTOR_BODY,
+    PROJECTOR_LENS_X_OFFSET_MM,
+    compute_arm_transforms,
+)
+from scene_compose import cone_local_to_world_transform
+from test_surfaces import make_gaussian
+
+
+def _cone_worlds(transforms):
+    """(viewing, projection) cone world transforms, built exactly as
+    hardware_scene.update_pose does — so coverage tests exercise the
+    same geometry the GUI uses, Qt-free."""
+    viewing = cone_local_to_world_transform(
+        transforms[HS_KEY_CAMERA_BODY],
+        lens_length_mm=_CAMERA_LENS_LENGTH_MM,
+        body_depth_mm=_CAMERA_BODY_DEPTH_MM,
+        x_offset_mm=0.0,
+    )
+    projection = cone_local_to_world_transform(
+        transforms[HS_KEY_PROJECTOR_BODY],
+        lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
+        body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
+        x_offset_mm=PROJECTOR_LENS_X_OFFSET_MM,
+    )
+    return viewing, projection
 
 
 # ---------------------------------------------------------------------------
@@ -160,3 +204,122 @@ def test_multiple_clips_at_pathological_pose():
     assert MSG_PROJECTOR_SURFACE in state.messages
     assert MSG_BODY_OVERLAP in state.messages
     assert len(state.messages) == 3
+
+
+# ===========================================================================
+# Sub-task 4b.6 — 3D-volume FOV / projector-cone coverage advisories.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 7 — Lateral spill: a wide Gaussian (sigma=20) on a 120x120 mm grid
+# overflows the ~68 mm-wide telecentric prism even at a clean V-rig.
+# Advisory fires; banner-only so no collision flag is set.
+# ---------------------------------------------------------------------------
+def test_surface_outside_camera_fov_lateral():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=30.0,
+        projector_distance_mm=150.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = make_gaussian((121, 121), 1.0, amplitude_mm=10.0, sigma_mm=20.0)
+    state = detect_clips(
+        t,
+        heightmap_mm=hm,
+        surface_pixel_size_mm=1.0,
+        camera_distance_mm=157.0,
+        projector_distance_mm=150.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert state.surface_outside_camera_fov
+    assert MSG_SURFACE_OUTSIDE_FOV in state.messages
+    assert not state.camera_clipping_surface
+    assert not state.bodies_overlapping
+
+
+# ---------------------------------------------------------------------------
+# 8 — Vertical spill (the bug the 2D footprint missed): a tall narrow
+# Gaussian (amp=100, sigma=8) on the real 64x48 mm grid, camera tilted
+# +50 deg. The peak's BASE is inside the footprint but its TIP rises
+# out of the tilted prism volume. 3D test catches it.
+# ---------------------------------------------------------------------------
+def test_surface_outside_camera_fov_vertical():
+    t = compute_arm_transforms(
+        theta_camera_deg=50.0,
+        theta_projector_deg=-30.0,
+        projector_distance_mm=150.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = make_gaussian((480, 640), 0.1, amplitude_mm=100.0, sigma_mm=8.0)
+    state = detect_clips(
+        t,
+        heightmap_mm=hm,
+        surface_pixel_size_mm=0.1,
+        camera_distance_mm=157.0,
+        projector_distance_mm=150.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert state.surface_outside_camera_fov
+    assert MSG_SURFACE_OUTSIDE_FOV in state.messages
+
+
+# ---------------------------------------------------------------------------
+# 9 — Projector cone too small: at throw=50 mm the lit footprint is
+# ~42 mm wide, narrower than the 64 mm surface. Clean V-rig, low flat
+# Gaussian so the camera prism still covers it (isolating the cone
+# advisory).
+# ---------------------------------------------------------------------------
+def test_surface_outside_projector_cone():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=30.0,
+        projector_distance_mm=50.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = make_gaussian((480, 640), 0.1, amplitude_mm=5.0, sigma_mm=8.0)
+    state = detect_clips(
+        t,
+        heightmap_mm=hm,
+        surface_pixel_size_mm=0.1,
+        camera_distance_mm=157.0,
+        projector_distance_mm=50.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert state.surface_outside_projector_cone
+    assert MSG_SURFACE_OUTSIDE_CONE in state.messages
+    assert not state.surface_outside_camera_fov
+    assert not state.bodies_overlapping
+
+
+# ---------------------------------------------------------------------------
+# 10 — Clean baseline: real 64x48 mm surface, default-ish V-rig,
+# mid-range Gaussian. Both coverage checks pass, nothing fires.
+# ---------------------------------------------------------------------------
+def test_clean_pose_no_coverage_warnings():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=30.0,
+        projector_distance_mm=150.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = make_gaussian((480, 640), 0.1, amplitude_mm=10.0, sigma_mm=8.0)
+    state = detect_clips(
+        t,
+        heightmap_mm=hm,
+        surface_pixel_size_mm=0.1,
+        camera_distance_mm=157.0,
+        projector_distance_mm=150.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert not state.surface_outside_camera_fov
+    assert not state.surface_outside_projector_cone
+    assert not state.any_clip
+    assert state.messages == []

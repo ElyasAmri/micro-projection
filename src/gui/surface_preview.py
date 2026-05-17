@@ -243,6 +243,8 @@ class SurfacePreview(gl.GLViewWidget):
         theta_projector_deg: float,
         projector_distance_mm: float,
         camera_distance_mm: float,
+        heightmap_mm: "np.ndarray | None" = None,
+        surface_pixel_size_mm: float = 0.0,
     ):
         """Push fresh poses into the hardware bodies + cones.
 
@@ -250,12 +252,16 @@ class SurfacePreview(gl.GLViewWidget):
         SurfacePreview class so main_window doesn't reach across into
         the HardwareScene directly. Returns the `ClipState` from the
         pose update so main_window can drive the clip-warning banner.
+        `heightmap_mm` / `surface_pixel_size_mm` feed the 3D-volume
+        FOV / projector-cone coverage advisories.
         """
         return self._hardware_scene.update_pose(
             theta_camera_deg=theta_camera_deg,
             theta_projector_deg=theta_projector_deg,
             projector_distance_mm=projector_distance_mm,
             camera_distance_mm=camera_distance_mm,
+            heightmap_mm=heightmap_mm,
+            surface_pixel_size_mm=surface_pixel_size_mm,
         )
 
     def update_heightmap(
