@@ -15,7 +15,7 @@ The user's deliverables:
 2. The **math/processing core** behind the UI.
 3. Eventually: **integration with real hardware** in the lab.
 
-The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 4a have been completed (see Section 12). The notebook is the starting point for refactoring, not a thing to start over.
+The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 4b have been completed (see Section 12). The notebook is the starting point for refactoring, not a thing to start over.
 
 ---
 
@@ -38,7 +38,7 @@ The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.i
 - 132–182 mm working distance (focusable)
 - < 0.2° telecentricity
 - 1/2" sensor format
-- Physical lens length and diameter: **not yet measured** (Stage 4b prep — see Section 8 open items)
+- **Physical lens profile (Stage 4b):** stepped 3-section, 200 mm total length. 76 mm rear (55 mm diameter) + 59 mm taper + 65 mm front (110 mm diameter front element).
 - **Confirmed telecentric.** Note: telecentric means **M is constant regardless of object distance** (the lens's defining property). It does NOT mean the camera body must be mounted vertical or at any specific tilt — the camera body's physical tilt angle (θ_camera) is independent of the lens's optical properties.
 
 **Projector (placeholder unit, will be upgraded): Pico Genie Impact 2.0 Plus Elite**
@@ -50,6 +50,7 @@ The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.i
 - HDMI input (acts as a second display)
 - **Auto-keystone confirmed OFF**
 - Confirmed projector is **NOT telecentric** — projection-arm perspective bias must be corrected via inverse grating method
+- **Lens (estimated for Stage 4b digital twin):** ~20 mm diameter × 5 mm protrusion. To be refined when lab-accessible.
 
 ### Pending hardware
 
@@ -70,7 +71,7 @@ The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.i
 
 Body frame: origin at front-bottom-left corner of cube; +X right, +Y into body, +Z up.
 
-- Lens center: (X = 21 mm, Y ≈ 1–2 mm recess, Z = 45 mm)
+- Lens center: (X = 21 mm, Y ≈ 1–2 mm recess, Z = 45 mm) — equivalent to (X = −6.5, Z = 17.5) mm in body-centered frame, used in Stage 4b.
 - **Vertical optical offset: 0°** (confirmed — image center collinear with lens optical axis)
 - **Horizontal optical offset: ~12° tentative** (likely setup misalignment; to be re-measured with proper mounting)
 - Image at 30 cm throw: ~25 cm wide × ~14 cm tall (matches throw ratio + aspect ratio prediction)
@@ -195,13 +196,16 @@ Fringe_Projection_Project_Phase1/
 │   ├── pipeline.py                # Stage 4a — end-to-end pipeline composition
 │   ├── io_utils.py
 │   ├── test_surfaces.py           # Stage 4a — heightmap generators
-│   ├── scene.py                   # Stage 4b — 3D scene primitives (planned)
-│   └── gui/                       # Stage 4a — PyQt6 GUI package
+│   ├── scene.py                   # Stage 4b — mesh + wireframe builders (pure NumPy)
+│   ├── scene_compose.py           # Stage 4b — pose composition layer (arm transforms)
+│   └── gui/                       # Stage 4a/4b — PyQt6 GUI package
 │       ├── __init__.py
 │       ├── __main__.py            # `python -m src.gui` entry
 │       ├── app.py
 │       ├── main_window.py
-│       ├── surface_preview.py     # SurfacePreview + ErrorColorbar
+│       ├── surface_preview.py     # SurfacePreview + HardwareScene host + ErrorColorbar
+│       ├── hardware_scene.py      # Stage 4b — HardwareScene class + compute_arm_transforms
+│       ├── clip_detection.py      # Stage 4b — pure NumPy clip-detection (5 checks)
 │       └── stages_view.py         # 2×3 grid of pipeline-stage images
 ├── tests/
 │   ├── test_geometry.py
@@ -213,6 +217,10 @@ Fringe_Projection_Project_Phase1/
 │   ├── test_test_surfaces.py
 │   ├── test_pipeline.py
 │   ├── test_pipeline_synthetic.py
+│   ├── test_scene.py              # Stage 4b — mesh/wireframe builders
+│   ├── test_scene_compose.py      # Stage 4b — pose composition
+│   ├── test_hardware_scene.py     # Stage 4b — arm transforms integration
+│   ├── test_clip_detection.py     # Stage 4b — 10 cases (3 collision + 4 coverage advisories)
 │   ├── regression_data.npz
 │   └── conftest.py
 ├── scripts/                       # standalone runnable scripts
@@ -237,7 +245,8 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | 3 | Upgrade forward model to exact Eq. 2-44 | No | ✅ Done |
 | 3.5 | Math layer upgrade: two-angle λ_eq (Eq. 2-51) | No | ✅ Done |
 | **4a** | **PyQt6 GUI digital twin: surface library + pipeline + recovered-height view + error overlay + warning banner + stages viewer** | No | ✅ Done |
-| 4b | Lab setup view: add camera + projector hardware bodies into the same unified 3D scene | No | ⏳ Next |
+| **4b** | **Unified hardware-bodies scene: camera + projector bodies + cones added to the same 3D view; live pose sliders; clip-detection (collisions + coverage advisories)** | No | ✅ Done |
+| 4c | STL import for arbitrary test objects, sphere super-hemispherical fix, click-and-drag scene manipulation | No | ⏳ Next |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
 
@@ -264,6 +273,8 @@ Concrete implementations: `HybridGeometry` (default for this project), `Symmetri
 - They can be tested entirely with synthetic data.
 - They are reusable (the user's friend is building a separate Three.js geometric simulation — these same math functions support that work).
 
+**Stage 4b extension of this principle:** `src/gui/clip_detection.py` is also pure NumPy despite living under `gui/`. It imports only `scene` (NumPy mesh builders) and numpy. This lets clip-detection be unit-tested without Qt, matching the math-layer discipline.
+
 ### 7.3 — Hardware behind a thin interface
 When hardware is added, define abstractions like:
 
@@ -277,7 +288,22 @@ class Projector(Protocol):
 
 Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector` (saves PNGs / writes to extended display). Real implementations: `FLIRCamera` (PySpin wrapper), `RealProjector` (extended display).
 
-**Note (Stage 4 deferral):** the `Camera` / `Projector` protocols and their mock implementations are deliberately deferred to Stage 5/6, not Stage 4. The Stage 4a GUI calls math modules directly. Rationale: the hardware shape isn't finalized (upgraded projector pending), so designing protocols against unknown specs is premature. When real hardware arrives, the protocols get designed against actual SDK calls and frame formats.
+**Note (Stage 4 deferral):** the `Camera` / `Projector` protocols and their mock implementations are deliberately deferred to Stage 5/6, not Stage 4. The Stage 4a/4b GUI calls math modules directly. Rationale: the hardware shape isn't finalized (upgraded projector pending), so designing protocols against unknown specs is premature. When real hardware arrives, the protocols get designed against actual SDK calls and frame formats.
+
+### 7.4 — Honest scale in the 3D scene (Stage 4b)
+
+`Z_EXAGGERATION = 1.0` in `surface_preview.py`. The 3D scene renders the recovered surface at real geometric scale alongside the hardware bodies (also at real scale). This makes the visual scene a **geometric ruler** — when the user sees the surface touch the (graying) lens, that literally means the surface height equals the clip-detection threshold. Any exaggeration would desync the visual from the clip math.
+
+Trade-off accepted: sub-mm specimens visually vanish in the 3D dome at 1×. The error overlay (diverging colormap, already implemented in Stage 4a) is the tool for fine surface variation; the 3D dome conveys macro shape only.
+
+### 7.5 — Banner vs gray semantics (Stage 4b)
+
+The Stage 4b clip-detection system distinguishes two failure modes:
+
+- **Gray hardware override** = physical collision (camera/projector lens intersects surface plane, or assemblies overlap). Pose is not physically buildable.
+- **Banner only, no gray** = measurement incompleteness (surface extends outside camera FOV or projector cone). Pose is buildable, but reconstruction values in the uncovered region are simulation artifacts, not real measurements.
+
+The math pipeline keeps running in both cases. The user sees the warning but the simulation produces a heightmap regardless. This is by design — the digital twin should let users explore "silly" rigs and see what the math does in those poses.
 
 ---
 
@@ -290,11 +316,7 @@ Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector
 5. What calibration artifacts are available in the lab vs. need to be ordered?
 6. ~~GUI framework preference?~~ **Resolved:** PyQt6 (per roadmap + Stage 4 plan).
 7. **Mount geometry decision:** what are the intended mounting angles for both camera and projector? Chapter 4 Fig. 4-4 shows symmetric (~15° each); Chapter 5 shows asymmetric (camera vertical at 0°, projector at 60°). User mentioned professor's preference for vertical projector — but that requires non-vertical camera to triangulate. Worth deciding before committing physical mount hardware.
-8. **Stage 4b prep — physical dimensions to measure:**
-   - Camera lens length (front of camera body → front of lens)
-   - Camera lens outer diameter
-   - Projector lens diameter
-   - Body sizes and lens optical-axis positions are already documented. The lens body dimensions are visual decoration for the unified 3D scene; the geometry-driving values (FOV, throw ratio, working distance) are known. 5 minutes with a ruler in the lab.
+8. ~~**Stage 4b prep — physical dimensions to measure**~~ **Resolved during Stage 4b:** camera lens profile measured (stepped 200 mm). Projector lens estimated at ~20mm dia × 5mm protrusion; refine when lab-accessible.
 
 ---
 
@@ -308,6 +330,7 @@ Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector
 - **Forward-model bias sign (`project()`):** Taylor branch subtracts a positive bias `(4π/p)·x²·tan(θ)/a`. Exact branch uses `+u` denominator `1 + 2x·tan(θ)/a` to match (notebook cell 25). Textbook Ch.4 Eq. 4-6 prints `−u` — treated as a sign typo, see Section 12 Stage 3 notes.
 - **Arm angles**: θ_projector and θ_camera are measured from the test surface normal to the optical axis of the respective arm. θ = 0° means the arm is pointing straight down at the surface (normal-incident). Positive sign = arm tilted to the +X side of the surface; negative sign = arm tilted to the −X side. |θ| = magnitude of tilt from vertical, sign = which side.
 - **Lab setup reference frame**: test surface center is the world origin. Surface normal (vertical line through center) is the z-axis. Both arms (projector and camera) are positioned by (angle, distance) where angle is measured from the surface normal and distance is along the arm's optical axis. Both arms remain aimed at the surface center regardless of their angle and distance — these are the only degrees of freedom for arm positioning in the simulator.
+- **Stage 4b distance slider semantics:** sliders report **optics convention** (lens-FRONT to surface, NOT body-center to surface). Edmund #58-259 WD range 132–182 mm; Pico Genie throw range 50–200 mm. `compute_arm_transforms` in `hardware_scene.py` adds the body-to-lens offsets internally (camera_body_distance = WD + 215mm; projector_body_distance = throw + 32.5mm). This matches the Edmund spec sheet and the chapter math.
 
 ### λ_eq naming convention (Stage 4a clarification)
 
@@ -339,6 +362,9 @@ The mismatch was surfaced during Stage 4a task 4 when literal info-panel values 
 - Has Claude Code, Git, Conda, MATLAB, VS Code, Node.js installed.
 - Wants to validate algorithm thoroughly in simulation before touching real hardware.
 - When the user says "I don't get this," simplify rather than doubling down on technical accuracy. Shorter answers, more analogy, fewer equations.
+- **No Co-Authored-By trailers in commit messages.** Project convention from Stage 4b onward. User drives design decisions; Claude Code writes implementation.
+- **Push only at end of stage**, not per sub-task. Stage tag + push happen together.
+- **PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md are updated by the user** at stage close (not by Claude Code). Strategy chat drafts the updates; user replaces the files manually and commits them.
 
 When refactoring, work **one module at a time**, write a small test that confirms the module reproduces the notebook's behavior, and commit before moving on.
 
@@ -415,7 +441,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 ### Stage 3 — Done
 
-- 3.1 `project(model='exact')` implemented per notebook cell 25's `+u` denominator form: `phi_exact(x) = (2π/p) · x / (1 + 2x·tan(θ)/a)`. Commit: `b752f47`.
+- 3.1 added `model='exact'` branch to `project()` per cell 25's `+u` denominator. 4 new unit tests including a `test_project_exact_lambda_eq_independent` invariant at atol=1e-15. Commit: `b752f47`.
 - 3.2 (comparison script) deliberately skipped. The model toggle is the deliverable; cell 25 + `test_project_exact_taylor_consistency` already capture the diff numbers.
 - 3.3 (inverse-grating cancellation under exact) folded into the parametrized integration test.
 - Integration test parametrized over `model in {'taylor', 'exact'}`. Both branches run end-to-end. Commit: `e5201fb`. Tag: `stage-3-complete`.
@@ -470,7 +496,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 | 4b (error overlay) | `f224a4f` | "Display Mode" groupbox with overlay checkbox. "Error Statistics" groupbox (hidden when overlay off) with mean/std/max-abs/RMS labels. Diverging CET-D1 colormap on signed error. `SurfacePreview.update_heightmap(error_mm=...)` overlay path. `Z_EXAGGERATION = 20.0`. Amplitude slider maxes bumped to 100 mm (Gaussian amplitude, Step height, Sphere cap height). |
 | 4c (warning banner) | `03ed339` | Degenerate-case warning banner (red rich-text QLabel) at the top of the right pane when `\|tan θ_proj + tan θ_cam\| < 1e-3`. Pipeline short-circuits in degenerate state; 3D view keeps last good frame. `ErrorColorbar` widget below `view_3d` showing colormap range with `-max / 0 / +max` labels. `Z_EXAGGERATION` dropped to 2.0 (prep for Stage 4b's real-scale hardware bodies). Error stats auto-format to scientific notation when sub-precision (< 1e-4 mm). |
 | 4d (stages viewer) | `13a4372` | `src/gui/stages_view.py` — `StagesView(QWidget)` with 2×3 grid of 5 panels (ground truth, projected fringes, wrapped phase, unwrapped phase, recovered height) each with title + `pyqtgraph.ImageView` + equation label. Last cell empty per spec. `src/pipeline.py` refactored: `run_pipeline(..., return_stages=True)` returns `(recovered, stages_dict)` with refs to intermediates (no extra computation). "View Mode" groupbox with `3D Scene` / `Pipeline Stages` radio buttons. Right pane wrapped in `QStackedWidget`. CET-C1 cyclic colormap on wrapped phase; manual black-to-white gray ramp on fringe frame (pyqtgraph 0.14.0 doesn't bundle 'gray' or 'hsv'). 2 new pipeline tests for `return_stages` (70 total). |
-| 4e (close) | this commit | Docs update + tag `stage-4a-complete`. |
+| 4e (close) | `7ecd788` | Docs update + tag `stage-4a-complete`. |
 
 **Architectural decisions worth carrying forward from Stage 4a:**
 
@@ -482,57 +508,87 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 - **The fringe-frame equation displayed in the stages viewer matches what the code actually computes**, not the textbook Taylor form. The pipeline's object leg skips `project()` (matches integration test's deliberate omission); the rendered fringe frame is `I = A + B·cos[2π·x/p + h/λ_eq + δ_k]`. This is honest.
 
-- **Z_EXAGGERATION is a known temporary value (2.0)** sized for stand-alone surface rendering. When Stage 4b adds hardware bodies at real scale, Z exaggeration will need re-tuning so the surface still reads as a 3D shape next to the camera/projector bodies (which give the scene reference scale). The exaggeration may drop further or stay at 2.0.
-
 - **The "View Mode" radio toggle lives on the left pane**, not as an overlay on the right. Keeps the right pane pure visualization, no UI chrome. Locked design decision.
 
-- **`projector_distance_mm` is intentionally inert in Stage 4a.** It becomes live in Stage 4b when the lab view renders projector body translation.
+- **STL-import flow (deferred to Stage 4c)** will plug into the existing `make_*` surface contract `(shape, pixel_size_mm) → (H, W) float64 heightmap in mm`. Any STL importer that produces this contract slots into the existing GUI with zero changes elsewhere.
 
-- **STL-import flow (deferred to a later stage)** will plug into the existing `make_*` surface contract `(shape, pixel_size_mm) → (H, W) float64 heightmap in mm`. Any STL importer that produces this contract slots into the existing GUI with zero changes elsewhere. File picker via `QFileDialog`, one-shot config dialog for viewing axis + scaling, then the mesh rasterizes once into a `(H, W)` heightmap that behaves identically to the analytical surfaces.
+### Stage 4b — Done (Unified hardware-bodies scene + clip-detection)
 
-### Stage 4b plan (next — unified hardware-bodies scene)
+**Goal achieved.** The lab's physical apparatus (camera body, camera lens, projector body, projector lens, viewing cone, projection cone) now lives in the same 3D scene as the recovered surface. Live pose sliders rotate/translate hardware in real time. Five clip-detection checks (3 collision + 2 coverage) drive gray-override and warning banners.
 
-**Goal:** Add the lab's physical apparatus to the same 3D scene that already shows the recovered surface. No mode switching needed; the right pane stays one unified 3D view. Dragging θ_projector physically rotates the projector body in the scene; dragging θ_camera rotates the camera; dragging projector_distance_mm moves the projector closer/farther.
+**Stage 4b sub-task table:**
 
-**This supersedes the earlier Stage 4b design** that described a "separate lab setup view" toggled by a second 3D view widget. The unified-scene approach is cleaner:
-- One coordinate system, no context switching
-- Hardware bodies provide visual reference scale (Z exaggeration can drop further toward honest)
-- Projector_distance_mm slider becomes meaningful (lab-view changes)
-- User can see the recovered surface and the rig that produced it simultaneously
+| # | Commit | What landed |
+|---|---|---|
+| 1 | `3c4e5e5` | `src/scene.py` mesh builders: camera/projector body cubes (29×29×30, 55³ mm), CCW outward winding, pure `(verts, faces)` tuples. 12 tests, total 82. |
+| 2 | `fbc5853` | `_cylinder`, `_stepped_cylinder` helpers. `make_camera_lens` (Edmund stepped 3-section, 200mm), `make_projector_lens` (20×5mm). `src/scene_compose.py` new: `camera_arm_transform`, `projector_arm_transform` (4×4 row-major float32), `body_lens_offset`. 33 new tests, total 115. |
+| 3 | `7bb2b41` | `src/gui/hardware_scene.py` new: `HardwareScene` class + `compute_arm_transforms`. `SurfacePreview.update_hardware_pose` pass-through. main_window: new `camera_distance` slider (132–182mm Edmund WD), renamed sliders to optics convention. **Slider value = lens-FRONT to surface (not body-center).** View distance bumped 80→600mm. `LabeledFloatSlider.set_value()` added. 6 new tests, total 121. |
+| 4 (1/3) | `e96e1fc` | Cones + clip-detection v1. `make_projection_cone_wireframe` (5v/8e diverging pyramid), `make_viewing_cone_wireframe` (8v/12e telecentric prism — parallel sides). `cone_local_to_world_transform` helper. `src/gui/clip_detection.py` new: `detect_clips` with 3 checks: camera/projector lens vs surface plane (disc-edge: `WD·cos(θ) − r·sin(θ) < 0`), body assembly AABB overlap. `ClipState` dataclass. Theta sliders extended ±60° → ±75°. Gray override `(0.4, 0.4, 0.4, 1.0)` + warning banner. 18 new tests, total 139. |
+| 4 close (Z retune) | `45c2071` | **Z_EXAGGERATION 2.0 → 1.0** (honest scale). Single-constant change. User picked from empirical 4-screenshot comparison (Z = 1, 2, 5, 10) at the close of sub-task 4. |
+| 4 (2/3, REVERTED) | `c53dd36` → `20d6771` | Originally added surface-peak-vs-lens 3D contact checks. **Reverted** because checks are unreachable in practice: at slider ranges (WD 132–182, surface amp 0–100, θ ±75°), no pose produces lens-on-peak contact. Lens always clears the peak by ≥30mm at min WD; tilting only increases clearance. Same for projector. Revert restores `ClipState` to 3 reachable collisions. 139 tests. |
+| 4 (3/3) | `5d4b4c4` | **FOV/cone coverage advisories — 3D volume tests.** Replaces the buggy 2D z=0 footprint coverage check with 3D point-in-volume tests against the camera viewing prism and projector projection cone. 11×11 heightmap sampling. Catches both lateral spill (wide surface) and vertical spill (tall Gaussian peak penetrating tilted prism's "ceiling" — the bug found in live GUI testing). Cone test uses angular criterion only (no `s ≤ throw` bound — throw is DLP focus distance, not light cutoff). Banner-only, no gray override. 4 new tests, total 143. |
+| 5 (close) | this commit | Docs update + tag `stage-4b-complete`. |
 
-**Implementation approach: schematic primitives with measured proportions and physically-accurate cones.**
+**Key design decisions locked during Stage 4b:**
 
-- **Camera body:** rectangular box at 29 × 29 × 30 mm proportions
-- **Camera lens:** cylinder protruding from camera body; length + diameter to be measured (Section 8 item 8)
-- **Projector body:** 55 × 55 × 55 mm cube; lens cylinder offset to measured (21, 45) mm position on front face
-- **Projection cone:** wireframe wedge from projector lens showing where light goes, dimensions driven by 1.2:1 throw ratio
-- **Viewing cone:** wireframe wedge from camera lens showing 68×55 mm FOV at working distance
-- **Test surface:** the recovered-surface 3D render (current task 4a output) sits at the geometric origin where the two cones intersect
+| Decision | Rationale |
+|---|---|
+| Distance sliders = lens-front (optics convention), NOT body-center | Matches Edmund spec + chapter math. `compute_arm_transforms` adds body offsets internally. |
+| `Z_EXAGGERATION = 1.0` honest scale | Hardware bodies provide visual scale reference; exaggeration would desync visual from clip math. Sub-mm specimens vanish — by design; error overlay handles fine variation. |
+| Theta sliders ±75° (was ±60°) | Surface-clip cases need ~67° to fire at minimum WD. Defaults stay ±30°. |
+| No surface-vs-lens contact checks | Unreachable in practice with slider ranges. Removing dead code keeps the module clean. |
+| FOV/cone coverage as banner-only, not gray | Coverage failure = measurement incompleteness, not physical collision. Gray would imply unbuildable rig. |
+| 3D point-in-volume coverage tests, not 2D footprint | The 2D footprint check missed tall peaks penetrating the prism's "ceiling" at tilt. 3D is geometrically correct. |
+| Strict-correctness FOV check (no tolerance) | Hairline triggers happen only at extreme synthetic surfaces (amp=100mm) that won't exist in real fringe projection use. Tolerance would hide real coverage failures and require a magic threshold. |
+| Cone test: `s ≥ 0` only, no upper bound | `throw` is DLP focus distance, not a hard light cutoff — the beam keeps diverging past it. Bounding at throw plane false-flagged flat surfaces. |
+| 11×11 grid sampling | Catches both lateral and vertical spill at constant ~250µs/tick cost. |
+| No Co-Authored-By trailers | User drives design decisions; Claude Code writes implementation. Established as project convention. |
 
-**What this is NOT:**
-- Not photorealistic mesh imports. STL files for the actual hardware models don't necessarily exist; photo-realistic textures add nothing pedagogical.
-- Not a separate widget or page. Same 3D scene, more items in it.
+**Architectural decisions worth carrying forward from Stage 4b:**
 
-**Stage 4b sub-tasks (to be drafted when ready):**
+- **Math-layer purity extended to clip-detection.** `src/gui/clip_detection.py` is pure NumPy (imports only `scene` + numpy). Despite living under `gui/`, it's headlessly unit-testable. Same discipline as the math layer.
 
-- `src/scene.py` — translates geometry params into 3D scene primitives (camera body, projector body, projection cone, viewing cone). Pure NumPy mesh-builder functions.
-- `main_window` updates — add new sliders if needed (camera_distance), wire all positional sliders to scene-primitive updates, fold scene items into the existing `SurfacePreview` (or a successor widget).
-- Z_EXAGGERATION re-tune now that hardware bodies provide scale reference.
-- `stage-4b-complete` tag (closes Stage 4 entirely).
+- **Two banners stack independently above the GL viewport.** The degenerate-λ_eq banner (Stage 4a) short-circuits the pipeline. The clip-warning banner (Stage 4b) is advisory — math keeps running. Both can be visible simultaneously.
 
-**Camera lens dimensions to measure before Stage 4b (Section 8 item 8).** Lens body is visual decoration only; cones are geometry-driven.
+- **Banners live above the GL framebuffer in the Qt widget stack.** They DO appear in the live GUI but NOT in `grabFramebuffer()` captures. Smoke tests verify banner state programmatically (read `.isVisible()` and `.text()` in Python).
 
-### Stage 4 controls (locked as of Stage 4a close)
+- **Two-phase smoke-test pattern** for sub-tasks involving visual change: programmatic GUI launch + `view_3d.grabFramebuffer()` captures to `%TEMP%`, gated by user greenlight before commit. One-process-per-render rule: a reconstruction loop in a single process leaves all-but-first-window's framebuffer blank, so each pose config gets its own `python script.py <arg>` invocation.
+
+- **The 3D viewport is a geometric ruler** (with Z=1.0). When the user sees the surface touching the (graying) lens, that literally means the surface height equals the clip-detection threshold. This is the most important pedagogical property of Stage 4b — and the reason `Z_EXAGGERATION` is locked at honest scale.
+
+- **Stage 4b sub-task 4 went through a reset.** Surface-vs-lens contact checks (commit c53dd36) were added then reverted (commit 20d6771) when interactive testing showed they're unreachable from slider ranges. The reset is preserved in history rather than rebased away, because the lesson — "validate that the bug can actually be triggered before adding the check" — is worth remembering for Stage 4c.
+
+### Stage 4b hardware specs encoded in code
+
+Constants in `src/gui/hardware_scene.py`:
+
+```python
+_CAMERA_BODY_DEPTH_MM = 30.0
+_CAMERA_LENS_LENGTH_MM = 200.0  # Edmund stepped profile total
+_PROJECTOR_BODY_DEPTH_MM = 55.0
+_PROJECTOR_LENS_LENGTH_MM = 5.0  # protrusion only
+PROJECTOR_LENS_X_OFFSET_MM = -6.5  # Pico Genie body-frame measurement
+```
+
+Constants in `src/gui/clip_detection.py`:
+- Lens front radii: `_LENS_FRONT_RADIUS = {camera: 55.0, projector: 10.0}` mm
+- Prism half-extents: `_PRISM_HALF_U_MM = 34.0`, `_PRISM_HALF_V_MM = 27.5` mm (= 68/2, 55/2 — derived from `make_viewing_cone_wireframe`)
+- Cone divergence: `_CONE_HALF_U_PER_L = 1.0/2.4`, `_CONE_HALF_V_PER_L = (1.0/2.4) * 9/16` (1.2:1 throw, 16:9 aspect — derived from `make_projection_cone_wireframe`)
+
+All clip-detection geometry constants are derived from the cone builders themselves at module load, so the math tracks `scene.py` rather than duplicating spec numbers.
+
+### Stage 4 controls (locked as of Stage 4b close)
 
 **Sliders / dropdowns in the GUI:**
 
-| Control | Type | Range / Options | Status (4a) |
+| Control | Type | Range / Options | Status |
 |---|---|---|---|
 | Surface type | dropdown | flat, tilt, Gaussian, step, sphere | ✅ Wired |
 | Per-surface params | sliders | depends on surface | ✅ Wired. Amplitude/height maxes 100 mm. |
-| **θ_projector** | slider | −60° to +60° | ✅ Wired (Eq. 2-51 triangulation). |
-| **θ_camera** | slider | −60° to +60° | ✅ Wired (Eq. 2-51 triangulation). |
-| Projector distance from surface | slider | 50–200 mm | ⏳ Inert (becomes live in 4b lab scene). |
+| **θ_projector** | slider | **−75° to +75°** (extended in 4b) | ✅ Wired (Eq. 2-51 triangulation). |
+| **θ_camera** | slider | **−75° to +75°** (extended in 4b) | ✅ Wired (Eq. 2-51 triangulation). |
+| Projector throw distance (lens-front to surface) | slider | 50–200 mm | ✅ Wired (4b). Drives projector body translation + cone size. |
+| Camera working distance (lens-front to surface) | slider | 132–182 mm | ✅ Wired (4b). Drives camera body translation. |
 | PSI step count | spinbox | 3–8 | ✅ Wired. |
 | View Mode | radio | 3D Scene / Pipeline Stages | ✅ Wired. |
 | Show error overlay | checkbox | on/off | ✅ Wired. |
@@ -543,7 +599,6 @@ Simulation validation can only catch bugs where the test path uses *different* l
 |---|---|---|
 | Camera M (modern) | 0.09× | Edmund Optics #58-259 lens spec |
 | Camera M (chapter) | 11.1× | 1/0.09 — info panel display |
-| Camera distance to surface | 157 mm | Middle of telecentric WD range (132–182 mm) |
 | Camera FOV | 68 × 55 mm | Derived: sensor 6.14×4.92 mm / M |
 | Pixel pitch on surface | ~53 µm | Derived: 4.8 µm / M |
 | Sensor | 1280×1024 at 4.8 µm | FLIR Blackfly spec |
@@ -560,19 +615,37 @@ Simulation validation can only catch bugs where the test path uses *different* l
 - When `|tan(θ_proj) + tan(θ_cam)| < 1e-3`, the pipeline short-circuits; warning banner shows with textbook-form Eq. 2-51 and the explanation that triangulation requires angular separation.
 - The 3D view (or stages view) keeps the last good frame so the user can drag back without seeing a crash or NaN garbage.
 
+**Clip-detection warning banner (new in 4b):**
+- 5 advisory checks (3 collision + 2 coverage). Collisions gray the offending hardware bodies + cones; coverage advisories show banner only.
+- Banner is independent of the degenerate-λ_eq banner; both can show simultaneously.
+- Math pipeline keeps running regardless of clip state.
+
 ### Critical reasoning that drove the slider list (preserve this — easy to forget)
 
 - **The chapter's `M = l/b` (Eq. 2-41) is a camera-arm ratio.** Projectors don't have an "M" in the chapter's framework. They have `a` (internal grating-to-lens distance) and a throw ratio (lab-side). Conflating camera-M with projector behavior was a planning false start.
 - **`a` is fixed by projector hardware.** It's the physical distance from DMD chip to projector lens. Moving the projector in the lab does NOT change `a`. Therefore "projector distance" cannot drive `a` and cannot affect the chapter's bias math.
 - **Telecentric camera: M and distance are independent.** Within 132–182 mm WD, M stays at 0.09× regardless of camera position. Moving the camera only affects focus, not FOV. FOV is locked at 68×55 mm. **But the camera's tilt angle is independent of M** — telecentric doesn't mean "mounted vertical." This was a separate false start (Stage 2 Decision 3's hidden assumption) that Stage 3.5 corrected.
-- **Projector distance affects coverage, not math.** The slider exists for lab-design intuition; becomes meaningful in Stage 4b's unified scene.
+- **Projector distance affects coverage, not math.** The slider exists for lab-design intuition. **Now meaningful in Stage 4b's unified scene** (drives projector body translation + cone size).
 - **Symmetric assumption (Fig. 4-4) is expository, not required.** The chapter writes derivations under symmetric arms for clarity, but Eq. 2-51 is the general two-angle form. Asymmetric arms (different angles, different distances) are fine; the math handles them.
 - **Both arm angles are independent.** Stage 4a's GUI exposes both θ_projector and θ_camera as sliders. The user can explore symmetric, asymmetric, vertical-projector, vertical-camera, and degenerate configurations.
+
+### Stage 4c — Deferred features
+
+**STL import for arbitrary test objects** (the headline feature for Stage 4c). Architecturally enabled by Stage 4a's `(shape, pixel_size_mm) → (H, W) float64 mm` heightmap contract. Implementation needs:
+- `QFileDialog` for STL picker
+- One-shot config dialog (viewing axis + Z-offset + scaling)
+- Mesh rasterization onto the heightmap grid (numpy-stl or trimesh library; need to evaluate)
+- Plug into existing surface dropdown as "STL file..." option
+
+Plugs into existing pipeline with zero math-layer changes.
+
+**Sphere super-hemispherical cliff bug.** `make_sphere` in `src/test_surfaces.py` is only C0-continuous when `cap_height ≤ footprint_radius`. For `h > a`, the sagitta formula gives `R < h` and `z(footprint_radius) ≠ 0`, producing a discontinuous cliff (~33.7 mm → 0 at h=43, a=20) that renders as a vertical-walled mesa. Fix in the surface model (validate/clamp `cap_height ≤ footprint_radius`, or rewrite to handle tall caps), not the renderer. `GLViewWidget` clip planes ruled out empirically during Stage 4b close (near/far changes had no effect; tightening them degraded the hardware bodies). Won't affect STL files (STL brings its own mesh).
+
+**Click-and-drag scene manipulation.** Let user reposition cameras / surface via mouse drag in the 3D view. Needs raycasting + Qt mouse-event capture.
 
 ### Deferred from Stage 4 (still deferred)
 
 - **MockCamera, MockProjector, Camera/Projector protocols** → Stage 5/6.
-- **STL / multi-bump / file-loaded surfaces** → after Stage 4b; the `(shape, pixel_size_mm) → (H, W) float64 mm` contract from Stage 4a's surface library supports this with zero math-layer changes.
 - **Taylor/exact model toggle in GUI** → adds two lines later; not v1.
 - **Resolution toggle (480×640 vs 1280×1024)** → adds a "Compute at full res" button later.
 - **Three.js embed for lab view** → explicitly rejected; lab view is native PyQt6 (now part of unified scene).
@@ -586,7 +659,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 - Reconcile the math-layer pixel-space constants with the info-panel mm-space display.
 - Empirically calibrate `λ_eq` against a step gauge; override formula-derived value if needed.
 - `test_project_is_lambda_eq_independent` must still pass after the update — `HybridGeometry` and `SymmetricGeometry` defaults must change in lockstep.
-- Scene primitives in `src/scene.py` (Stage 4b) update to reflect real lab layout.
+- Scene primitives in `src/scene.py` (Stage 4b) update to reflect real lab layout. Projector lens dimensions (~20mm dia × 5mm protrusion) refined from lab measurement.
 
 ### Future-stage hooks deferred during Stages 2–4
 
@@ -594,6 +667,156 @@ Simulation validation can only catch bugs where the test path uses *different* l
 - **`io_utils.py`**: empty stub. Adds frame I/O when capture loop lands.
 - **`scripts/compare_forward_models.py`**: deliberately not created.
 - **`MockCamera` / `MockProjector` / Camera-Projector protocols**: deferred to Stage 5/6.
+
+---
+
+## 13. Clip-detection geometry reference (NEW in Stage 4b)
+
+This section documents the precise 3D math used in `src/gui/clip_detection.py`. Self-contained: a fresh chat / future maintainer can reconstruct the geometric reasoning from here alone.
+
+### 13.1 Five checks at a glance
+
+`detect_clips(transforms, *, heightmap_mm, surface_pixel_size_mm, camera_distance_mm, projector_distance_mm, viewing_cone_world, projection_cone_world)` returns a `ClipState` with five booleans:
+
+**Collision checks** (gray-override on offending hardware + warning banner):
+1. `camera_clipping_surface` — camera lens-front disc dips below z=0 plane
+2. `projector_clipping_surface` — projector lens-front disc dips below z=0 plane
+3. `bodies_overlapping` — camera assembly AABB overlaps projector assembly AABB (in world frame)
+
+**Coverage advisories** (banner only, no gray):
+4. `surface_outside_camera_fov` — any 3D surface sample is outside the camera viewing prism volume
+5. `surface_outside_projector_cone` — any 3D surface sample is outside the projector cone volume
+
+### 13.2 World-frame axis extraction
+
+The viewing prism and projection cone each have a `(4, 4)` world transform computed by `cone_local_to_world_transform` in `scene_compose.py`. To extract a world-frame direction vector from a local-frame direction:
+
+```python
+def _world_unit(M, local_dir):
+    """Local direction (w=0) -> world, normalized.
+    Row-major convention: (M @ [x, y, z, 0])[:3]."""
+    d = (M @ np.asarray(local_dir, float))[:3]
+    n = np.linalg.norm(d)
+    return d / n if n > 0 else d
+```
+
+Local axes commonly used:
+- `[1, 0, 0, 0]` → u-axis (cross-section "horizontal")
+- `[0, 1, 0, 0]` → v-axis (cross-section "vertical")
+- `[0, 0, 1, 0]` → optical axis (along arm direction toward surface)
+
+The `w = 0` term ensures the result is a *direction*, not a position (translation is ignored).
+
+To extract a world-frame *position* from a local point (e.g., lens center, cone apex), use:
+
+```python
+center = (M @ [0, 0, 0, 1])[:3]
+```
+
+### 13.3 Telecentric viewing prism (camera) — 3D point-in-volume
+
+The Edmund #58-259 is **telecentric**: chief rays through the rear aperture stop are constrained parallel. The viewing volume is therefore a rectangular **prism** (parallel sides), not a true cone. Cross-section is fixed at 68 × 55 mm regardless of axial position.
+
+Test: is a world-frame 3D point `P` inside the prism?
+
+```python
+C = (viewing_cone_world @ [0, 0, 0, 1])[:3]       # lens-front center
+u = _world_unit(viewing_cone_world, [1, 0, 0, 0]) # 68mm-side axis
+v = _world_unit(viewing_cone_world, [0, 1, 0, 0]) # 55mm-side axis
+
+d = P - C
+u_proj = d @ u                  # along-u offset from axis
+v_proj = d @ v                  # along-v offset from axis
+
+inside = (abs(u_proj) <= 34.0) and (abs(v_proj) <= 27.5)
+```
+
+The along-axis coordinate is **deliberately ignored** — that's the defining property of telecentric. Any depth is fine; only the perpendicular offset from the optical axis matters.
+
+This works for ALL camera tilts. The prism axes rotate with the camera arm; the |u|, |v| checks remain against the same fixed half-extents.
+
+### 13.4 Projection cone (projector) — 3D point-in-volume
+
+The Pico Genie is **non-telecentric**: the cone diverges linearly from the lens. At axial distance `s` from the apex, the cone's cross-section half-extents are:
+
+```
+hw(s) = (s / 1.2) / 2 = s / 2.4
+hh(s) = hw(s) * 9 / 16
+```
+
+These derive from the 1.2:1 throw ratio (width = throw / 1.2) and 16:9 aspect.
+
+Test: is a world-frame 3D point `P` inside the cone?
+
+```python
+apex = (projection_cone_world @ [0, 0, 0, 1])[:3]
+axis = _world_unit(projection_cone_world, [0, 0, 1, 0])
+u    = _world_unit(projection_cone_world, [1, 0, 0, 0])
+v    = _world_unit(projection_cone_world, [0, 1, 0, 0])
+
+rel = P - apex
+s   = rel @ axis            # along-axis distance from apex
+lat = rel - s * axis        # lateral component (perpendicular to axis)
+lu  = lat @ u
+lv  = lat @ v
+
+inside = (s >= 0) and (abs(lu) <= s/2.4) and (abs(lv) <= (s/2.4) * 9/16)
+```
+
+**Why `s >= 0` only, no upper bound:** `throw` is the projector's nominal DLP **focus distance**, not a hard light cutoff. The beam keeps diverging past it. The outer regions of a flat surface sit a few mm beyond the tilted nominal-focus plane (`s` slightly > throw) yet are physically still illuminated. Bounding at `s ≤ throw` would false-flag those regions. The angular criterion alone is the correct coverage test. This was a real geometry correction discovered during Stage 4b sub-task 4 (3/3); the original plan had `s ≤ throw` and the clean-baseline test failed until the bound was dropped.
+
+### 13.5 Disc-edge math for surface-plane collision (checks 1, 2)
+
+A lens-front "disc" (camera 110mm dia = 55mm radius; projector 20mm dia = 10mm radius) tilts with the arm. At arm tilt `θ` and lens-front center world-z `z_center`, the disc's **lowest world-z** is:
+
+```
+disc_lowest_z = z_center - r * sin(θ)
+              = WD * cos(θ) - r * sin(θ)
+```
+
+(WD = working distance; `z_center = WD * cos(θ)` at θ measured from vertical.)
+
+Collision fires when `disc_lowest_z < 0` (disc has dipped below the surface plane). This catches the *edge* of the lens hitting the surface even when the *center* is still above — critical at high tilt.
+
+### 13.6 11×11 grid sampling rationale
+
+The heightmap is sampled on 11×11 = 121 points spanning the modelled surface region. For each sample `(x_s, y_s)`, the height is read from the heightmap and the 3D point `(x_s, y_s, h_s)` is tested against the prism / cone volumes (Sec 13.3, 13.4).
+
+**Why 11×11:** dense enough to catch both failure modes —
+- **Lateral spill:** a wide surface footprint with corners outside the cone (11×11 grid puts samples at the corners and edges of the surface, catching this)
+- **Vertical spill:** a tall narrow peak whose tip pokes out of the tilted prism volume (the central samples catch this — the peak is usually at or near the origin)
+
+Cost: 121 samples × 2 vectorized tests per pose update ≈ 250µs total. Negligible at every slider tick.
+
+### 13.7 Hairline-trigger behavior (documented as feature)
+
+At extreme synthetic surface heights (e.g., Gaussian amp=100 mm with camera tilted -20° at WD=157, where the 100mm peak's tip sits 0.25 mm outside the FOV `u_proj = +34.248 mm > 34.0 mm`), the advisory will fire on a single sample at the boundary.
+
+This is honest geometric reporting, not a bug or tunable parameter. Real fringe projection measures sub-mm features (solder bumps ~40µm); the 100mm amplitude slider was set in Stage 4a for math-layer exploration before hardware bodies were in the scene. The hairline triggers happen only at slider extremes that don't exist in real operation.
+
+Alternatives considered and rejected:
+- **Tolerance margin** (e.g., flag only if exceeding by > 1mm): hides real coverage failures; magic threshold.
+- **Sample-count threshold** (e.g., flag only if > K of 121 samples outside): depends on grid resolution; magic threshold.
+
+### 13.8 Body-overlap AABB approximation
+
+Check 3 (`bodies_overlapping`) uses world-frame AABB (axis-aligned bounding box) intersection between the camera assembly (body + lens AABB union) and projector assembly. Rotated bodies have inflated AABBs vs. their true oriented bounding boxes — this makes the check **slightly over-sensitive on rotation** (it may flag near-collisions as collisions). Acceptable for advisory feedback. Documented in the function docstring.
+
+A future OBB (oriented bounding box) implementation would be more accurate but more complex; deferred unless real false positives surface.
+
+---
+
+## 14. Known cosmetic issues
+
+**Sphere super-hemispherical cliff** — see Stage 4c deferred features in Sec 12. Sphere surface renders as a "carved mesa" when `cap_height > footprint_radius`; bug is in `make_sphere`, not in the renderer.
+
+**pyqtgraph 0.14.0 destructor noise** — harmless `RuntimeError` on shutdown from pyqtgraph's GraphicsView teardown. Upstream issue; safe to ignore.
+
+**Banners and grabFramebuffer** — QLabel banners sit above the GL viewport in the Qt widget stack. They DO appear in the live GUI, but `grabFramebuffer()` captures only the GL surface and misses them. Smoke tests verify banner state programmatically (read `.isVisible()` and `.text()` in Python) rather than visually.
+
+**pyqtgraph 0.14.0 colormap availability** — doesn't bundle 'gray' or 'hsv'. Workarounds: manual 2-stop black-to-white `ColorMap` for the fringe-frame panel; `CET-C1` (perceptually-uniform cyclic) for wrapped-phase panel. Documented in `stages_view.py`.
+
+**pyqtgraph 0.14.0 `GLSurfacePlotItem.setData(colors=...)` docstring is wrong** — claims `(width, height, 4)`, actually needs flat `(N_vertices, 4)`. Workaround documented in `surface_preview.py`.
 
 ---
 

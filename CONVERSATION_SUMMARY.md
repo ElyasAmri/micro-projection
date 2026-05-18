@@ -53,7 +53,7 @@ The chapters in the reference folder are **the math basis for the inverse fringe
 - 132–182 mm working distance (focusable)
 - < 0.2° telecentricity
 - 1/2" sensor format
-- Physical lens length and diameter: **not yet measured** (Stage 4b prep)
+- **Physical lens profile (measured during Stage 4b):** stepped 3-section, 200mm total. 76mm rear at 55mm dia + 59mm taper + 65mm front at 110mm dia.
 - **Confirmed telecentric**. NOTE (Stage 4 clarification): telecentric only locks the lens magnification; the camera body's physical tilt angle is independent. "Telecentric ≠ mounted vertical." Camera arm tilt is a separate parameter (θ_camera in Eq. 2-51).
 
 ### Projector: Pico Genie Impact 2.0 Plus Elite (placeholder)
@@ -64,10 +64,11 @@ The chapters in the reference folder are **the math basis for the inverse fringe
 - HDMI input
 - Confirmed **NOT** telecentric (consumer DLP)
 - Will be replaced with a more advanced projector (telecentric status unknown)
+- **Lens dimensions (estimated, refine later):** ~20mm dia × 5mm protrusion.
 
 ### Geometry measurements taken
 - Throw 30 cm → image 25 × 14 cm (matches spec)
-- Lens center in body frame: (21, ~1, 45) mm
+- Lens center in body frame: (21, ~1, 45) mm (equivalent to (X=−6.5, Z=17.5) in body-centered frame used in Stage 4b)
 - Vertical optical offset: 0° (well-confirmed)
 - Horizontal optical offset: ~12° (tentative — possibly setup misalignment)
 - Auto-keystone: confirmed OFF
@@ -245,7 +246,7 @@ A simulator that operates as a **digital twin** of the user's lab setup. The use
 - **Stage 4a:** surface library + GUI + recovered-height view (the scientific tool)
 - **Stage 4b:** lab setup view (the spatial visualization) — originally planned as a separate view; refactored during Stage 4a to a unified scene (see Section 7e).
 
-Each stage 4 sub-stage ships as its own tag (`stage-4a-complete`, `stage-4-complete`). Build the useful one first; the pretty one second. Math modules from Stages 2–3 are called by the GUI, not modified (except for the Stage 3.5 pre-task).
+Each stage 4 sub-stage ships as its own tag (`stage-4a-complete`, `stage-4b-complete`). Build the useful one first; the pretty one second. Math modules from Stages 2–3 are called by the GUI, not modified (except for the Stage 3.5 pre-task).
 
 ### Final slider/control list (locked after long planning discussion)
 
@@ -258,6 +259,8 @@ Mirrored in PROJECT_CONTEXT.md Sec 12. Five controls plus a surface dropdown:
 - PSI step count dropdown (4 or 8)
 
 Everything else (M, `a`, `p`, camera distance, FOV, throw ratio, λ_eq, model='taylor', resolution) is locked at hardware values and shown in a read-only info panel.
+
+**Stage 4b additions to the slider set:** camera_distance slider (132–182 mm Edmund WD range) became live so the camera body can be repositioned in the scene. Theta sliders extended to ±75° (from ±60°) because clip-detection cases need ~67° to fire at minimum WD.
 
 **Degenerate case handling:** when `tan(θ_proj) + tan(θ_cam) → 0`, λ_eq → ∞ → "no height sensitivity." GUI shows clear warning, freezes the 3D view on its last good frame (implemented in Stage 4a task 4c).
 
@@ -279,7 +282,7 @@ The slider list emerged from peeling back five false starts. Recording them so a
 
 - **Camera lens M is locked by telecentric lens spec.** No slider for M.
 - **`a` is fixed inside the projector.** No slider.
-- **Projector distance moves projector body in 3D space but doesn't change bias math.** Slider kept for lab-design intuition (becomes live in the unified-scene Stage 4b).
+- **Projector distance moves projector body in 3D space but doesn't change bias math.** Slider kept for lab-design intuition (became live in the unified-scene Stage 4b).
 - **Both arm angles (θ_projector and θ_camera) are independent sliders.** Both contribute to triangulation via Eq. 2-51. Either or both can be zero (resulting in degenerate λ_eq → ∞).
 - **PSI step count** is a measurement-protocol toggle, not a hardware property.
 
@@ -384,7 +387,7 @@ Tag: `stage-4a-complete`. 70 tests passing.
 | 4b (error overlay) | `f224a4f` | Display Mode toggle + Error Statistics groupbox (mean/std/max-abs/RMS). Diverging colormap (CET-D1) on signed error. Amplitude slider maxes bumped to 100 mm. `Z_EXAGGERATION = 20.0`. |
 | 4c (warning banner) | `03ed339` | Degenerate-case red warning banner with textbook-form Eq. 2-51. `ErrorColorbar` widget below view_3d with `-max / 0 / +max` labels. `Z_EXAGGERATION` dropped to 2.0 (prep for Stage 4b). Stats auto-format to scientific notation for sub-precision values. |
 | 4d (stages viewer) | `13a4372` | 2×3 grid of 5 camera-view heatmaps (ground truth, projected fringes, wrapped phase, unwrapped phase, recovered height) with title + ImageView + equation per panel. `run_pipeline(return_stages=True)` kwarg. View Mode radio toggle on left pane. Right pane wrapped in QStackedWidget. CET-C1 cyclic colormap on wrapped phase. |
-| 4e (close) | this commit | Docs update + tag `stage-4a-complete`. |
+| 4e (close) | `7ecd788` | Docs update + tag `stage-4a-complete`. |
 
 ### Stage 4a planning conversation (strategy chat — pre-task-4)
 
@@ -410,11 +413,11 @@ Five design questions were settled before drafting task 4's prompt. Recording th
 
 **The λ_eq naming verification (task 4c).** While drafting the warning banner text, the strategy chat realized the project had three different conventions in circulation: notebook (`(p·M)/(4π·sin θ)`), Stage 3.5 commit message (`Mp / (2π·(tan θ_proj + tan θ_cam))`), and textbook Eq. 2-51 (`Mp / (tan θ_proj + tan θ_cam)` with `× ψ/(2π)` factor outside). A verification pass on `geometry.py` and `reconstruction.py` confirmed the code is correct: `equivalent_wavelength()` returns `λ_textbook / (2π)`, and `phase_to_height()` is implemented as `ψ × equivalent_wavelength()` — the `2π` from Eq. 2-51 is pre-folded into the wavelength constant. Final pipeline output matches Eq. 2-51 exactly. **No physics bug, only a naming convention difference.** The warning banner displays the textbook form so users cross-referencing the chapter PDF see the same equation. A rename of `equivalent_wavelength()` to `height_per_radian()` is a deferred cosmetic improvement.
 
-**Professor feedback that shaped task 4d.** After tasks 4a/4b/4c landed, the user showed the GUI to his professor. Professor's feedback: (1) STL-import flow for custom test objects (deferred — see Stage 4a deferred list); (2) the user should be able to see intermediate pipeline stages, not just the final recovered surface. The latter became task 4d — a pipeline stages viewer showing all 5 stages (ground truth → projected fringes → wrapped phase → unwrapped phase → recovered height) as live camera-view heatmaps with equation labels. This was a substantial scope addition that turned out cleanly because `run_pipeline` already computed all the intermediates internally; only the dict-return refactor and the new GUI panel were needed.
+**Professor feedback that shaped task 4d.** After tasks 4a/4b/4c landed, the user showed the GUI to his professor. Professor's feedback: (1) STL-import flow for custom test objects (deferred — eventually Stage 4c); (2) the user should be able to see intermediate pipeline stages, not just the final recovered surface. The latter became task 4d — a pipeline stages viewer showing all 5 stages (ground truth → projected fringes → wrapped phase → unwrapped phase → recovered height) as live camera-view heatmaps with equation labels. This was a substantial scope addition that turned out cleanly because `run_pipeline` already computed all the intermediates internally; only the dict-return refactor and the new GUI panel were needed.
 
 ### Stage 4b refactor — unified scene supersedes "separate lab view"
 
-Originally planned as a separate 3D view toggled by a button (per PROJECT_CONTEXT Sec 12). During Stage 4a's task-4d planning conversation, the user clarified their actual mental model: they want the lab apparatus (camera body, projector body, cones) **added to the same 3D scene** that shows the recovered surface — not a separate view. Same coordinate frame, same orbital camera, just more items in the scene.
+Originally planned as a separate 3D view toggled by a button (per PROJECT_CONTEXT Sec 12 in the pre-4b version). During Stage 4a's task-4d planning conversation, the user clarified their actual mental model: they want the lab apparatus (camera body, projector body, cones) **added to the same 3D scene** that shows the recovered surface — not a separate view. Same coordinate frame, same orbital camera, just more items in the scene.
 
 **This is cleaner.** Hardware bodies provide visual reference scale (Z exaggeration can drop further toward honest). Projector-distance slider becomes meaningful (lab-view changes). User sees the recovered surface AND the rig that produced it simultaneously. No mode switching.
 
@@ -422,7 +425,56 @@ The "View Mode" radio toggle from Stage 4a task 4d (3D Scene ↔ Pipeline Stages
 
 **Implementation approach:** schematic primitives with measured proportions and physically-accurate light/viewing cones. Not photorealistic STL imports (those don't necessarily exist for the actual hardware models, and photo-realistic textures add nothing pedagogical).
 
-Camera body lens dimensions need measurement before Stage 4b (PROJECT_CONTEXT Sec 8 item 8). 5 minutes with a ruler.
+---
+
+## 7e. Stage 4b — Execution history (Unified hardware-bodies scene + clip-detection, complete)
+
+Tag: `stage-4b-complete`. 143 tests passing.
+
+### Sub-task summary (commit by commit)
+
+| # | Commit | One-line summary |
+|---|---|---|
+| 1 | `3c4e5e5` | `src/scene.py` mesh builders. Camera/projector body cubes at real dimensions (29×29×30 mm, 55³ mm). CCW outward winding, pure `(verts, faces)` returns. 12 new tests. |
+| 2 | `fbc5853` | `_cylinder` / `_stepped_cylinder` helpers. `make_camera_lens` matching Edmund's stepped 3-section profile (200mm total). `make_projector_lens` (20×5mm). `src/scene_compose.py` new: pose composition layer with `camera_arm_transform`, `projector_arm_transform`, `body_lens_offset`. 33 new tests. |
+| 3 | `7bb2b41` | `src/gui/hardware_scene.py` new: `HardwareScene` class hosting GLMeshItems, GLLinePlotItems for the wireframes, and `compute_arm_transforms()`. main_window: new `camera_distance` slider (132–182mm Edmund WD range), renamed `projector_distance` slider labels to optics convention (lens-front to surface, NOT body-center). `LabeledFloatSlider.set_value()` added. View distance bumped 80→600mm. 6 new tests. |
+| 4 (1/3) | `e96e1fc` | Projection + viewing cones + clip-detection v1. `make_projection_cone_wireframe` (5 verts / 8 edges diverging pyramid). `make_viewing_cone_wireframe` (8 verts / 12 edges telecentric prism — parallel sides, NOT a true cone). `cone_local_to_world_transform` helper in `scene_compose.py`. `src/gui/clip_detection.py` new (pure NumPy): `detect_clips` with 3 checks — camera/projector lens disc-edge vs surface plane, body assembly AABB overlap. `ClipState` dataclass. Theta sliders extended ±60° → ±75°. Gray override color `(0.4, 0.4, 0.4, 1.0)` applied to offending body+lens+cone on collision. Warning banner above 3D view. 18 new tests. |
+| 4 close (Z retune) | `45c2071` | **Z_EXAGGERATION 2.0 → 1.0** (honest scale). Single-constant change. User picked from empirical 4-screenshot comparison (Z = 1, 2, 5, 10) at the close of sub-task 4. The 4-shot comparison was the user's call — strategy chat had been preparing a contingent argument for keeping 2.0, but the user's eye on actual frames made the decision crisp. |
+| 4 (2/3, REVERTED) | `c53dd36` → `20d6771` | Originally added surface-peak-vs-lens 3D contact checks (camera and projector). **Reverted** after interactive GUI testing showed these are unreachable in practice: at slider ranges (WD 132–182, surface amp 0–100, θ ±75°), the lens always clears the peak by ≥30mm at min WD; tilting only increases clearance. Same for projector. Carrying dead code wasn't worth the maintenance cost. Reset preserved in history rather than rebased away — the lesson "validate the bug can be triggered before adding the check" is worth remembering. 139 tests after revert. |
+| 4 (3/3) | `5d4b4c4` | **FOV/cone coverage advisories — 3D volume tests.** Replaces the buggy 2D z=0 footprint coverage check (which existed in the originally planned 4.2/3 but missed vertical spill) with 3D point-in-volume tests against the camera viewing prism and projector projection cone. 11×11 heightmap sampling. Catches both lateral spill (wide surface) and vertical spill (tall Gaussian peak penetrating tilted prism's "ceiling"). Cone test uses angular criterion only (`s >= 0`, no `s <= throw` upper bound — throw is DLP focus distance, not light cutoff). Banner-only, no gray override. 4 new tests, total 143. |
+| 5 (close) | this commit | Docs update + tag `stage-4b-complete`. |
+
+### Stage 4b critical mid-execution discoveries
+
+**Surface-vs-lens contact checks are unreachable in practice.** This was the most important discovery of Stage 4b. Sub-task 4 (2/3) added 3D surface-peak-vs-lens proximity checks as a follow-on to the 2D disc-edge-on-plane collision check (which IS reachable). The intent was to gray hardware when the surface peak grew tall enough to touch the lens. The check was implemented, tested, committed (c53dd36). Then the user opened the live GUI and tried to trigger the case — and couldn't. At any combination of slider values within their stated ranges (WD 132–182 mm, surface amplitude 0–100 mm, θ ±75°), the lens never gets close to the peak. At WD=132 (closest), camera_body sits at z ≈ 132·cos(0) = 132 mm above the origin; surface peak max is 100 mm; clearance ≥ 32 mm. Tilting only increases the lens's distance from the peak. Strategy chat's analysis confirmed this with numerical sweep. The check was dead code. Commit 20d6771 reverted c53dd36 cleanly.
+
+**The vertical-spill FOV bug (user-caught).** Sub-task 4 (3/3) was originally going to use a 2D z=0 footprint check for FOV coverage — does the surface's *outline* fit inside the cone/prism cross-section at the surface plane? The user opened the live GUI to test it and noticed: with the surface tilted toward the camera (θ_camera positive) and the Gaussian peak tall enough, the *tip* of the Gaussian poked out the **top** of the tilted prism volume — but the 2D footprint check (which looks at z=0 only) said all was well. The user reported this. Strategy chat traced it: the prism's "ceiling" (the slanted top face after tilt) was being penetrated by the peak. 2D z=0 footprint test geometrically cannot catch this. Fix: switch to 3D point-in-volume tests on 11×11 sampled heightmap points. Each sample's 3D position (x, y, h(x,y)) is tested against the actual prism/cone volume. Both lateral and vertical spill caught in one geometric test. Cost ~250µs at every slider tick, well below interactive budget.
+
+**The cone upper-bound (`s <= throw`) was wrong.** When sub-task 4 (3/3) landed, an early version included `s <= throw` as part of the projector cone test ("point must be between lens and the throw distance"). It caused false-flags: a flat surface tilted by θ_projector has corners sitting a few mm beyond the tilted nominal-focus plane (because the surface extends past where the optical axis hits z=0). The user reported the false-flag. Strategy chat traced it: `throw` is the projector's nominal DLP **focus distance**, not a hard light cutoff. The beam keeps diverging past the focus plane. The angular criterion (`abs(lu) <= s/2.4` and `abs(lv) <= s/2.4*9/16`) alone is the correct geometric test. Removed the upper bound. Clean baseline passed.
+
+**Distance slider semantics: lens-front vs body-center.** Sub-task 3 brought a real design question to surface: do the distance sliders report lens-front to surface (optics convention, what an Edmund spec sheet says) or body-center to surface (mechanical convention)? Strategy chat originally proposed body-center because the world transform in scene_compose.py centers on body-center. The user pushed back: every spec sheet on the user's bench is in lens-front units; chapter equations are in lens-front units; the user's intuition for "WD = 157mm" is lens-front-to-surface. Decision: sliders report lens-front. `compute_arm_transforms` adds the body offsets internally (camera_body_distance = WD + 215mm; projector_body_distance = throw + 32.5mm). This shows up in every smoke test screenshot — the lens-front of the Edmund matches the surface at the slider value, not the body-center. Right call.
+
+**The Z exaggeration decision.** At sub-task 4 close, strategy chat asked "do we keep Z=2.0 from Stage 4a or drop further now that hardware bodies are present?" User said "let's see screenshots." Four smoke tests rendered at Z=1, 2, 5, 10 with surface_type=Gaussian, amp=10mm, θ_proj=15, θ_cam=15. User reviewed all four and picked Z=1.0 with: "Z=10 is a lie. Z=2 is a lie. Z=1 is the right answer because that's what's actually there. The lens IS that far above the peak." This locked the "geometric ruler" property of Stage 4b's scene: the visual scene is a literal-scale representation, and clip-detection thresholds match what the eye sees. Z_EXAGGERATION = 1.0 became a load-bearing decision tied to the clip-detection semantics, not just an aesthetic choice.
+
+### Stage 4b architectural decisions worth carrying forward
+
+- **Banner vs gray semantics.** Collision (gray + banner) = physical impossibility. Coverage (banner only) = measurement incompleteness. Math runs regardless. Documented in PROJECT_CONTEXT Sec 7.5.
+
+- **Math-layer purity extended to clip-detection.** `clip_detection.py` is pure NumPy + scene imports. Lives under `gui/` for cohesion with `hardware_scene.py`, but architecturally is math-layer code: headlessly unit-testable, no Qt dependency.
+
+- **All clip-detection geometry constants derived from cone builders, not duplicated.** `_PRISM_HALF_U_MM`, `_PRISM_HALF_V_MM`, `_CONE_HALF_U_PER_L`, `_CONE_HALF_V_PER_L` are computed at module load from `make_viewing_cone_wireframe()` / `make_projection_cone_wireframe()` output. If the cone builders change, clip_detection follows automatically. This is the right anti-duplication pattern for spec numbers.
+
+- **The 3D viewport is a geometric ruler with Z=1.0.** The most important pedagogical property of Stage 4b. Surface visually touching the (graying) lens = clip-detection threshold reached. Exaggeration would desync.
+
+- **Two independent banners.** Degenerate-λ_eq banner (Stage 4a) short-circuits the pipeline. Clip-warning banner (Stage 4b) is advisory. Both can show simultaneously.
+
+- **Smoke-test capture protocol.** Programmatic GUI launch → `view_3d.grabFramebuffer()` to `%TEMP%`, gated by user greenlight, then commit. One-process-per-render: a single-process render loop leaves all-but-first framebuffer blank (PyQt6/OpenGL quirk). Each pose config gets its own `python -c "..."` invocation.
+
+- **Banners DON'T appear in `grabFramebuffer` captures.** They sit above the GL viewport in the Qt widget stack. Smoke tests verify banner state programmatically (read `.isVisible()` and `.text()` in Python) — not visually.
+
+- **Stage 4b sub-task 4 went through a reset (c53dd36 → 20d6771).** Preserved in history. The "validate the bug is triggerable before adding the check" lesson is worth keeping visible.
+
+- **No Co-Authored-By trailers.** Established as project convention from Stage 4b onward.
 
 ---
 
@@ -437,25 +489,13 @@ Non-blocking — proceed on best assumptions and ask in parallel.
 5. Calibration artifacts available in lab?
 6. ~~GUI framework preference?~~ **Resolved: PyQt6** (Stage 4 plan).
 7. **Mount geometry decision:** what are the intended mounting angles for both camera and projector? The chapter's Fig. 4-4 shows symmetric arms (~15° each). Chapter 5 shows an asymmetric setup (camera vertical at 0°, projector at 60°). The user's preference suggested vertical projector, but that requires non-vertical camera for triangulation to work. Worth clarifying with the professor before committing physical mount geometry.
-8. **Stage 4b prep — physical dimensions to measure:** camera lens length, camera lens outer diameter, projector lens diameter. Body sizes and lens optical-axis positions are already documented (Projector_Geometry_Summary.docx).
+8. ~~**Stage 4b prep — physical dimensions to measure**~~ **Resolved during Stage 4b:** camera lens profile measured (stepped 200mm). Projector lens estimated (20mm dia × 5mm protrusion); refine when lab-accessible.
 
 ---
 
 ## 9. Theoretical Insights From the Walkthrough
 
 The user worked through the chapter step by step and these were the conceptual landmarks:
-
-- **u₃ in Eq. 2-41 is a sensor-side displacement** caused by object height. We don't measure u₃ directly — we measure phase, which is a sensor-side displacement encoded as a cosine argument shift.
-
-- **The /M factor in Eq. 2-49 is simple specifically because the system is telecentric** — telecentric magnification is constant everywhere, so position-dependent stretching factors collapse. In non-telecentric systems, M varies with position; the chapter handles this with the `(1 − x₁·tan θ/a)` factor.
-
-- **`x₁` is a coordinate on the projector's grating plane**. For a digital projector (DLP), x₁ is just the column index of each pixel relative to the optical axis.
-
-- **Once the system is set up, θ is fixed.** Only x₁ varies across the projected pattern, and h(x₁) varies across the surface. This is why p₂(x₁) varies across the inverse grating but everything else is constant.
-
-- **Eq. 4-7 is structurally Eq. 4-2 with the curvature sign flipped** — that's literally what the tilt-flip trick does.
-
-- **Custom grating is needed for this project** because the projector is non-telecentric.
 
 ### Additional insights added during Stage 1 walkthrough
 
@@ -485,7 +525,7 @@ The user worked through the chapter step by step and these were the conceptual l
 
 - **The symmetric assumption (Fig. 4-4) is expository, not required.** Eqs. 2-41 and 4-11 use one M and one θ because the chapter writes derivations under symmetric arms for clarity.
 
-- **A slider that doesn't affect the science view is still valuable** if it serves a real lab-design purpose. The projector-distance slider is the case in point — inert in 4a, becomes live in 4b's unified scene.
+- **A slider that doesn't affect the science view is still valuable** if it serves a real lab-design purpose. The projector-distance slider is the case in point — inert in 4a, became live in 4b's unified scene driving body translation and cone size.
 
 - **Telecentric ≠ vertical mount.** This is the most important Stage 4 discovery. Telecentric only locks the lens magnification; the arm's tilt angle relative to the surface is an independent mechanical parameter. Stage 2 Decision 3's `λ_eq = Mp / tan(θ_projector)` was wrong because it assumed θ_camera = 0°, derived from this conflation. Stage 3.5 corrected it by using Eq. 2-51's full two-angle form.
 
@@ -501,17 +541,32 @@ The user worked through the chapter step by step and these were the conceptual l
 
 - **Pyqtgraph documentation drift is a real maintenance risk.** Pyqtgraph 0.14.0's `GLSurfacePlotItem.setData(colors=...)` docstring claims `(W, H, 4)` but the data goes straight to `MeshData.setVertexColors` which wants flat `(N_vertices, 4)`. Discovered during task 3's first smoke test (raised IndexError). Workaround documented inline in `surface_preview.py`. Worth checking on future pyqtgraph upgrades.
 
+### Additional insights added during Stage 4b execution
+
+- **Telecentric optics means rectangular prism, not cone, for the viewing volume.** Edmund #58-259's parallel chief rays imply the viewing volume has fixed 68×55mm cross-section at all axial depths. The wireframe is built as 8 vertices / 12 edges (rectangular prism), not as a diverging pyramid. The point-in-volume test ignores the along-axis coordinate entirely; only perpendicular offset from the optical axis matters. This is the defining geometric difference from the projector's diverging cone.
+
+- **DLP throw distance is the focus plane, not a light cutoff.** Bounding the projection cone at `s <= throw` false-flags flat surfaces' outer regions. The beam keeps diverging past the focus plane. The angular criterion alone is correct.
+
+- **AABB overlap on rotated bodies is over-sensitive but acceptable for advisories.** Rotated bodies have inflated AABBs vs. their true OBBs. Bodies-overlapping check may flag near-collisions. Documented in the function docstring. OBB upgrade deferred unless real false positives surface.
+
+- **Disc-edge math for lens-vs-plane collision.** At tilt θ, the lens-front disc's lowest world-z is `z_center − r·sin(θ) = WD·cos(θ) − r·sin(θ)`. Collision fires when this drops below zero. Catches the edge hitting the plane even when the center is still well above — critical at high tilt.
+
+- **11×11 sampling is enough.** Dense enough to catch lateral spill (corner samples) and vertical spill (central peak samples). Cost ~250µs/tick. Negligible at every slider drag.
+
+- **Strict-correctness checks beat tolerance-based checks for advisory triggers.** Stage 4b's FOV/cone checks use exact inequalities (no tolerance margin). Hairline triggers happen only at slider extremes outside real operating ranges (amp=100mm Gaussian) and are honest geometric reporting. Tolerance margins would hide real failures and require magic thresholds.
+
 ---
 
 ## 10. Project Conversations Note
 
-- User had a friend building a separate **Three.js 3D simulation** of the lab geometry. The `Projector_Geometry_Summary.docx` was prepared for that collaborator. The Three.js work is **complementary**, not duplicative. The user **explicitly rejected** embedding the Three.js work into the Stage 4 GUI; lab view is native PyQt6 (now Stage 4b's unified scene).
+- User had a friend building a separate **Three.js 3D simulation** of the lab geometry. The `Projector_Geometry_Summary.docx` was prepared for that collaborator. The Three.js work is **complementary**, not duplicative. The user **explicitly rejected** embedding the Three.js work into the Stage 4 GUI; lab view is native PyQt6 (Stage 4b's unified scene).
 - User added a virtual representation of the test object with live sliders during Stage 4a. The intermediate-stages viewer (task 4d) was added based on the user's professor's feedback after seeing the digital twin in action.
 - User added a **test-surface library** (`src/test_surfaces.py`) as part of Stage 4a task 1. Pure heightmap generators: flat, tilt, Gaussian, step, sphere.
-- **STL import flow is the user's eventual goal** for arbitrary test objects. Architecturally enabled by Stage 4a's `(shape, pixel_size_mm) → (H, W) float64 mm` contract; any STL importer that produces this shape plugs into the GUI with zero math-layer changes. Implementation deferred to a later stage (after Stage 4b lands the unified scene, and ideally after real hardware lets us calibrate Z-range realistically).
-- User clarified during Stage 3 and reaffirmed in Stage 4 planning that **the chapters in the reference folder are the math basis for the inverse fringe projection method, not a template for a thesis the user is writing.** Current deliverable is a working simulation that uses real hardware parameters.
+- **STL import flow is the user's eventual goal** for arbitrary test objects. Architecturally enabled by Stage 4a's `(shape, pixel_size_mm) → (H, W) float64 mm` contract; any STL importer that produces this shape plugs into the GUI with zero math-layer changes. Implementation is the headline feature for Stage 4c.
+- User clarified during Stage 3 and reaffirmed in Stage 4 planning that **the chapters in the reference folder are the math basis for the inverse fringe projection method, not a template for a thesis the user is writing.** Current deliverable is a working simulation that uses real hardware parameters. The work supports the user's thesis chapter on solder bump metrology.
 - User wants **the GUI to be updatable with real hardware specs once they arrive.** The architecture supports this cleanly. This is the user's most important Stage 4 acceptance criterion.
 - **User raised wanting to mount projector vertical (per professor preference).** Strategy chat surfaced that this requires non-vertical camera to preserve triangulation. Both-angles-as-sliders design supports this exploration and any other configuration the user/prof eventually decides on.
+- **User caught a near-miss at Stage 4b docs close.** Strategy chat initially drafted updated PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md from chat memory alone, without reading the existing 600-line files. User caught it with "did you check the existing files first?" — saving the project's Stage 0-4a history from being silently erased. Pattern: when strategy chat hands the user a large deliverable derived from earlier project state, the user should verify strategy chat read the actual current files, not just reconstructed from working memory.
 
 ---
 
@@ -521,17 +576,23 @@ The user worked through the chapter step by step and these were the conceptual l
 - Confirmed system is **hybrid in lens type** (telecentric viewing lens, non-telecentric projector lens); arm angles are independent of lens type
 - Confirmed inverse grating method (§2.3.4.3 / Chapter 4) is the project's chosen approach
 - Measured projector lens position; ~0° vertical optical offset confirmed
+- Measured camera lens physical profile (Stage 4b): stepped 3-section, 200mm total length
 - Computed practical FOV, pixel pitch, magnification numbers
 - Identified the gap in the existing notebook (missing `project()` function) — **closed in Stage 1**
 - Established that hardware-free development is the right starting approach
 - Built a roadmap (Stages 0–6) with this-week to-do items
-- **Stage 0, Stage 1, Stage 2, Stage 3, Stage 3.5, and Stage 4a completed.**
+- **Stage 0, Stage 1, Stage 2, Stage 3, Stage 3.5, Stage 4a, and Stage 4b completed.**
 - Validation philosophy formalized: simulation-only validation has fundamental limits.
 - **Stage 4 plan locked at the strategy-chat level.** Five sliders + surface dropdown, locked values, build sequence (3.5 → 4a → 4b), 3D viewer backend (PyQtGraph), resolution (480×640), MockCamera/Projector deferred.
 - **Stage 3.5 pre-task executed:** math layer upgrade to two-angle λ_eq (Eq. 2-51), supersedes Stage 2 Decision 3. Commit `658f331`, pushed (not tagged).
 - **Stage 4a executed:** 7 task commits + close. Tag `stage-4a-complete`. Full PyQt6 digital twin with surface library, pipeline integration, error overlay, warning banner, and intermediate-stages viewer. 70 tests passing.
+- **Stage 4b executed:** 8 task commits including 1 reset (c53dd36 → 20d6771) + close. Tag `stage-4b-complete`. Unified hardware-bodies scene with live pose sliders, clip-detection (3 collision + 2 coverage advisories), honest scale (Z=1.0). 143 tests passing.
 - **λ_eq naming convention clarified** during Stage 4a task 4c. Code's `lambda_eq` = `λ_textbook / (2π)`; no physics bug, only naming. Warning banner displays textbook form for user clarity.
-- **Stage 4b redesigned** from a "separate lab view" to a "unified 3D scene with hardware bodies added to the existing recovered-surface scene." Cleaner architecture; hardware bodies will provide reference scale.
+- **Stage 4b redesigned** from a "separate lab view" to a "unified 3D scene with hardware bodies added to the existing recovered-surface scene." Cleaner architecture; hardware bodies provide reference scale.
+- **Distance slider semantics locked:** sliders report lens-front to surface (optics convention); body offsets added internally in `compute_arm_transforms`.
+- **Z_EXAGGERATION locked at 1.0** (honest scale). Tied to clip-detection semantics — surface visually touching the (graying) lens means literal threshold reached.
+- **Surface-vs-lens contact checks dropped** as unreachable in practice. Documented as a Stage 4b lesson: validate the bug is triggerable before adding the check.
+- **FOV/cone coverage tests upgraded** from 2D z=0 footprint to 3D point-in-volume on 11×11 samples (catches vertical spill, not just lateral). Cone test uses angular criterion only (no `s <= throw` upper bound).
 
 ---
 
@@ -548,18 +609,20 @@ The user pushes back when something feels redundant or tautological. This is a s
 
 The user also says when they don't understand something. When that happens, strategy chat should **simplify, not double down on technical accuracy.** Long technical explanations are the wrong response to "I don't get this" — shorter answers, more analogy, fewer equations. This came up several times during Stage 4 planning and during Stage 4a's λ_eq verification (where the strategy chat initially over-explained the math-layer-vs-textbook naming difference; the user redirected to "just tell me what to do" and the conversation moved on).
 
-**The user is also good at asking questions whose answers force the strategy chat to catch its own mistakes.** The "telecentric = vertical?" question that surfaced Stage 2 Decision 3's hidden assumption was an example. So was the lab-view redesign question during Stage 4a planning ("isn't the lab view just my recovered view dressed up?") — which surfaced that the strategy chat had been describing two views as if they would be separate, when the user's mental model was always one unified scene. Strategy chat should treat user pushback as a diagnostic, not as resistance.
+**The user is also good at asking questions whose answers force the strategy chat to catch its own mistakes.** The "telecentric = vertical?" question that surfaced Stage 2 Decision 3's hidden assumption was an example. So was the lab-view redesign question during Stage 4a planning ("isn't the lab view just my recovered view dressed up?") — which surfaced that the strategy chat had been describing two views as if they would be separate, when the user's mental model was always one unified scene. The Stage 4b vertical-spill FOV bug was another: the user opened the live GUI, noticed the tall peak poking out of the prism top, reported it, and the 2D-footprint test was rewritten as 3D point-in-volume. Strategy chat should treat user pushback as a diagnostic, not as resistance.
+
+**The Stage 4b docs near-miss.** At Stage 4b close, strategy chat drafted updated docs from working memory rather than reading the existing 600-line files. User caught it. The lesson: when a large deliverable depends on existing project state (docs, code structure, prior decisions), strategy chat must read the actual current files before producing the update — not work from memory of what was discussed in this chat, because the existing files contain history strategy chat wasn't part of. Verification step now baked in: confirm the read happened before drafting the deliverable.
 
 ---
 
-## 13. Working Model with Claude Code (Refined Through Stages 2, 3, 3.5, and 4a)
+## 13. Working Model with Claude Code (Refined Through Stages 2, 3, 3.5, 4a, and 4b)
 
-The handoff pattern that worked across Stage 2's six tasks, Stage 3's two tasks, Stage 3.5, and Stage 4a's seven tasks:
+The handoff pattern that worked across Stage 2's six tasks, Stage 3's two tasks, Stage 3.5, Stage 4a's seven tasks, and Stage 4b's eight tasks (including the reset):
 
-1. **Strategy chat (this assistant) drafts the prompt.** Includes the architectural constraints, the exact tests to write, and the binding decisions Claude Code shouldn't relitigate.
+1. **Strategy chat (this assistant) drafts the prompt.** Includes the architectural constraints, the exact tests to write, and the binding decisions Claude Code shouldn't relitigate. Prompts go in fenced ``` code blocks for the user's copy button.
 2. **User reviews and pastes into Claude Code (terminal).**
 3. **Claude Code summarizes back what it understands before writing code.**
-4. **Claude Code implements, runs tests, commits.** One module per commit. Surfaces deviations from spec inline. Magnitude sanity checks before commit when the math output is user-visible.
+4. **Claude Code implements, runs tests, commits.** One module per commit. Surfaces deviations from spec inline. Magnitude/numeric sanity checks before commit when the math output is user-visible.
 5. **User pastes Claude Code's diff + test output back to strategy chat for review.**
 6. **User decides on adjustments.**
 
@@ -590,6 +653,20 @@ The pattern: **specs from strategy chat are first drafts, not contracts.** Claud
 
 Task 4d (pipeline stages viewer) was not in the original Stage 4a plan. It was added after the user's professor asked to see intermediate stages. Strategy chat's instinct was to defer ("Stage 4b should land first"); the user's correction was to fold it into Stage 4a since the professor's feedback is gold and the architecture (`run_pipeline` already had all the intermediates internally) made it cheap. The right call. Lesson: external feedback can justify mid-stage scope additions if the architecture makes the addition cheap and the feedback won't get easier to act on later.
 
+### Stage 4b refinement: interactive GUI verification finds bugs unit tests miss
+
+Stage 4b's clip-detection went through two iterations of user-caught geometry bugs that all unit tests passed: the unreachable surface-vs-lens contact check (sub-task 4 2/3, reverted) and the vertical-spill FOV bug (sub-task 4 3/3, rewritten as 3D point-in-volume). In both cases the unit tests were correct in what they tested — but they tested the wrong things. The unit tests for the surface-contact check verified the math gave a True boolean when the lens-and-peak-z values were close; they did not verify the slider ranges could actually produce such values. The unit tests for the 2D footprint coverage check verified the footprint was inside the prism's z=0 cross-section; they didn't verify a tall peak couldn't poke out the prism top.
+
+The pattern: **for geometry code, interactive GUI testing is a load-bearing verification step, not an extra.** Unit tests verify the math is correct in the parameter regimes it's tested in; the GUI explores the parameter regimes a real user can reach. Both are needed; neither replaces the other. Stage 4c (STL import + sphere fix) will keep this two-step verification — code + tests, then GUI exploration before commit.
+
+### Stage 4b refinement: revert preserved in history, not rebased
+
+When commit c53dd36 (surface-vs-lens contact check) was reverted by 20d6771 (revert commit), strategy chat suggested keeping both commits visible in history rather than `git reset --hard` to before c53dd36. Rationale: the lesson "validate the bug is triggerable before adding the check" is more useful preserved as a visible reset than hidden by a rebase. Future maintainers (or fresh Claude Code sessions) reading the history see the two commits adjacent and can read the commit messages to learn the lesson. Buried-in-rebase lessons are forgotten lessons.
+
+### Stage 4b refinement: smoke-test capture protocol matters
+
+The Stage 4b smoke-test protocol (programmatic GUI launch + framebuffer capture, gated by user greenlight, one-process-per-render) became load-bearing during sub-task 4 because the clip-detection visual effects (gray override colors) needed to be verified in actual rendered output. Strategy chat learned mid-way through that a single-process loop trying to render multiple poses leaves all-but-first framebuffer blank (PyQt6/OpenGL quirk). Workaround: each pose config gets its own `python -c "..."` invocation. Banner state is verified programmatically (`.isVisible()` / `.text()`) because banners live above the GL viewport and don't appear in `grabFramebuffer` captures.
+
 ### Stage 4 fresh-session bootstrap
 
 When a new strategy chat or Claude Code session starts after a stage closes:
@@ -598,6 +675,20 @@ When a new strategy chat or Claude Code session starts after a stage closes:
 - Claude Code: open a fresh terminal. First prompt: "Read PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md. Summarize back what we're building, where we are, and what's binding for [Stage X]. Don't write code yet."
 
 The two .md files carry all the context. A handoff .md is redundant when the context files are current.
+
+### Stage 4b close: docs-update protocol clarified
+
+User updates PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md manually at stage close. Strategy chat drafts the updates — but **must read the existing files first** to preserve prior-stage content. Surgical additions are fine; full-replacement drafts work too, as long as the existing content is read before drafting. Strategy chat memory of "what this chat discussed" is not a substitute for "what the files actually contain." Verification: confirm read happened before drafting.
+
+Push and tag happen together at end of stage:
+
+```
+git tag stage-4b-complete
+git push origin main
+git push origin stage-4b-complete
+```
+
+(No co-authored-by trailers.)
 
 ---
 
