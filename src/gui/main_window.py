@@ -93,9 +93,6 @@ from src.gui.surface_preview import ErrorColorbar, SurfacePreview
 from src.test_surfaces import (
     make_flat,
     make_gaussian,
-    make_sphere,
-    make_step,
-    make_tilt,
 )
 
 
@@ -324,17 +321,18 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(box)
 
         self.surface_combo = QComboBox()
-        self.surface_combo.addItems(["Flat", "Tilt", "Gaussian", "Step", "Sphere"])
+        # Stage 4c sub-task 1: dropdown reduced to Flat, Gaussian.
+        # Page-add order below MUST match this label order (Flat=0,
+        # Gaussian=1) — the currentIndexChanged -> setCurrentIndex wiring
+        # is index-based while dispatch is currentText()-based.
+        self.surface_combo.addItems(["Flat", "Gaussian"])
         # Spec: Gaussian is the launch default.
         self.surface_combo.setCurrentText("Gaussian")
         layout.addWidget(self.surface_combo)
 
         self.surface_pages = QStackedWidget()
         self.surface_pages.addWidget(self._build_flat_page())
-        self.surface_pages.addWidget(self._build_tilt_page())
         self.surface_pages.addWidget(self._build_gaussian_page())
-        self.surface_pages.addWidget(self._build_step_page())
-        self.surface_pages.addWidget(self._build_sphere_page())
         self.surface_pages.setCurrentIndex(self.surface_combo.currentIndex())
         layout.addWidget(self.surface_pages)
 
@@ -351,50 +349,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("No parameters"))
         return page
 
-    def _build_tilt_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        self.tilt_slope_x = LabeledFloatSlider("slope_x", -1.0, 1.0, 0.0, 0.01)
-        self.tilt_slope_y = LabeledFloatSlider("slope_y", -1.0, 1.0, 0.0, 0.01)
-        layout.addWidget(self.tilt_slope_x)
-        layout.addWidget(self.tilt_slope_y)
-        return page
-
     def _build_gaussian_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        # Range widened to 0..100 mm in task 4b so the user can drive
-        # recovery into clearly-visible regimes for the error overlay.
+        # Range was 0..100 mm in task 4b; tightened to 0..55 mm in Stage
+        # 4c sub-task 1 (the 55 mm vertical-FOV bound). Default 0.5 mm is
+        # well under the cap, so it is unchanged.
         self.gaussian_amplitude = LabeledFloatSlider(
-            "amplitude_mm", 0.0, 100.0, 0.5, 0.01
+            "amplitude_mm", 0.0, 55.0, 0.5, 0.01
         )
         self.gaussian_sigma = LabeledFloatSlider("sigma_mm", 1.0, 30.0, 8.0, 0.1)
         layout.addWidget(self.gaussian_amplitude)
         layout.addWidget(self.gaussian_sigma)
-        return page
-
-    def _build_step_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        # Range widened to +/-100 mm in task 4b (see Gaussian amplitude).
-        self.step_height = LabeledFloatSlider("height_mm", -100.0, 100.0, 0.5, 0.01)
-        self.step_edge_x = LabeledFloatSlider("edge_x_mm", -30.0, 30.0, 0.0, 0.1)
-        layout.addWidget(self.step_height)
-        layout.addWidget(self.step_edge_x)
-        return page
-
-    def _build_sphere_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        # Range widened to 0.01..100 mm in task 4b (see Gaussian amplitude).
-        self.sphere_cap_height = LabeledFloatSlider(
-            "cap_height_mm", 0.01, 100.0, 0.5, 0.01
-        )
-        self.sphere_footprint = LabeledFloatSlider(
-            "footprint_radius_mm", 1.0, 30.0, 20.0, 0.1
-        )
-        layout.addWidget(self.sphere_cap_height)
-        layout.addWidget(self.sphere_footprint)
         return page
 
     def _build_geometry_group(self) -> QGroupBox:
@@ -634,14 +600,8 @@ class MainWindow(QMainWindow):
 
     def _all_surface_sliders(self) -> list[LabeledFloatSlider]:
         return [
-            self.tilt_slope_x,
-            self.tilt_slope_y,
             self.gaussian_amplitude,
             self.gaussian_sigma,
-            self.step_height,
-            self.step_edge_x,
-            self.sphere_cap_height,
-            self.sphere_footprint,
         ]
 
     def _refresh_surface_preview(self, *_args: object) -> None:
@@ -834,28 +794,10 @@ class MainWindow(QMainWindow):
 
         if name == "Flat":
             return make_flat(shape, ps)
-        if name == "Tilt":
-            return make_tilt(
-                shape, ps,
-                slope_x=self.tilt_slope_x.value(),
-                slope_y=self.tilt_slope_y.value(),
-            )
         if name == "Gaussian":
             return make_gaussian(
                 shape, ps,
                 amplitude_mm=self.gaussian_amplitude.value(),
                 sigma_mm=self.gaussian_sigma.value(),
-            )
-        if name == "Step":
-            return make_step(
-                shape, ps,
-                height_mm=self.step_height.value(),
-                edge_x_mm=self.step_edge_x.value(),
-            )
-        if name == "Sphere":
-            return make_sphere(
-                shape, ps,
-                cap_height_mm=self.sphere_cap_height.value(),
-                footprint_radius_mm=self.sphere_footprint.value(),
             )
         raise RuntimeError(f"unknown surface name: {name!r}")
