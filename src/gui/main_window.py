@@ -84,7 +84,11 @@ from geometry import HybridGeometry
 from pipeline import run_pipeline
 from src.gui.stages_view import StagesView
 from src.gui.surface_preview import ErrorColorbar, SurfacePreview
-from src.stl_loader import get_stl_bbox_mm, load_stl_heightmap
+from src.stl_loader import (
+    get_stl_bbox_mm,
+    load_stl_heightmap,
+    load_stl_heightmap_full_scale,
+)
 from src.test_surfaces import (
     make_flat,
     make_gaussian,
@@ -109,12 +113,21 @@ SURFACE_PIXEL_SIZE_MM: float = 0.1
 # reference one source of truth.
 STL_LABEL: str = "STL file..."
 
-# Bbox guard limits (X, Y, Z) in mm: the camera FOV (68 x 55) plus a
-# matching 55 mm Z height cap. STLs exceeding any axis are hard-rejected
-# at import (see `_load_stl_from_path`). Stage 4d's STL Browser will add
-# windowed FOV selection so full-scale parts can be measured patch by
-# patch; until then, only specimens that fit are supported.
-STL_WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 55.0)
+# Bbox classification thresholds for STL import (Stage 4d sub-task 2).
+# Three-way branch on the part's XY/Z extent, evaluated by
+# `_load_stl_from_path`:
+#   - Z > WORKING_VOLUME_MM[2]: hard-reject (hardware constraint).
+#   - XY fits WORKING_VOLUME_MM: direct rasterization to SURFACE_SHAPE
+#     (Stage 4c path).
+#   - XY exceeds WORKING_VOLUME_MM but fits ABSURDLY_LARGE_MM: Browser
+#     mode — full-scale heightmap cached, FOV-sized slice fed to the
+#     pipeline. Browser tab + minimap land in sub-tasks 3-5.
+#   - XY exceeds ABSURDLY_LARGE_MM: hard-reject (memory bound +
+#     usability ceiling; a 272 x 220 mm part is 5.98M pixels / 48 MB).
+WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 55.0)
+# TODO(stage-4d-user): dial in based on real specimen sizes encountered.
+# Placeholder: 4x the working-volume XY. Z stays at the hardware cap.
+ABSURDLY_LARGE_MM: tuple[float, float, float] = (272.0, 220.0, 55.0)
 
 # Hardcoded geometry constants in NOTEBOOK PIXEL-SPACE UNITS.
 # The math layer (synthetic_fringes.project's X = np.arange(W),
@@ -234,6 +247,22 @@ class MainWindow(QMainWindow):
         self._stl_heightmap: Optional[np.ndarray] = None
         self._stl_path: Optional[Path] = None
         self._stl_filename: Optional[str] = None
+
+        # Stage 4d sub-task 2: full-scale STL cache for Browser-mode
+        # parts (XY larger than the FOV but within ABSURDLY_LARGE_MM).
+        # Populated alongside `_stl_heightmap` (which holds the
+        # currently-windowed FOV slice in Browser mode) so the existing
+        # math-layer dispatch in `_compute_current_heightmap` stays
+        # unchanged. Cleared when a small STL is loaded.
+        self._stl_full_heightmap: Optional[np.ndarray] = None
+        # Part-local (x_min, y_min) of the (0, 0) pixel of
+        # `_stl_full_heightmap`. Set at load.
+        self._stl_full_origin_mm: Optional[tuple[float, float]] = None
+        # Part-local (x_origin, y_origin) of the currently-windowed FOV
+        # slice's top-left corner. Set at load to a centered position;
+        # sub-task 5's drag handler will mutate it.
+        self._stl_fov_origin_mm: Optional[tuple[float, float]] = None
+        self._stl_is_browser_mode: bool = False
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_control_panel())
@@ -896,7 +925,20 @@ class MainWindow(QMainWindow):
             self._refresh_surface_preview()
 
     def _load_stl_from_path(self, path: Path) -> bool:
-        """Bbox-guard, rasterize, and update state. Returns success.
+        """Bbox-classify the STL and dispatch to the right load path.
+
+        Three-way branch (Stage 4d sub-task 2):
+          1. Z extent exceeds WORKING_VOLUME_MM[2]: hard-reject. The
+             working-volume Z is a hardware constraint (camera DoF +
+             projector throw) that windowing can't escape.
+          2. XY fits WORKING_VOLUME_MM: direct rasterization to
+             SURFACE_SHAPE (Stage 4c path).
+          3. XY exceeds working volume but fits ABSURDLY_LARGE_MM:
+             Browser mode. Full-scale heightmap cached;
+             `_stl_heightmap` gets a centered FOV slice so the math
+             layer dispatch (`_compute_current_heightmap`) needs no
+             change.
+          4. XY exceeds ABSURDLY_LARGE_MM: hard-reject.
 
         Single entry point used by the QFileDialog flow, the Change
         button, the smoke script, and the tests. On any failure the
@@ -912,25 +954,44 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Could not read STL", str(e))
             return False
 
-        # Hard-reject for STLs exceeding the working volume. Stage 4d's
-        # STL Browser will add windowed FOV selection for larger parts;
-        # until then, the simulation only handles specimens that fit
-        # within STL_WORKING_VOLUME_MM (68 x 55 x 55).
         bx, by, bz = bbox
-        lx, ly, lz = STL_WORKING_VOLUME_MM
-        if bx > lx or by > ly or bz > lz:
+        work_x, work_y, work_z = WORKING_VOLUME_MM
+        abs_x, abs_y, _abs_z = ABSURDLY_LARGE_MM
+
+        # 1. Z first — windowing can't escape the working-volume Z cap.
+        if bz > work_z:
             QMessageBox.warning(
                 self,
-                "STL too large",
-                f"STL bbox (X, Y, Z) = ({bx:.1f}, {by:.1f}, {bz:.1f}) mm "
-                f"exceeds the working volume "
-                f"({lx:.0f}, {ly:.0f}, {lz:.0f}) mm. This Stage 4c build "
-                f"only supports specimens that fit the working volume; "
-                f"larger parts will be supported by the STL Browser view "
-                f"in a future stage. Import canceled.",
+                "STL too tall",
+                f"STL Z extent ({bz:.1f} mm) exceeds the working-volume "
+                f"Z cap ({work_z:.0f} mm). The camera's depth-of-field "
+                f"and the projector's focus range can't accommodate "
+                f"that height. Import canceled.",
             )
             return False
 
+        # 2. XY fits working volume -> direct path.
+        if bx <= work_x and by <= work_y:
+            return self._load_stl_direct(path)
+
+        # 3. XY oversize but bounded -> Browser path.
+        if bx <= abs_x and by <= abs_y:
+            return self._load_stl_browser(path)
+
+        # 4. XY beyond absurd -> hard-reject.
+        QMessageBox.warning(
+            self,
+            "STL too large",
+            f"STL XY bbox ({bx:.1f}, {by:.1f}) mm exceeds the maximum "
+            f"supported size ({abs_x:.0f}, {abs_y:.0f}) mm. Parts beyond "
+            f"this size aren't supported by the Browser. Try reducing "
+            f"the part in CAD or aligning its long axis to fit. "
+            f"Import canceled.",
+        )
+        return False
+
+    def _load_stl_direct(self, path: Path) -> bool:
+        """Stage 4c direct-rasterization path: part fits the FOV grid."""
         try:
             hm = load_stl_heightmap(path, SURFACE_SHAPE, SURFACE_PIXEL_SIZE_MM)
         except ValueError as e:
@@ -943,8 +1004,90 @@ class MainWindow(QMainWindow):
         self._stl_heightmap = hm
         self._stl_path = path
         self._stl_filename = path.name
+        # Clear Browser-mode state — a small load supersedes any prior
+        # full-scale cache.
+        self._stl_full_heightmap = None
+        self._stl_full_origin_mm = None
+        self._stl_fov_origin_mm = None
+        self._stl_is_browser_mode = False
         self._update_stl_page_state()
         return True
+
+    def _load_stl_browser(self, path: Path) -> bool:
+        """Stage 4d Browser path: oversized-but-bounded XY part."""
+        try:
+            full, origin = load_stl_heightmap_full_scale(
+                path, SURFACE_PIXEL_SIZE_MM
+            )
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid STL", str(e))
+            return False
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Could not load STL", str(e))
+            return False
+
+        self._stl_full_heightmap = full
+        self._stl_full_origin_mm = origin
+
+        # Centered initial FOV position in part-local coords.
+        x_min, y_min = origin
+        H_full, W_full = full.shape
+        part_center_x = x_min + W_full * SURFACE_PIXEL_SIZE_MM / 2.0
+        part_center_y = y_min + H_full * SURFACE_PIXEL_SIZE_MM / 2.0
+        H_fov, W_fov = SURFACE_SHAPE
+        fov_origin_x = part_center_x - W_fov * SURFACE_PIXEL_SIZE_MM / 2.0
+        fov_origin_y = part_center_y - H_fov * SURFACE_PIXEL_SIZE_MM / 2.0
+        self._stl_fov_origin_mm = (fov_origin_x, fov_origin_y)
+
+        self._stl_heightmap = self._extract_fov_slice(self._stl_fov_origin_mm)
+        self._stl_path = path
+        self._stl_filename = path.name
+        self._stl_is_browser_mode = True
+        self._update_stl_page_state()
+        return True
+
+    def _extract_fov_slice(
+        self,
+        origin_xy_mm: tuple[float, float],
+    ) -> np.ndarray:
+        """Extract a SURFACE_SHAPE-sized window from `_stl_full_heightmap`.
+
+        `origin_xy_mm` is the part-local (x, y) of the slice's top-left
+        corner. Off-part regions (FOV window extending past the full
+        heightmap) are filled with 0.0 mm — reflects "bare stage at
+        z=0", the physical reality of an FPP camera pointed at empty
+        platform.
+
+        Used by `_load_stl_browser` at initial load and by sub-task 5's
+        drag handler.
+        """
+        assert self._stl_full_heightmap is not None
+        assert self._stl_full_origin_mm is not None
+        H_fov, W_fov = SURFACE_SHAPE
+        x_orig, y_orig = origin_xy_mm
+        x_full_min, y_full_min = self._stl_full_origin_mm
+        H_full, W_full = self._stl_full_heightmap.shape
+
+        col = int(round((x_orig - x_full_min) / SURFACE_PIXEL_SIZE_MM))
+        row = int(round((y_orig - y_full_min) / SURFACE_PIXEL_SIZE_MM))
+
+        out = np.zeros((H_fov, W_fov), dtype=np.float64)
+
+        row_start = max(0, row)
+        row_end = min(H_full, row + H_fov)
+        col_start = max(0, col)
+        col_end = min(W_full, col + W_fov)
+        if row_start >= row_end or col_start >= col_end:
+            return out  # FOV window entirely off-part: bare stage.
+
+        out_row_start = row_start - row
+        out_row_end = out_row_start + (row_end - row_start)
+        out_col_start = col_start - col
+        out_col_end = out_col_start + (col_end - col_start)
+        out[out_row_start:out_row_end, out_col_start:out_col_end] = (
+            self._stl_full_heightmap[row_start:row_end, col_start:col_end]
+        )
+        return out
 
     def _update_stl_page_state(self) -> None:
         """Switch the STL inner page between placeholder and loaded row."""

@@ -224,6 +224,74 @@ def load_stl_heightmap(
     return out
 
 
+def load_stl_heightmap_full_scale(
+    path: PathLike,
+    pixel_size_mm: float,
+) -> Tuple[np.ndarray, Tuple[float, float]]:
+    """Rasterize an STL at native scale (no FOV-clipping).
+
+    Peer of `load_stl_heightmap` but for the Stage 4d Browser path:
+    the output shape is chosen to fit the part's XY bbox at the
+    requested pitch, with `ceil` rounding so the part is never
+    clipped. The (0, 0) pixel maps to the part's `(x_min, y_min)`
+    in part-local coordinates (up to a half-pixel offset absorbed
+    by integer pixel-index rounding at the slice-extraction site).
+
+    Returns
+    -------
+    heightmap : (H, W) float64 mm
+        H = ceil((y_max - y_min) / pixel_size_mm)
+        W = ceil((x_max - x_min) / pixel_size_mm)
+        Lifted by the global mesh-Z minimum (same convention as
+        `load_stl_heightmap` — the part's true base, including
+        the bottom shell discarded by the max-z envelope).
+    origin_mm : (x_min_mm, y_min_mm)
+        Part-local origin of the heightmap's (0, 0) pixel. Used by
+        callers to convert part-local FOV positions to pixel
+        indices when extracting a windowed slice.
+
+    Raises
+    ------
+    ValueError
+        If the STL contains zero triangles.
+    """
+    m = _load_mesh(path)
+    tris = np.asarray(m.vectors, dtype=np.float64).copy()  # (N, 3, 3)
+
+    pts = tris.reshape(-1, 3)
+    x_min = float(pts[:, 0].min())
+    y_min = float(pts[:, 1].min())
+    x_max = float(pts[:, 0].max())
+    y_max = float(pts[:, 1].max())
+
+    W = int(np.ceil((x_max - x_min) / pixel_size_mm))
+    H = int(np.ceil((y_max - y_min) / pixel_size_mm))
+    # Zero-extent edge case (degenerate flat STL with no XY footprint):
+    # return a 1x1 zero heightmap rather than a (0, 0) shape that
+    # downstream NumPy would choke on.
+    if W <= 0 or H <= 0:
+        return np.zeros((max(H, 1), max(W, 1)), dtype=np.float64), (x_min, y_min)
+
+    # Center the triangles to use the existing centered `_rasterize_triangles`.
+    # The half-pixel offset between "(0,0) of the centered grid" and
+    # "part-local (x_min, y_min)" is at most pixel_size_mm/2 and is
+    # absorbed by integer pixel-index rounding at the slice-extraction
+    # site (MainWindow._extract_fov_slice).
+    tris[:, :, 0] -= (x_min + x_max) / 2.0
+    tris[:, :, 1] -= (y_min + y_max) / 2.0
+
+    acc = _rasterize_triangles(tris, (H, W), pixel_size_mm)
+
+    finite = np.isfinite(acc)
+    if not finite.any():
+        return np.zeros((H, W), dtype=np.float64), (x_min, y_min)
+
+    z_min_mesh = float(tris[:, :, 2].min())
+    out = np.zeros((H, W), dtype=np.float64)
+    out[finite] = acc[finite] - z_min_mesh
+    return out, (x_min, y_min)
+
+
 def get_stl_bbox_mm(path: PathLike) -> Tuple[float, float, float]:
     """Return the (X, Y, Z) bounding-box extents of an STL in mm.
 
