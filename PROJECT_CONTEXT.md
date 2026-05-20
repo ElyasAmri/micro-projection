@@ -198,6 +198,7 @@ Fringe_Projection_Project_Phase1/
 │   ├── test_surfaces.py           # Stage 4a — heightmap generators
 │   ├── scene.py                   # Stage 4b — mesh + wireframe builders (pure NumPy)
 │   ├── scene_compose.py           # Stage 4b — pose composition layer (arm transforms)
+│   ├── stl_loader.py              # Stage 4c — STL → heightmap loader (pure NumPy, peer of test_surfaces.py)
 │   └── gui/                       # Stage 4a/4b — PyQt6 GUI package
 │       ├── __init__.py
 │       ├── __main__.py            # `python -m src.gui` entry
@@ -221,9 +222,12 @@ Fringe_Projection_Project_Phase1/
 │   ├── test_scene_compose.py      # Stage 4b — pose composition
 │   ├── test_hardware_scene.py     # Stage 4b — arm transforms integration
 │   ├── test_clip_detection.py     # Stage 4b — 10 cases (3 collision + 4 coverage advisories)
+│   ├── test_stl_loader.py         # Stage 4c — 14 cases (synthetic in-memory meshes via tmp_path)
+│   ├── test_main_window_stl.py    # Stage 4c — 6 GUI-level tests for the STL import flow
 │   ├── regression_data.npz
 │   └── conftest.py
 ├── scripts/                       # standalone runnable scripts
+│   └── stage4c_smoke.py           # Stage 4c — GUI smoke harness (verify | Flat | Gaussian | STL)
 ├── data/                          # synthetic frames, calibration files
 ├── docs/
 │   ├── Projector_Geometry_Summary.docx
@@ -246,7 +250,8 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | 3.5 | Math layer upgrade: two-angle λ_eq (Eq. 2-51) | No | ✅ Done |
 | **4a** | **PyQt6 GUI digital twin: surface library + pipeline + recovered-height view + error overlay + warning banner + stages viewer** | No | ✅ Done |
 | **4b** | **Unified hardware-bodies scene: camera + projector bodies + cones added to the same 3D view; live pose sliders; clip-detection (collisions + coverage advisories)** | No | ✅ Done |
-| 4c | STL import for arbitrary test objects, sphere super-hemispherical fix, click-and-drag scene manipulation | No | ⏳ Next |
+| **4c** | **STL import for arbitrary specimens: surface dropdown reduced to (Flat, Gaussian, STL file...); pure-NumPy STL→heightmap loader; QFileDialog flow; hard-reject for STLs exceeding the (68, 55, 55) mm working volume** | No | ✅ Done |
+| 4d | STL Browser for full-scale specimens (windowed FOV selection on larger parts); QTabWidget refactor for view modes | No | ⏳ Next |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
 
@@ -510,7 +515,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 - **The "View Mode" radio toggle lives on the left pane**, not as an overlay on the right. Keeps the right pane pure visualization, no UI chrome. Locked design decision.
 
-- **STL-import flow (deferred to Stage 4c)** will plug into the existing `make_*` surface contract `(shape, pixel_size_mm) → (H, W) float64 heightmap in mm`. Any STL importer that produces this contract slots into the existing GUI with zero changes elsewhere.
+- **STL-import flow (delivered in Stage 4c, see "Stage 4c — Done" section below)** plugs into the existing `make_*` surface contract `(shape, pixel_size_mm) → (H, W) float64 heightmap in mm`. The Stage 4c loader `src/stl_loader.py` produces this contract; the GUI surface dropdown gained an "STL file..." entry; no math-layer changes required.
 
 ### Stage 4b — Done (Unified hardware-bodies scene + clip-detection)
 
@@ -556,7 +561,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 - **The 3D viewport is a geometric ruler** (with Z=1.0). When the user sees the surface touching the (graying) lens, that literally means the surface height equals the clip-detection threshold. This is the most important pedagogical property of Stage 4b — and the reason `Z_EXAGGERATION` is locked at honest scale.
 
-- **Stage 4b sub-task 4 went through a reset.** Surface-vs-lens contact checks (commit c53dd36) were added then reverted (commit 20d6771) when interactive testing showed they're unreachable from slider ranges. The reset is preserved in history rather than rebased away, because the lesson — "validate that the bug can actually be triggered before adding the check" — is worth remembering for Stage 4c.
+- **Stage 4b sub-task 4 went through a reset.** Surface-vs-lens contact checks (commit c53dd36) were added then reverted (commit 20d6771) when interactive testing showed they're unreachable from slider ranges. The reset is preserved in history rather than rebased away, because the lesson — "validate that the bug can actually be triggered before adding the check" — is worth remembering. Stage 4c reused this discipline (see "Stage 4c sub-task 4 pivot — design record" below) when the originally-drafted Rescale/Truncate dialog for sub-task 4 got pivoted to a hard-reject + Stage 4d Browser plan.
 
 ### Stage 4b hardware specs encoded in code
 
@@ -577,14 +582,90 @@ Constants in `src/gui/clip_detection.py`:
 
 All clip-detection geometry constants are derived from the cone builders themselves at module load, so the math tracks `scene.py` rather than duplicating spec numbers.
 
+### Stage 4c — Done (STL import for arbitrary specimens)
+
+**Goal achieved.** The surface dropdown collapses to three honest options: Flat (calibration reference + zero-height smoke test), Gaussian (known-answer validator), and STL file... (real CAD specimens). Tilt, Step, and Sphere are deleted end-to-end. STL files load through a `QFileDialog`, get rasterized to the existing `(shape, pixel_size_mm) → (H, W) float64 mm` contract via projected-barycentric rasterization, and feed the unchanged math layer with zero pipeline changes.
+
+**Stage 4c sub-task table:**
+
+| # | Commit | What landed |
+|---|---|---|
+| 1 | `eecaeac` | Dropdown reduction (Flat, Gaussian) + Gaussian amplitude cap 100→55 mm. `make_tilt`, `make_step`, `make_sphere` generators, their tests, their slider widgets, page builders, and dispatch branches all deleted. Net −223 lines. Surviving slider inventory: Flat (none); Gaussian (amplitude 0–55 mm, sigma 1–30 mm). `tests/test_clip_detection.py:256` left at amplitude=100 (Gaussian-based coverage case; `make_gaussian` has no internal cap, math layer free). New `scripts/stage4c_smoke.py` smoke harness (verify \| Flat \| Gaussian). 122 tests. |
+| 2 | `db0cd21` | `src/stl_loader.py` (pure NumPy peer of `test_surfaces.py`): `load_stl_heightmap(path, shape, pixel_size_mm)` and `get_stl_bbox_mm(path)`. Projected-barycentric rasterization, per-pixel max-z upper envelope (camera-visible top surface; closed-solid bottom discarded). Lift by **global** mesh-Z minimum (the part's true base, including discarded bottom shell — not envelope minimum), so a closed solid's diameter lands at the right peak height. Coordinate convention replicated from `test_surfaces._centered_grid_mm` (no cross-module private import). Empty mesh raises `ValueError`; non-empty-but-all-XY-degenerate (vertical-walls-only) returns all-zero heightmap legitimately. 14 new tests covering cube, pyramid, tilted triangle, closed UV sphere, vertical-walls-only, empty mesh, offset cube, bbox extents — all synthetic in-memory via `tmp_path`. `numpy-stl==3.2.0` added to `environment.yml` pip block (NOT conda-forge — see "Stage 4c environmental lessons" below). 136 tests. |
+| 3 | `2c73955` | STL wired into the surface dropdown as `"STL file..."`. `_build_stl_page` with inner `QStackedWidget` (placeholder ↔ `STL: <basename> [Change...]` row, full path as tooltip). `_on_surface_combo_changed` slot inserted between page-swap and refresh in `currentIndexChanged` connection order. `_load_stl_from_path(path) → bool` is the no-dialog hook used by the `QFileDialog` flow, the Change button, the smoke script, and the tests. Cache lives for the window's lifetime; switching to Flat/Gaussian and back to STL re-renders the cache without re-importing. `_revert_stl_dropdown` carries a maintainer comment explaining why both the combo AND the surface_pages stacked widget need manual `setCurrentIndex` under `blockSignals`. Temporary `QMessageBox.warning` bbox guard (replaced in sub-task 4). 6 new GUI tests in `tests/test_main_window_stl.py` (monkeypatched `QFileDialog`/`QMessageBox`). Smoke harness extended with STL mode (synthetic 30 mm cube). 142 tests. |
+| 4 | `286ebb3` | Finalize the bbox guard: hard-reject only. `QMessageBox.warning` text rewritten to explain why oversized STLs are rejected and point at Stage 4d's STL Browser. The earlier draft of sub-task 4 (custom `QDialog`, `rescale_mesh_uniform`, `truncate_heightmap_z`) was **dropped during planning** — rescale and truncate both distort the geometry being measured. Five stale "sub-task 4" forward-references in `src/stl_loader.py` comments cleaned up to point at where the bbox check actually landed (`main_window.py`'s `_load_stl_from_path`). Text-only commit; 142 tests unchanged. |
+| 5 (close) | this commit | Docs update + tag `stage-4c-complete`. |
+
+**Key design decisions locked during Stage 4c:**
+
+| Decision | Rationale |
+|---|---|
+| Surface dropdown collapses to (Flat, Gaussian, STL file...) | Tilt/step/sphere were synthetic surfaces with no calibration role; Flat (zero-height ref) and Gaussian (known-answer) cover all the smoke-test use cases. STL covers real specimens. Three is the right number. |
+| Gaussian amplitude cap 100 → 55 mm | Matches the 55 mm Z component of the working volume so the GUI can't drive the surface beyond what the camera FOV honestly supports. `make_gaussian` itself has no internal cap; the bound is GUI-only. |
+| `numpy-stl` in the pip block, NOT conda-forge | Installing `numpy-stl` via conda-forge dragged in MKL/BLAS/LAPACK and a duplicate numpy build that broke `numpy.linalg` at the ABI level. Pip is clean because this env's numpy is pip-installed; matching the install mechanism avoids ABI conflicts. Documented in `environment.yml` comment. |
+| Projected-barycentric rasterization (not z-buffer search) | Scales O(N_triangles × pixels-per-triangle), not O(N_pixels × N_triangles). CAD STLs have 10k+ triangles; the projected-barycentric path is the only one fast enough to feel interactive. |
+| Per-pixel max-z upper envelope | Matches what a single-viewpoint FPP camera actually sees: the top surface, not the closed solid's interior or bottom. Documented in the loader docstring. |
+| Lift by global mesh-Z min, not envelope-min | Caught during sub-task 2 summarize-back. Envelope-min would put a cube's top face at 0 (envelope-min = envelope-max = z_top inside footprint) and a sphere at peak = R, not 2R. Global mesh-min puts the part's base at z = 0, matching the physical setup (the part rests on a flat stage). |
+| STL coordinates are assumed to be mm (no unit parameter) | mm is the de-facto CAD convention. Wrong-unit files trip the bbox guard immediately on normally-sized parts — failure mode is loud and self-diagnosing. |
+| Empty mesh raises `ValueError`; XY-degenerate returns zeros | Empty = malformed input; degenerate vertical walls = legitimately invisible to a top-down camera. Two different cases, two different behaviors. |
+| Coordinate convention replicated, not imported | `stl_loader.py` and `test_surfaces.py` are peers in the surface-library role. Cross-module private imports would couple them. The 4-line `_centered_grid_mm` formula is small enough to replicate with a "source of truth" comment. |
+| Cache lifecycle: STL persists for window lifetime | Switching to Flat/Gaussian doesn't clear cache. Switching back re-renders without re-import. Change→Cancel keeps the cached STL active (typical UI convention). |
+| `_load_stl_from_path` factored as the no-dialog hook | Single entry point used by the dialog flow, the Change button, the smoke script, and the tests. Tests inject a path; smoke script injects a path; dialog flow calls it after `QFileDialog` returns. |
+| Hard-reject oversized STLs (no rescale, no truncate) | Rescale shrinks the part (lies about size); truncate clips data (lies about what's measurable). Both distort the geometry being measured. Stage 4d's STL Browser supports full-scale STLs via windowed FOV selection instead. |
+| ASCII three-dot ellipsis in `"STL file..."` label | Cross-platform safer than Unicode `…`; no encoding surprises in test assertions / grep. |
+
+**Architectural decisions worth carrying forward from Stage 4c:**
+
+- **The STL loader is a peer of `test_surfaces.py` in the surface-library role.** Same `(shape, pixel_size_mm) → (H, W) float64 mm` contract; different generation method (file rasterization vs. analytic). The math layer doesn't know the difference. Future surface sources (e.g., a `make_random_terrain` for stress-testing) can join the surface library the same way.
+
+- **`_load_stl_from_path(path) → bool` is the GUI-facing entry, not the QFileDialog flow.** This factoring made the smoke script trivial (just inject a path) and the GUI tests trivial (monkeypatch the dialog, call the method directly). When Stage 4d adds the Browser, it will call into the same `_load_stl_from_path`-style hooks rather than re-implementing the import path.
+
+- **The cache in `main_window` (`_stl_heightmap`, `_stl_path`, `_stl_filename`) is the surface-state contract.** Stage 4d's Browser will extend this with FOV-window state (`_stl_full_heightmap`, `_stl_fov_origin`, etc.); the dispatch in `_compute_current_heightmap` reads from one shared place.
+
+- **Halt-and-confirm gates earned their cost three times in Stage 4c.** Sub-task 2's halt caught the lift-formula contradiction (envelope-min vs global-min). Sub-task 3's halt confirmed connection-ordering risk with `blockSignals`. Sub-task 4's halt-and-pivot replaced a substantial dialog implementation with a 24-line message edit. None of these would have been caught by the test suite — they're all "prompt vs. actual code intent" mismatches that only surface in summarize-back.
+
+- **The Stage 4c sub-task 4 pivot is the most substantial design decision in the stage.** The originally-drafted Rescale/Truncate/Cancel dialog was a real, defensible design path — it would have worked, with tests. The user pushed back during summarize-back: "we cant have a full sized object that fits in the small FOV, most artifacts will be a lot bigger." That observation reframed the problem from "salvage oversized parts" to "explore oversized parts FOV-by-FOV," which made rescale/truncate the wrong answer regardless of how cleanly implemented. Stage 4d's STL Browser is the right answer; sub-task 4 became a 2-file text edit. The lesson: when a sub-task feels right technically but the user pushes on practicality, the spec is what's wrong, not the user.
+
+### Stage 4c environmental lessons (the conda-forge ABI hazard)
+
+Installing **any** package via conda-forge in an env whose `numpy` is pip-installed risks pulling in a conflicting numpy / BLAS / LAPACK stack. Conda's solver doesn't read package source code — it reads the dependency graph, and any conda dep that pins numpy will install a second numpy alongside (or over) the pip one.
+
+The Stage 4c incident: `conda install -n fringe -c conda-forge numpy-stl` (a pure-Python + numpy package, which "should be safe") dragged in MKL, libblas, liblapack, tbb, llvm-openmp, AND a duplicate numpy build. Result: `numpy.linalg.lstsq` raised a native `0xc06d007f` (proc-not-found) DLL error on every code path that touched it (calibration, tilt-plane fit, etc.). Recovery required:
+
+1. `conda install -n fringe --revision 0` — exact-inverse rollback of the single bad transaction.
+2. `pip install --ignore-installed --no-deps numpy==2.2.6` — restore the pip-managed numpy that the rollback gutted (the rollback removed conda-tracked files that the pip install shared, leaving an empty `numpy` directory with no `RECORD` or `__version__`).
+3. Coordinated VS Code Jupyter kernel shutdown (the broken DLL was held loaded by a long-running kernel, blocking the pip reinstall with `Access denied`).
+4. `pip install typing_extensions==4.15.0` — rollback collateral (pytest's `exceptiongroup` depends on it).
+5. `pip install numpy-stl` — the actually-correct install path. Pure Python + numpy; no native footprint; doesn't touch LAPACK.
+
+**The rule that came out of this** (documented inline in `environment.yml`): since this env's `numpy` is pip-installed, **every new dependency goes in the pip block regardless of how pure-Python it looks**. Conda-forge entries are only safe for packages with no numpy dependency at all, and even then the conda-forge convention from earlier stages should be revisited rather than trusted by default.
+
+### Stage 4c sub-task 4 pivot — design record
+
+The originally-drafted sub-task 4 was a custom `QDialog` offering three buttons: Rescale uniformly, Center+Truncate to FOV, Cancel. Pure-NumPy helpers `rescale_mesh_uniform` and `truncate_heightmap_z` would handle the geometry transforms. The dialog would compute and display previewed post-transform bounding boxes so the user could see what each option would produce.
+
+This was a real, working design. It got through one round of strategy-chat halt-and-confirm (six numbered ambiguities resolved). It was ~10 minutes from being implemented.
+
+The user pivoted during that confirm step:
+
+> "im still trying to push it because i want to consider practicality of the simulation.... realistically we cant have a full sized object that fits in the small FOV. most artifacts will be alot bigger than the FOV."
+
+The proposal that replaced it (after one round of refinement):
+
+> "we have what i suggested which is showing a FOV portion of the top STL file..... and then having its top surface shown on top bird eye view at like lets say bottom right region of lab view. then it has a square on top of it which symbolizes the FOV grid. this grid can then be dragged across the surface which then updates to what is seen on the hardware components."
+
+The shift: **rescale/truncate distort the geometry the simulation claims to measure; windowed FOV exploration preserves the part at native scale and matches real-world large-part metrology.** Stage 4c sub-task 4 became a 24-line text edit (hard-reject message + comment cleanup). The Browser becomes Stage 4d's headline (see "Stage 4d planning anchor" above).
+
+**This record exists** because the dialog work was preserved-in-history-as-a-reset would have wasted a sub-task's worth of code. Catching it before implementation was a halt-gate win, and the design rationale is worth preserving so future stages don't re-derive "why didn't we just rescale" from scratch.
+
 ### Stage 4 controls (locked as of Stage 4b close)
 
 **Sliders / dropdowns in the GUI:**
 
 | Control | Type | Range / Options | Status |
 |---|---|---|---|
-| Surface type | dropdown | flat, tilt, Gaussian, step, sphere | ✅ Wired |
-| Per-surface params | sliders | depends on surface | ✅ Wired. Amplitude/height maxes 100 mm. |
+| Surface type | dropdown | Flat, Gaussian, STL file... | ✅ Wired (3-entry as of Stage 4c). |
+| Per-surface params | sliders | Flat (none); Gaussian (amplitude 0–55 mm, sigma 1–30 mm) | ✅ Wired. Amplitude cap tightened 100→55 mm in Stage 4c. |
 | **θ_projector** | slider | **−75° to +75°** (extended in 4b) | ✅ Wired (Eq. 2-51 triangulation). |
 | **θ_camera** | slider | **−75° to +75°** (extended in 4b) | ✅ Wired (Eq. 2-51 triangulation). |
 | Projector throw distance (lens-front to surface) | slider | 50–200 mm | ✅ Wired (4b). Drives projector body translation + cone size. |
@@ -629,19 +710,52 @@ All clip-detection geometry constants are derived from the cone builders themsel
 - **Symmetric assumption (Fig. 4-4) is expository, not required.** The chapter writes derivations under symmetric arms for clarity, but Eq. 2-51 is the general two-angle form. Asymmetric arms (different angles, different distances) are fine; the math handles them.
 - **Both arm angles are independent.** Stage 4a's GUI exposes both θ_projector and θ_camera as sliders. The user can explore symmetric, asymmetric, vertical-projector, vertical-camera, and degenerate configurations.
 
-### Stage 4c — Deferred features
+### Stage 4c — Completion notes & residuals
 
-**STL import for arbitrary test objects** (the headline feature for Stage 4c). Architecturally enabled by Stage 4a's `(shape, pixel_size_mm) → (H, W) float64 mm` heightmap contract. Implementation needs:
-- `QFileDialog` for STL picker
-- One-shot config dialog (viewing axis + Z-offset + scaling)
-- Mesh rasterization onto the heightmap grid (numpy-stl or trimesh library; need to evaluate)
-- Plug into existing surface dropdown as "STL file..." option
+**STL import for arbitrary test objects.** ✅ Delivered. See Sec. 7f for the execution history (sub-tasks, commits, design decisions). The originally-listed planning items have been resolved as follows:
 
-Plugs into existing pipeline with zero math-layer changes.
+- `QFileDialog` for STL picker → delivered (sub-task 3).
+- One-shot config dialog (viewing axis + Z-offset + scaling) → not implemented; superseded by the design decision in sub-task 4 to hard-reject oversized STLs rather than rescale/truncate them. Full-scale STL support moves to Stage 4d's STL Browser (see "Stage 4d planning anchor" below).
+- Mesh rasterization → `src/stl_loader.py` with projected-barycentric rasterization + per-pixel max-z upper envelope (numpy-stl as the parser, our own rasterizer).
+- Plugs into existing pipeline with zero math-layer changes. ✅ Confirmed: math layer untouched across all four sub-tasks.
 
-**Sphere super-hemispherical cliff bug.** `make_sphere` in `src/test_surfaces.py` is only C0-continuous when `cap_height ≤ footprint_radius`. For `h > a`, the sagitta formula gives `R < h` and `z(footprint_radius) ≠ 0`, producing a discontinuous cliff (~33.7 mm → 0 at h=43, a=20) that renders as a vertical-walled mesa. Fix in the surface model (validate/clamp `cap_height ≤ footprint_radius`, or rewrite to handle tall caps), not the renderer. `GLViewWidget` clip planes ruled out empirically during Stage 4b close (near/far changes had no effect; tightening them degraded the hardware bodies). Won't affect STL files (STL brings its own mesh).
+**Sphere super-hemispherical cliff bug.** ✅ Obsolete. `make_sphere` was deleted in Stage 4c sub-task 1 along with `make_tilt` and `make_step`. The cliff bug can no longer trigger.
 
-**Click-and-drag scene manipulation.** Let user reposition cameras / surface via mouse drag in the 3D view. Needs raycasting + Qt mouse-event capture.
+**Click-and-drag scene manipulation.** Still deferred. Originally queued as a lower-priority Stage 4c item; not touched. Remains a design problem (drag what — lens, body, cone, surface? drag does what — rotate, translate, free 6DOF? sync back to sliders how?), not a sub-task. Needs its own planning conversation before any implementation. Deferred to a future stage; same status as before Stage 4c.
+
+### Stage 4d planning anchor — STL Browser for full-scale specimens
+
+**Headline:** lets a user import an STL that exceeds the (68, 55, 55) mm working volume and explore it FOV-by-FOV. The math layer continues to measure one 68×55 mm patch at a time; the Browser is a UI for choosing which patch.
+
+**Why this design (and not rescale/truncate, the earlier draft of Stage 4c sub-task 4):** rescale shrinks the part to fit, lying about its true size; truncate clips data, lying about what was measurable. Both distort the geometry the simulation claims to measure. Windowed FOV selection preserves the part at native scale and is also how real-world large-part metrology actually works (commercial FPP systems do exactly this with translation stages).
+
+**Three-panel layout inside the Browser view:**
+
+1. **Whole-STL 3D preview** — orientation only. Spin/zoom like SolidWorks. Plays no role in measurement, no role in math, no role in lab view. Just "this is the part."
+2. **Top-down 2D minimap of the STL** with a draggable rectangle representing the FOV (68×55 mm). Dragging the rectangle = selecting which patch to measure.
+3. **Real-scale 3D preview of the windowed patch only** — what's under the rectangle right now, rendered with the same fidelity as Gaussian. This is what feeds the lab view when the user commits.
+
+**Interaction model:**
+
+- Dragging the rectangle updates **panel 3 (windowed preview) live**. This is cheap (heightmap slicing).
+- The **lab view (3D Scene) and Pipeline Stages update only when the user commits to a FOV position.** Re-running phase unwrap on every mouse-drag would be unacceptably laggy.
+- Switching back to 3D Scene or Pipeline Stages tabs renders the **most recently committed** FOV, fed through the unchanged math layer.
+
+**Stage 4d structural opener:** view-mode switching gets refactored from the current radio-toggle-on-left-pane pattern (3D Scene / Pipeline Stages) to a `QTabWidget` at the top of the right pane. STL Browser earns its own tab. This is a small structural change that lands before any Browser content. It can be a single sub-task with no new content — just the refactor.
+
+**STL data model implications:**
+
+- The cache currently holds a rasterized 480×640 heightmap (Stage 4c). For Stage 4d, the loader will need to store the **full-scale STL as a mesh** (or as a high-resolution heightmap larger than the FOV grid). Windowing into the FOV-sized region is then either array slicing (heightmap approach) or a re-rasterization of the relevant patch (mesh approach).
+- Leaning heightmap-slicing for v1 (rasterize whole part once at 0.1 mm/px, slice as the user drags). A 200×200 mm part is 2000×2000 = 32 MB at float64 — manageable. Mesh-and-rerasterize is more honest but adds rasterization-per-window cost.
+- Hard-reject for absurdly-large STLs (e.g., 1 m × 1 m) — threshold TBD; user will raise this separately when designing Stage 4d.
+
+**What stays unchanged:** the math layer, the hardware scene, clip-detection, the surface dropdown's contract, `_load_stl_from_path`'s role as the GUI-facing entry. Stage 4d adds **a new browsing layer above the existing import**; it doesn't refactor what's already there.
+
+**Open design questions for Stage 4d planning:**
+1. Minimap rendering: 2D image (top-down rasterized projection of the heightmap) or 3D ortho view? 2D image is simpler.
+2. FOV rectangle's initial position when an oversized STL loads (center of part? bbox corner?).
+3. Edge cases: rectangle dragged off the part (partial coverage, all-bare-stage); rectangle over a Z-overflow region (still needs the 55 mm Z cap somehow — applied to the windowed slice, not the whole STL).
+4. Whether the click-and-drag scene manipulation problem (still deferred) and the FOV-rectangle drag problem share enough Qt-mouse-event infrastructure to merit a shared abstraction.
 
 ### Deferred from Stage 4 (still deferred)
 
@@ -807,8 +921,6 @@ A future OBB (oriented bounding box) implementation would be more accurate but m
 ---
 
 ## 14. Known cosmetic issues
-
-**Sphere super-hemispherical cliff** — see Stage 4c deferred features in Sec 12. Sphere surface renders as a "carved mesa" when `cap_height > footprint_radius`; bug is in `make_sphere`, not in the renderer.
 
 **pyqtgraph 0.14.0 destructor noise** — harmless `RuntimeError` on shutdown from pyqtgraph's GraphicsView teardown. Upstream issue; safe to ignore.
 
