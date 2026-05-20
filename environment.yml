@@ -33,9 +33,21 @@ dependencies:
   # PyQt6 from PyPI is what is already installed in this env; mixing it with
   # conda-forge's `pyqt`/`pyqt6` builds produces ABI conflicts. Keep all three
   # on pip to match the existing install.
+  #
+  # Stage 4c lesson: since this env's numpy itself is pip-installed (not
+  # conda's numpy), EVERY new dependency goes in the pip block regardless of
+  # how pure-Python it looks. Conda's solver doesn't read package source — it
+  # reads the dependency graph, and any conda dep that pulls in numpy will
+  # install a second, conflicting numpy and a conda-forge BLAS/LAPACK stack
+  # over the top of the pip one, breaking `numpy.linalg` at the ABI level.
+  # We hit this with `conda install -c conda-forge numpy-stl` (it dragged
+  # MKL, libblas, liblapack, etc. in alongside a duplicate numpy build).
   - pip
   - pip:
       - opencv-python==4.13.0.92
       - PyQt6==6.11.0
       - pyqtgraph==0.14.0
       - PyOpenGL==3.1.10
+      # STL import (Stage 4c): mesh -> heightmap loader. Pip per the rule
+      # above — conda-forge's numpy-stl pulls a conflicting MKL/BLAS stack.
+      - numpy-stl==3.2.0
