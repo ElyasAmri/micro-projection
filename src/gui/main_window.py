@@ -2,20 +2,11 @@
 
 QMainWindow with horizontal splitter:
 - Left pane: surface selector + per-surface param sliders, geometry
-  sliders, PSI step count, view-mode toggle, display-mode toggle,
-  error-statistics panel (hidden until overlay is on), locked-
-  hardware info panel.
-- Right pane is a QStackedWidget with two pages:
-    Page 0 (default): 3D scene = banner + SurfacePreview + colorbar
-    Page 1:           StagesView (2x3 grid of 5 pipeline-stage images)
-
-Stage 4a task 4d additions
---------------------------
-- "View Mode" groupbox with two radio buttons (3D Scene / Pipeline
-  Stages). Switches the right-pane QStackedWidget page.
-- `run_pipeline(..., return_stages=True)` is called unconditionally
-  in the refresh slot; intermediates feed the stages page when it's
-  visible.
+  sliders, PSI step count, display-mode toggle, error-statistics
+  panel (hidden until overlay is on), locked-hardware info panel.
+- Right pane is a QTabWidget with two tabs:
+    Tab 0 (default): "3D Scene" = banner + SurfacePreview + colorbar
+    Tab 1:           "Pipeline Stages" = StagesView (2x3 grid)
 
 Stage 4a task 4c features (carried forward)
 -------------------------------------------
@@ -70,7 +61,6 @@ from typing import Optional
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -81,11 +71,11 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QSpinBox,
     QSlider,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -275,8 +265,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_surface_group())
         layout.addWidget(self._build_geometry_group())
         layout.addWidget(self._build_psi_group())
-        # Task 4d: view-mode toggle (3D scene vs pipeline stages).
-        layout.addWidget(self._build_view_mode_group())
         # Task 4b additions: display-mode toggle + error stats panel.
         layout.addWidget(self._build_display_mode_group())
         layout.addWidget(self._build_error_stats_group())
@@ -284,23 +272,6 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
 
         return panel
-
-    def _build_view_mode_group(self) -> QGroupBox:
-        """`3D Scene` / `Pipeline Stages` radio toggle. Default 3D."""
-        box = QGroupBox("View Mode")
-        layout = QVBoxLayout(box)
-        self.view_mode_3d = QRadioButton("3D Scene")
-        self.view_mode_stages = QRadioButton("Pipeline Stages")
-        self.view_mode_3d.setChecked(True)
-
-        # QButtonGroup makes the two exclusive without parent-coupling.
-        self._view_mode_group = QButtonGroup(self)
-        self._view_mode_group.addButton(self.view_mode_3d)
-        self._view_mode_group.addButton(self.view_mode_stages)
-
-        layout.addWidget(self.view_mode_3d)
-        layout.addWidget(self.view_mode_stages)
-        return box
 
     def _build_display_mode_group(self) -> QGroupBox:
         """`Show error overlay` checkbox. Default unchecked."""
@@ -504,28 +475,24 @@ class MainWindow(QMainWindow):
         return box
 
     # ------------------------------------------------------------------
-    # Right pane — QStackedWidget with two pages (3D scene / stages)
+    # Right pane — QTabWidget with two tabs (3D Scene / Pipeline Stages)
     # ------------------------------------------------------------------
     def _build_right_pane(self) -> QWidget:
-        """Build the right pane as a QStackedWidget with two pages.
+        """Build the right pane as a QTabWidget with two tabs.
 
-        Page 0 (default): the 3D scene (banner + SurfacePreview +
-        error colorbar) — the right pane that existed prior to task 4d.
-        Page 1: StagesView, the 2x3 grid of pipeline-stage images.
-
-        The View Mode radio buttons in the left pane toggle the
-        stack's current index.
+        Tab 0 (default): the 3D scene (banner + SurfacePreview +
+        error colorbar).
+        Tab 1: StagesView, the 2x3 grid of pipeline-stage images.
         """
         page_3d = self._build_3d_scene_page()
 
         self.stages_view = StagesView()
 
-        self.right_pane_stack = QStackedWidget()
-        self.right_pane_stack.addWidget(page_3d)             # index 0
-        self.right_pane_stack.addWidget(self.stages_view)    # index 1
-        self.right_pane_stack.setCurrentIndex(0)
+        self.right_pane_tabs = QTabWidget()
+        self.right_pane_tabs.addTab(page_3d, "3D Scene")
+        self.right_pane_tabs.addTab(self.stages_view, "Pipeline Stages")
 
-        return self.right_pane_stack
+        return self.right_pane_tabs
 
     def _build_3d_scene_page(self) -> QWidget:
         """Build the 3D scene page (banner + view_3d + colorbar).
@@ -672,10 +639,11 @@ class MainWindow(QMainWindow):
         # Stage 4a task 4b addition: error overlay toggle.
         self.show_error_overlay.toggled.connect(self._on_overlay_toggled)
 
-        # Stage 4a task 4d addition: view-mode radio toggle.
-        # Connecting just view_mode_3d.toggled is enough — it fires on
-        # both check and uncheck thanks to the QButtonGroup exclusivity.
-        self.view_mode_3d.toggled.connect(self._on_view_mode_changed)
+        # Refresh on tab switch so a newly-visible tab gets fresh data
+        # if sliders moved while it was hidden. `currentChanged(int)`
+        # connects directly because `_refresh_surface_preview` accepts
+        # variadic args and discards them.
+        self.right_pane_tabs.currentChanged.connect(self._refresh_surface_preview)
 
     def _all_surface_sliders(self) -> list[LabeledFloatSlider]:
         return [
@@ -732,9 +700,9 @@ class MainWindow(QMainWindow):
             return_stages=True,
         )
 
-        if self.view_mode_stages.isChecked():
-            # Stages page is current — push to it. Hide colorbar
-            # (it belongs to the 3D scene page anyway).
+        if self.right_pane_tabs.currentIndex() == 1:
+            # Pipeline Stages tab is current — push to it. Hide colorbar
+            # (it belongs to the 3D scene tab anyway).
             self.stages_view.update_stages(
                 ground_truth=stages["ground_truth"],
                 fringe_frame=stages["fringe_frame"],
@@ -745,7 +713,7 @@ class MainWindow(QMainWindow):
             self.error_colorbar.setVisible(False)
             return
 
-        # 3D scene page is current.
+        # 3D scene tab is current.
         if self.show_error_overlay.isChecked():
             error = recovered - heightmap
             self.view_3d.update_heightmap(recovered, error_mm=error)
@@ -784,21 +752,6 @@ class MainWindow(QMainWindow):
             surface_pixel_size_mm=SURFACE_PIXEL_SIZE_MM,
         )
         self._update_clip_warning(clip_state.messages)
-
-    def _on_view_mode_changed(self, _checked: bool) -> None:
-        """Switch the right-pane stack page and refresh.
-
-        `toggled` fires on both check and uncheck of view_mode_3d.
-        We dispatch on whichever button is checked rather than
-        on the signal's boolean argument.
-        """
-        if self.view_mode_3d.isChecked():
-            self.right_pane_stack.setCurrentIndex(0)
-        else:
-            self.right_pane_stack.setCurrentIndex(1)
-        # Newly-visible page may have stale data if sliders moved
-        # while it was hidden.
-        self._refresh_surface_preview()
 
     def _update_error_stats(self, error: np.ndarray) -> float:
         """Refresh the four QLabels and return abs_max for the colorbar.

@@ -118,6 +118,12 @@ def test_dropdown_has_three_entries(main_window):
     ]
     assert labels == ["Flat", "Gaussian", "STL file..."]
 
+    tabs = main_window.right_pane_tabs
+    assert [tabs.tabText(i) for i in range(tabs.count())] == [
+        "3D Scene",
+        "Pipeline Stages",
+    ]
+
 
 def test_cancel_dropdown_reverts(main_window, monkeypatch):
     prev_text = main_window.surface_combo.currentText()
