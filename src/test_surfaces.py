@@ -13,12 +13,13 @@ Units
   For even H or W the origin lies between pixels; for odd H or W it
   lies on a pixel.
 - All heights are mm.
-- `pixel_size_mm` is isotropic (single scalar). The real hardware FOV is
-  68 mm x 55 mm at 1280 x 1024 native, which gives slightly anisotropic
-  pixel pitches (~0.053 mm horizontal, ~0.054 mm vertical). The GUI
-  downsamples to 480 x 640, where the anisotropy is still small
-  (~0.106 vs ~0.115 mm/px). The isotropic approximation is accepted for
-  v1; revisit if the lab calibration shows it matters.
+- `pixel_size_mm` is isotropic (single scalar). The GUI's SURFACE_SHAPE
+  = (550, 680) at SURFACE_PIXEL_SIZE_MM = 0.1 gives a rendered patch of
+  68 x 55 mm — an exact match to the advertised camera FOV. Real
+  hardware at 1280 x 1024 / 6.14 x 4.92 mm sensor / 0.09x M has
+  slightly anisotropic pitches (~0.053 horizontal, ~0.054 vertical);
+  the GUI's isotropic 0.1 mm/px is accepted for v1 and will be
+  reconciled when real hardware values land in Stage 5/6.
 
 Conventions
 -----------

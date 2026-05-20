@@ -152,8 +152,8 @@ def test_successful_load_populates_state(main_window, tmp_path, monkeypatch):
     assert main_window._stl_path == stl_path
     assert main_window.stl_filename_label.text() == "STL: cube30.stl"
     assert main_window.stl_inner.currentIndex() == 1  # loaded page
-    # Sanity: the cached heightmap is the (480, 640) float64 array.
-    assert main_window._stl_heightmap.shape == (480, 640)
+    # Sanity: the cached heightmap is the (550, 680) float64 array.
+    assert main_window._stl_heightmap.shape == (550, 680)
     assert main_window._stl_heightmap.dtype == np.float64
 
 

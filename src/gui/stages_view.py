@@ -18,8 +18,8 @@ Each non-empty cell stacks:
 Performance note
 ----------------
 Each `update_stages()` pushes 5 ImageViews at the heightmap's native
-resolution (480x640 by default in the GUI). At 60 fps that's 5x
-307k vertices through OpenGL per tick; OK on modern GPUs. If lag
+resolution (550x680 by default in the GUI). At 60 fps that's 5x
+374k vertices through OpenGL per tick; OK on modern GPUs. If lag
 shows up, downsample inside update_stages — the public signature
 stays the same.
 """

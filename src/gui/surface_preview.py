@@ -216,7 +216,7 @@ class SurfacePreview(gl.GLViewWidget):
         self._hardware_scene = HardwareScene(self)
 
         # Camera tuned for the launch default — Gaussian (amp 0.5 mm,
-        # sigma 8 mm) on a 480x640 grid (~64x48 mm footprint), with
+        # sigma 8 mm) on a 550x680 grid (68x55 mm footprint), with
         # Z_EXAGGERATION = 2 making a ~1-display-mm peak. Stage 4b
         # task 3: distance pulled back from 80 to 600 so the camera
         # assembly fits in frame. With WD=157 mm and a 200 mm lens,

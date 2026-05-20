@@ -10,7 +10,7 @@ B. make_flat:     all zeros, multiple shapes.
 D. make_gaussian: peak at exact center (odd shape), x/y symmetry,
                   corner < center, amplitude=0 -> flat.
 G. Launch-default contract (parametrized over both generators): GUI's
-   (480, 640) at 0.1 mm/px returns finite float64.
+   (550, 680) at 0.1 mm/px returns finite float64.
 
 (Groups C/E/F — make_tilt / make_step / make_sphere — were removed in
 Stage 4c sub-task 1 along with those generators.)
@@ -20,7 +20,7 @@ Even-vs-odd shape note
 Peak-at-center tests use odd shapes so the geometric center sits on a
 pixel exactly. Even shapes put the center between pixels, which would
 fail at ATOL_ANALYTICAL by O(pixel_size**2 / sigma**2). Shape/dtype/
-finite tests use the GUI's (480, 640) launch defaults.
+finite tests use the GUI's (550, 680) launch defaults.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ GENERATOR_IDS = ["flat", "gaussian"]
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("fn", ALL_GENERATORS, ids=GENERATOR_IDS)
 def test_shape_dtype_finite(fn):
-    shape = (480, 640)
+    shape = (550, 680)
     out = fn(shape, 0.1)
     assert out.shape == shape, f"{fn.__name__} returned shape {out.shape}"
     assert out.dtype == np.float64, f"{fn.__name__} returned dtype {out.dtype}"
@@ -53,7 +53,7 @@ def test_shape_dtype_finite(fn):
 # ---------------------------------------------------------------------------
 # Group B — make_flat
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("shape", [(480, 640), (100, 100), (33, 17)])
+@pytest.mark.parametrize("shape", [(550, 680), (100, 100), (33, 17)])
 def test_make_flat_is_all_zeros(shape):
     out = make_flat(shape, 0.1)
     np.testing.assert_array_equal(
@@ -122,12 +122,12 @@ def test_make_gaussian_zero_amplitude_is_flat():
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("fn", ALL_GENERATORS, ids=GENERATOR_IDS)
 def test_launch_defaults_return_finite_canonical_shape(fn):
-    """GUI launch contract: shape=(480, 640), pixel_size_mm=0.1 works.
+    """GUI launch contract: shape=(550, 680), pixel_size_mm=0.1 works.
 
     Same as Group A but called out explicitly because this is the
     GUI's startup signature.
     """
-    out = fn((480, 640), 0.1)
-    assert out.shape == (480, 640)
+    out = fn((550, 680), 0.1)
+    assert out.shape == (550, 680)
     assert out.dtype == np.float64
     assert np.all(np.isfinite(out))

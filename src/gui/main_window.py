@@ -100,7 +100,7 @@ DEGENERATE_TAN_SUM_THRESHOLD: float = 1e-3
 
 # Locked at Stage 4a launch defaults; revisit when info panel exposes
 # hardware-derived values.
-SURFACE_SHAPE: tuple[int, int] = (480, 640)
+SURFACE_SHAPE: tuple[int, int] = (550, 680)
 SURFACE_PIXEL_SIZE_MM: float = 0.1
 
 # Stage 4c sub-task 3: dropdown label for the STL import entry. The

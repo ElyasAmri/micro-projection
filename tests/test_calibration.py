@@ -42,7 +42,7 @@ def test_compute_inverse_phase_matches_phi2_fixture(regression_data):
 
 
 def test_fit_tilt_plane_recovers_pure_tilt():
-    H, W = 480, 640
+    H, W = 550, 680
     x = np.arange(W, dtype=np.float64)
     y = np.arange(H, dtype=np.float64)
     X, Y = np.meshgrid(x, y)
@@ -66,7 +66,7 @@ def test_fit_tilt_plane_recovers_pure_tilt():
 
 def test_fit_tilt_line_1d_matches_inline_polyfit():
     """fit_tilt_line_1d recovers a pure-x tilt and matches notebook cell 18 exactly."""
-    H, W = 480, 640
+    H, W = 550, 680
     x = np.arange(W, dtype=np.float64)
     y = np.arange(H, dtype=np.float64)
     X, _ = np.meshgrid(x, y)

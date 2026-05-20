@@ -241,7 +241,7 @@ def test_surface_outside_camera_fov_lateral():
 
 # ---------------------------------------------------------------------------
 # 8 — Vertical spill (the bug the 2D footprint missed): a tall narrow
-# Gaussian (amp=100, sigma=8) on the real 64x48 mm grid, camera tilted
+# Gaussian (amp=100, sigma=8) on the real 68x55 mm grid, camera tilted
 # +50 deg. The peak's BASE is inside the footprint but its TIP rises
 # out of the tilted prism volume. 3D test catches it.
 # ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ def test_surface_outside_camera_fov_vertical():
         camera_distance_mm=157.0,
     )
     viewing, projection = _cone_worlds(t)
-    hm = make_gaussian((480, 640), 0.1, amplitude_mm=100.0, sigma_mm=8.0)
+    hm = make_gaussian((550, 680), 0.1, amplitude_mm=100.0, sigma_mm=8.0)
     state = detect_clips(
         t,
         heightmap_mm=hm,
@@ -269,7 +269,7 @@ def test_surface_outside_camera_fov_vertical():
 
 # ---------------------------------------------------------------------------
 # 9 — Projector cone too small: at throw=50 mm the lit footprint is
-# ~42 mm wide, narrower than the 64 mm surface. Clean V-rig, low flat
+# ~42 mm wide, narrower than the 68 mm surface. Clean V-rig, low flat
 # Gaussian so the camera prism still covers it (isolating the cone
 # advisory).
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ def test_surface_outside_projector_cone():
         camera_distance_mm=157.0,
     )
     viewing, projection = _cone_worlds(t)
-    hm = make_gaussian((480, 640), 0.1, amplitude_mm=5.0, sigma_mm=8.0)
+    hm = make_gaussian((550, 680), 0.1, amplitude_mm=5.0, sigma_mm=8.0)
     state = detect_clips(
         t,
         heightmap_mm=hm,
@@ -298,7 +298,7 @@ def test_surface_outside_projector_cone():
 
 
 # ---------------------------------------------------------------------------
-# 10 — Clean baseline: real 64x48 mm surface, default-ish V-rig,
+# 10 — Clean baseline: real 68x55 mm surface, default-ish V-rig,
 # mid-range Gaussian. Both coverage checks pass, nothing fires.
 # ---------------------------------------------------------------------------
 def test_clean_pose_no_coverage_warnings():
@@ -309,7 +309,7 @@ def test_clean_pose_no_coverage_warnings():
         camera_distance_mm=157.0,
     )
     viewing, projection = _cone_worlds(t)
-    hm = make_gaussian((480, 640), 0.1, amplitude_mm=10.0, sigma_mm=8.0)
+    hm = make_gaussian((550, 680), 0.1, amplitude_mm=10.0, sigma_mm=8.0)
     state = detect_clips(
         t,
         heightmap_mm=hm,
