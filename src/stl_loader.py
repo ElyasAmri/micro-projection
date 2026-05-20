@@ -17,10 +17,12 @@ Module scope
 ------------
 - No GUI imports. Pure NumPy + numpy-stl.
 - mm is assumed for STL coordinates (no unit metadata exists in STL; mm
-  is the CAD default). No unit parameter — a wrong-unit file is caught by
-  the downstream bbox check (Stage 4c sub-task 4), not here.
-- The 55 mm height cap and any rescale/crop are downstream concerns
-  (sub-task 4); this loader does not enforce them.
+  is the CAD default). No unit parameter — a wrong-unit file is caught
+  by the downstream bbox check in main_window.py's _load_stl_from_path,
+  not here.
+- The 55 mm height cap and any per-part working-volume policy are
+  downstream concerns (main_window.py's bbox guard); this loader does
+  not enforce them.
 """
 from __future__ import annotations
 
@@ -159,7 +161,7 @@ def load_stl_heightmap(
     STL coordinates are assumed to be millimeters. STL files have no unit
     metadata; mm is the de-facto CAD convention (SolidWorks / Fusion /
     Onshape default). Files authored in inches will trip the bbox check
-    downstream (sub-task 4) on normally-sized parts.
+    in main_window.py's _load_stl_from_path on normally-sized parts.
 
     Rasterization
     -------------
@@ -181,8 +183,8 @@ def load_stl_heightmap(
     minimum-Z vertex over *all* triangles, including the camera-invisible
     bottom shell of a closed solid (which the max-z envelope discards but
     which still defines where the part contacts the stage). The 55 mm
-    height cap is a downstream concern (sub-task 4); this loader does not
-    enforce it.
+    height cap is a downstream concern (main_window.py's bbox guard);
+    this loader does not enforce it.
 
     Empty mesh (zero triangles) raises ValueError. A non-empty mesh whose
     triangles all project degenerately, or whose footprint misses the
@@ -225,8 +227,8 @@ def load_stl_heightmap(
 def get_stl_bbox_mm(path: PathLike) -> Tuple[float, float, float]:
     """Return the (X, Y, Z) bounding-box extents of an STL in mm.
 
-    Used by the import-time bbox check (sub-task 4). Cheap — does not
-    rasterize, just reads the mesh and computes max - min per axis.
+    Used by the import-time bbox check in main_window.py. Cheap — does
+    not rasterize, just reads the mesh and computes max - min per axis.
 
     Raises
     ------

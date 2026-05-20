@@ -119,10 +119,11 @@ SURFACE_PIXEL_SIZE_MM: float = 0.1
 # reference one source of truth.
 STL_LABEL: str = "STL file..."
 
-# Stage 4c sub-task 3 TEMPORARY bbox guard limits (X, Y, Z) in mm. These
-# are the camera FOV (68 x 55) plus a matching 55 mm Z height cap. Sub-
-# task 4 replaces the hard-reject guard here with a Rescale / Center+Crop
-# / Cancel overflow dialog and may move these limits accordingly.
+# Bbox guard limits (X, Y, Z) in mm: the camera FOV (68 x 55) plus a
+# matching 55 mm Z height cap. STLs exceeding any axis are hard-rejected
+# at import (see `_load_stl_from_path`). Stage 4d's STL Browser will add
+# windowed FOV selection so full-scale parts can be measured patch by
+# patch; until then, only specimens that fit are supported.
 STL_WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 55.0)
 
 # Hardcoded geometry constants in NOTEBOOK PIXEL-SPACE UNITS.
@@ -958,8 +959,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Could not read STL", str(e))
             return False
 
-        # TEMPORARY bbox guard (Stage 4c sub-task 3). Sub-task 4 replaces
-        # this hard-reject with a Rescale / Center+Crop / Cancel dialog.
+        # Hard-reject for STLs exceeding the working volume. Stage 4d's
+        # STL Browser will add windowed FOV selection for larger parts;
+        # until then, the simulation only handles specimens that fit
+        # within STL_WORKING_VOLUME_MM (68 x 55 x 55).
         bx, by, bz = bbox
         lx, ly, lz = STL_WORKING_VOLUME_MM
         if bx > lx or by > ly or bz > lz:
@@ -968,7 +971,10 @@ class MainWindow(QMainWindow):
                 "STL too large",
                 f"STL bbox (X, Y, Z) = ({bx:.1f}, {by:.1f}, {bz:.1f}) mm "
                 f"exceeds the working volume "
-                f"({lx:.0f}, {ly:.0f}, {lz:.0f}) mm. Import canceled.",
+                f"({lx:.0f}, {ly:.0f}, {lz:.0f}) mm. This Stage 4c build "
+                f"only supports specimens that fit the working volume; "
+                f"larger parts will be supported by the STL Browser view "
+                f"in a future stage. Import canceled.",
             )
             return False
 
