@@ -64,6 +64,7 @@ for now and will be reconciled when real hardware arrives in Stage
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -72,11 +73,14 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
+    QPushButton,
     QRadioButton,
     QSpinBox,
     QSlider,
@@ -90,6 +94,7 @@ from geometry import HybridGeometry
 from pipeline import run_pipeline
 from src.gui.stages_view import StagesView
 from src.gui.surface_preview import ErrorColorbar, SurfacePreview
+from src.stl_loader import get_stl_bbox_mm, load_stl_heightmap
 from src.test_surfaces import (
     make_flat,
     make_gaussian,
@@ -107,6 +112,18 @@ DEGENERATE_TAN_SUM_THRESHOLD: float = 1e-3
 # hardware-derived values.
 SURFACE_SHAPE: tuple[int, int] = (480, 640)
 SURFACE_PIXEL_SIZE_MM: float = 0.1
+
+# Stage 4c sub-task 3: dropdown label for the STL import entry. The
+# three-dot ASCII ellipsis is intentional UI convention for "opens a
+# dialog". Kept as a module constant so dispatch / tests / smoke script
+# reference one source of truth.
+STL_LABEL: str = "STL file..."
+
+# Stage 4c sub-task 3 TEMPORARY bbox guard limits (X, Y, Z) in mm. These
+# are the camera FOV (68 x 55) plus a matching 55 mm Z height cap. Sub-
+# task 4 replaces the hard-reject guard here with a Rescale / Center+Crop
+# / Cancel overflow dialog and may move these limits accordingly.
+STL_WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 55.0)
 
 # Hardcoded geometry constants in NOTEBOOK PIXEL-SPACE UNITS.
 # The math layer (synthetic_fringes.project's X = np.arange(W),
@@ -220,11 +237,23 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Fringe Projection Digital Twin")
         self.resize(1280, 800)
 
+        # Stage 4c sub-task 3: STL import state. Lives for the lifetime
+        # of the window; switching the surface dropdown to Flat/Gaussian
+        # and back leaves these untouched so the cache survives.
+        self._stl_heightmap: Optional[np.ndarray] = None
+        self._stl_path: Optional[Path] = None
+        self._stl_filename: Optional[str] = None
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_control_panel())
         splitter.addWidget(self._build_right_pane())
         splitter.setSizes([400, 880])
         self.setCentralWidget(splitter)
+
+        # Stage 4c sub-task 3: must come after _build_control_panel so
+        # the combo exists; tracks the dropdown index across changes so
+        # a canceled STL dialog can revert cleanly.
+        self._previous_surface_index = self.surface_combo.currentIndex()
 
         self._wire_surface_refresh()
         # Initial render — pushes the default Gaussian into the view.
@@ -321,11 +350,12 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(box)
 
         self.surface_combo = QComboBox()
-        # Stage 4c sub-task 1: dropdown reduced to Flat, Gaussian.
-        # Page-add order below MUST match this label order (Flat=0,
-        # Gaussian=1) — the currentIndexChanged -> setCurrentIndex wiring
-        # is index-based while dispatch is currentText()-based.
-        self.surface_combo.addItems(["Flat", "Gaussian"])
+        # Stage 4c sub-task 3: dropdown adds STL import to the
+        # sub-task 1 pair. Page-add order below MUST match this label
+        # order (Flat=0, Gaussian=1, STL=2) — the currentIndexChanged
+        # -> setCurrentIndex wiring is index-based while dispatch is
+        # currentText()-based.
+        self.surface_combo.addItems(["Flat", "Gaussian", STL_LABEL])
         # Spec: Gaussian is the launch default.
         self.surface_combo.setCurrentText("Gaussian")
         layout.addWidget(self.surface_combo)
@@ -333,12 +363,21 @@ class MainWindow(QMainWindow):
         self.surface_pages = QStackedWidget()
         self.surface_pages.addWidget(self._build_flat_page())
         self.surface_pages.addWidget(self._build_gaussian_page())
+        self.surface_pages.addWidget(self._build_stl_page())
         self.surface_pages.setCurrentIndex(self.surface_combo.currentIndex())
         layout.addWidget(self.surface_pages)
 
         # THE ONE WIRED BEHAVIOR (task 2 spec):
         self.surface_combo.currentIndexChanged.connect(
             self.surface_pages.setCurrentIndex
+        )
+        # Stage 4c sub-task 3: insert the STL dialog handler BETWEEN the
+        # page-swap (above) and _refresh_surface_preview (wired later in
+        # _wire_surface_refresh). PyQt6 fires slots in connection order,
+        # so on STL-select: page swaps -> dialog opens (blocks) -> state
+        # populated or reverted -> refresh sees the final state.
+        self.surface_combo.currentIndexChanged.connect(
+            self._on_surface_combo_changed
         )
 
         return box
@@ -361,6 +400,45 @@ class MainWindow(QMainWindow):
         self.gaussian_sigma = LabeledFloatSlider("sigma_mm", 1.0, 30.0, 8.0, 0.1)
         layout.addWidget(self.gaussian_amplitude)
         layout.addWidget(self.gaussian_sigma)
+        return page
+
+    def _build_stl_page(self) -> QWidget:
+        """Stage 4c sub-task 3: STL surface page.
+
+        Inner QStackedWidget toggles between two states:
+          idx 0 (placeholder) — shown until an STL is loaded
+          idx 1 (loaded)      — "STL: <basename>  [Change...]" row
+        `_update_stl_page_state` flips between them based on whether
+        `self._stl_heightmap` is None.
+        """
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self.stl_inner = QStackedWidget()
+
+        # idx 0: placeholder
+        placeholder = QWidget()
+        placeholder_layout = QVBoxLayout(placeholder)
+        placeholder_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder_layout.addWidget(
+            QLabel(f"No STL loaded — pick '{STL_LABEL}' to import")
+        )
+        self.stl_inner.addWidget(placeholder)
+
+        # idx 1: filename + Change button row.
+        loaded = QWidget()
+        loaded_layout = QHBoxLayout(loaded)
+        loaded_layout.setContentsMargins(0, 0, 0, 0)
+        self.stl_filename_label = QLabel("STL: (none)")
+        self.stl_change_button = QPushButton("Change...")
+        self.stl_change_button.clicked.connect(self._change_stl_clicked)
+        loaded_layout.addWidget(self.stl_filename_label, 1)
+        loaded_layout.addWidget(self.stl_change_button, 0)
+        self.stl_inner.addWidget(loaded)
+
+        self.stl_inner.setCurrentIndex(0)
+        outer.addWidget(self.stl_inner)
         return page
 
     def _build_geometry_group(self) -> QGroupBox:
@@ -800,4 +878,137 @@ class MainWindow(QMainWindow):
                 amplitude_mm=self.gaussian_amplitude.value(),
                 sigma_mm=self.gaussian_sigma.value(),
             )
+        if name == STL_LABEL:
+            if self._stl_heightmap is None:
+                # Transient: dispatch ran while the STL page is current
+                # but the dialog hasn't populated state yet (or a revert
+                # is in flight). Render flat as a safe placeholder so
+                # _refresh_surface_preview can finish without raising.
+                return make_flat(shape, ps)
+            return self._stl_heightmap
         raise RuntimeError(f"unknown surface name: {name!r}")
+
+    # ------------------------------------------------------------------
+    # Stage 4c sub-task 3 — STL import flow.
+    # ------------------------------------------------------------------
+    def _on_surface_combo_changed(self, new_index: int) -> None:
+        """Slot for surface_combo.currentIndexChanged.
+
+        Connected AFTER the page-swap slot and BEFORE
+        _refresh_surface_preview (see _build_surface_group). Only the
+        STL-select-without-cache case opens the file dialog; everything
+        else updates `_previous_surface_index` and returns so the chain
+        proceeds to refresh.
+        """
+        name = self.surface_combo.currentText()
+        if name == STL_LABEL:
+            # Keep the STL page's inner state in sync with cache state
+            # (placeholder vs filename row).
+            self._update_stl_page_state()
+            if self._stl_heightmap is None:
+                # No cache: open dialog now. On cancel the revert path
+                # restores both combo and pages explicitly.
+                self._open_stl_dialog(invoked_from="dropdown")
+                return
+            # Cache present: nothing to do; refresh slot will render it.
+        self._previous_surface_index = new_index
+
+    def _change_stl_clicked(self) -> None:
+        """Slot for the [Change...] button on the loaded-STL page."""
+        self._open_stl_dialog(invoked_from="change_button")
+
+    def _open_stl_dialog(self, invoked_from: str) -> None:
+        """Run the QFileDialog flow.
+
+        `invoked_from`: "dropdown" (cancel reverts the dropdown) or
+        "change_button" (cancel is a no-op; cached STL stays active).
+        """
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select STL file",
+            "",
+            "STL files (*.stl)",
+        )
+        if not path_str:
+            if invoked_from == "dropdown":
+                self._revert_stl_dropdown()
+            return
+        ok = self._load_stl_from_path(Path(path_str))
+        if not ok and invoked_from == "dropdown":
+            self._revert_stl_dropdown()
+            return
+        if ok:
+            self._previous_surface_index = self.surface_combo.currentIndex()
+            self._refresh_surface_preview()
+
+    def _load_stl_from_path(self, path: Path) -> bool:
+        """Bbox-guard, rasterize, and update state. Returns success.
+
+        Single entry point used by the QFileDialog flow, the Change
+        button, the smoke script, and the tests. On any failure the
+        method pops a QMessageBox.warning and returns False with state
+        unchanged.
+        """
+        try:
+            bbox = get_stl_bbox_mm(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid STL", str(e))
+            return False
+        except Exception as e:  # noqa: BLE001 — surface anything to the user
+            QMessageBox.warning(self, "Could not read STL", str(e))
+            return False
+
+        # TEMPORARY bbox guard (Stage 4c sub-task 3). Sub-task 4 replaces
+        # this hard-reject with a Rescale / Center+Crop / Cancel dialog.
+        bx, by, bz = bbox
+        lx, ly, lz = STL_WORKING_VOLUME_MM
+        if bx > lx or by > ly or bz > lz:
+            QMessageBox.warning(
+                self,
+                "STL too large",
+                f"STL bbox (X, Y, Z) = ({bx:.1f}, {by:.1f}, {bz:.1f}) mm "
+                f"exceeds the working volume "
+                f"({lx:.0f}, {ly:.0f}, {lz:.0f}) mm. Import canceled.",
+            )
+            return False
+
+        try:
+            hm = load_stl_heightmap(path, SURFACE_SHAPE, SURFACE_PIXEL_SIZE_MM)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid STL", str(e))
+            return False
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Could not load STL", str(e))
+            return False
+
+        self._stl_heightmap = hm
+        self._stl_path = path
+        self._stl_filename = path.name
+        self._update_stl_page_state()
+        return True
+
+    def _update_stl_page_state(self) -> None:
+        """Switch the STL inner page between placeholder and loaded row."""
+        if self._stl_heightmap is None:
+            self.stl_inner.setCurrentIndex(0)
+            return
+        self.stl_filename_label.setText(f"STL: {self._stl_filename}")
+        if self._stl_path is not None:
+            self.stl_filename_label.setToolTip(str(self._stl_path))
+        self.stl_inner.setCurrentIndex(1)
+
+    def _revert_stl_dropdown(self) -> None:
+        """Restore the dropdown and the surface page to the previous index.
+
+        Both the combo AND the stacked widget need an explicit
+        setCurrentIndex here: blocking signals on the combo prevents the
+        page-swap slot (and the refresh slot) from re-firing during the
+        revert, so without the manual `surface_pages.setCurrentIndex`
+        the visible page would stay on the STL page after the combo
+        ticks back to Flat/Gaussian. Don't "simplify" by removing it.
+        """
+        prev = self._previous_surface_index
+        self.surface_combo.blockSignals(True)
+        self.surface_combo.setCurrentIndex(prev)
+        self.surface_pages.setCurrentIndex(prev)
+        self.surface_combo.blockSignals(False)
