@@ -1,6 +1,6 @@
 .venv/
 .archive/
-.artifacts/
+out/
 *.mp4
 *.local*
 __pycache__/

@@ -93,7 +93,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parents[1] / ".artifacts" / "blender_reconstruction_verify"),
+        default=str(Path(__file__).resolve().parents[1] / "out" / "blender_reconstruction_verify"),
         help="Directory for Blender renders and verification outputs.",
     )
     parser.add_argument("--render-width", type=int, default=1028)

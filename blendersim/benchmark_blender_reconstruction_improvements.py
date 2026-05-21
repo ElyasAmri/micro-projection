@@ -39,7 +39,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(REPO_ROOT / ".artifacts" / "blender_reconstruction_improvements"),
+        default=str(REPO_ROOT / "out" / "blender_reconstruction_improvements"),
         help="Directory for benchmark outputs.",
     )
     parser.add_argument(

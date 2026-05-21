@@ -108,12 +108,12 @@ class ProjectionControlsMixin:
         self._distance_label.setText(f"Optical-axis plane distance: {self.distance_m:.1f} cm")
         if self.projector_fov_deg is None:
             effective = self._effective_projector_fov_now()
-            self._projector_fov_label.setText(f"Projector FOV: Auto ({effective:.1f}°)")
+            self._projector_fov_label.setText(f"Projector FOV: Auto ({effective:.1f} deg)")
             self._projector_fov_slider.blockSignals(True)
             self._projector_fov_slider.setValue(int(round(effective)))
             self._projector_fov_slider.blockSignals(False)
         else:
-            self._projector_fov_label.setText(f"Projector FOV: {self.projector_fov_deg:.1f}°")
+            self._projector_fov_label.setText(f"Projector FOV: {self.projector_fov_deg:.1f} deg")
             self._projector_fov_slider.blockSignals(True)
             self._projector_fov_slider.setValue(int(round(self.projector_fov_deg)))
             self._projector_fov_slider.blockSignals(False)
@@ -199,7 +199,7 @@ class ProjectionControlsMixin:
             )
             return
 
-        default_output_path = Path(".artifacts") / "surface-camera-sweep.mp4"
+        default_output_path = Path("out") / "surface-camera-sweep.mp4"
         default_output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -248,7 +248,7 @@ class ProjectionControlsMixin:
         self._scan_in_progress = True
         self._scan_reconstruct_button.setText("Scanning...")
         self._refresh_control_labels()
-        record_path = Path(".artifacts") / "viewport-scan-sweep.mp4"
+        record_path = Path("out") / "viewport-scan-sweep.mp4"
         try:
             reconstruction = self.reconstruct_current_object_from_viewport(
                 record_path=record_path,
