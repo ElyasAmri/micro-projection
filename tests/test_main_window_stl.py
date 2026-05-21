@@ -451,3 +451,106 @@ def test_browser_to_small_stl_shows_placeholder(
     main_window.stl_change_button.click()
 
     assert main_window.stl_browser.is_showing_panels is False
+
+
+# ---------------------------------------------------------------------------
+# Stage 4d sub-task 4: Browser Panels 1 and 3 rendered content.
+# ---------------------------------------------------------------------------
+def test_browser_load_constructs_both_panel_items(
+    main_window, tmp_path, monkeypatch,
+):
+    """A Browser-mode STL load populates Panel 1 (whole-STL) and
+    Panel 3 (windowed slice) GLSurfacePlotItems."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    browser = main_window.stl_browser
+    assert browser.has_whole_stl_content is True
+    assert browser.has_windowed_slice is True
+
+
+def test_small_stl_load_does_not_populate_browser_panels(
+    main_window, tmp_path, monkeypatch,
+):
+    """A direct-path STL load does NOT populate Browser panels —
+    Browser-mode state stays empty."""
+    small = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    browser = main_window.stl_browser
+    assert browser.has_whole_stl_content is False
+    assert browser.has_windowed_slice is False
+
+
+def test_browser_load_idempotent_no_item_accumulation(
+    main_window, tmp_path, monkeypatch,
+):
+    """Repeated Browser STL loads reuse the same GLSurfacePlotItem
+    instances — items don't accumulate in the GLViewWidget."""
+    big1 = _make_box_stl(tmp_path / "big1.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big1))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    browser = main_window.stl_browser
+    item1_whole = browser._whole_stl_item
+    item1_windowed = browser._windowed_item
+    assert item1_whole is not None
+    assert item1_windowed is not None
+
+    # Load a second oversized STL via the Change button.
+    big2 = _make_box_stl(tmp_path / "big2.stl", sx=120.0, sy=90.0, sz=25.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big2))
+    main_window.stl_change_button.click()
+
+    # Same item instances — reused, not stacked.
+    assert browser._whole_stl_item is item1_whole
+    assert browser._windowed_item is item1_windowed
+    # And the GLViewWidget child item counts haven't doubled.
+    assert browser._whole_stl_view.items.count(item1_whole) == 1
+    assert browser._windowed_view.items.count(item1_windowed) == 1
+
+
+def test_update_whole_stl_resets_camera_distance(main_window, tmp_path):
+    """Panel 1's camera distance scales to the part bbox on each
+    update_whole_stl call."""
+    hm_small = np.zeros((400, 500), dtype=np.float64)  # 40 x 50 mm at 0.1 px
+    main_window.stl_browser.update_whole_stl(hm_small, 0.1)
+    d_small = main_window.stl_browser._whole_stl_view.cameraParams()["distance"]
+
+    hm_big = np.zeros((2000, 2500), dtype=np.float64)  # 200 x 250 mm
+    main_window.stl_browser.update_whole_stl(hm_big, 0.1)
+    d_big = main_window.stl_browser._whole_stl_view.cameraParams()["distance"]
+
+    # 1.5 * max(W*ps, H*ps): small=1.5*50=75, big=1.5*250=375.
+    assert d_small == 75.0
+    assert d_big == 375.0
+
+
+def test_update_windowed_slice_preserves_camera_pose(main_window, tmp_path):
+    """Panel 3's camera pose is preserved across update_windowed_slice
+    calls — sub-task 5's drag handler must not cause view re-jolt."""
+    hm = np.zeros((550, 680), dtype=np.float64)
+    browser = main_window.stl_browser
+    browser.update_windowed_slice(hm, 0.1)
+
+    # User pans the view (simulated by setCameraPosition).
+    browser._windowed_view.setCameraPosition(
+        distance=420, elevation=10, azimuth=120,
+    )
+    params_before = browser._windowed_view.cameraParams().copy()
+
+    # Push a new slice (simulating sub-task 5's drag-update path).
+    hm2 = np.full((550, 680), 5.0, dtype=np.float64)
+    browser.update_windowed_slice(hm2, 0.1)
+
+    params_after = browser._windowed_view.cameraParams()
+    assert params_after["distance"] == params_before["distance"]
+    assert params_after["elevation"] == params_before["elevation"]
+    assert params_after["azimuth"] == params_before["azimuth"]

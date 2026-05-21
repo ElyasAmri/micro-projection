@@ -1074,6 +1074,15 @@ class MainWindow(QMainWindow):
         self._stl_is_browser_mode = True
         self._update_stl_page_state()
         self._refresh_browser_panel()
+        # Stage 4d sub-task 4: push real content into Browser Panels 1
+        # (whole-STL) and 3 (windowed slice). Panel 2 (minimap) is still
+        # the sub-task 3 placeholder; sub-task 5 wires it.
+        self.stl_browser.update_whole_stl(
+            self._stl_full_heightmap, SURFACE_PIXEL_SIZE_MM,
+        )
+        self.stl_browser.update_windowed_slice(
+            self._stl_heightmap, SURFACE_PIXEL_SIZE_MM,
+        )
         return True
 
     def _extract_fov_slice(
