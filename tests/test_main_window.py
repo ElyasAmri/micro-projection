@@ -9,9 +9,11 @@ Path setup: conftest.py adds `src/` to sys.path; that lets the
 from __future__ import annotations
 
 from gui.main_window import (
+    ABSURDLY_LARGE_MM,
     HARDWARE_INFO_ROWS,
     SURFACE_PIXEL_SIZE_MM,
     SURFACE_SHAPE,
+    WORKING_VOLUME_MM,
 )
 
 
@@ -46,3 +48,13 @@ def test_surface_grid_matches_camera_fov():
     assert actual_h_mm == fov_h_mm, (
         f"grid height {actual_h_mm} mm != FOV height {fov_h_mm} mm"
     )
+
+
+def test_z_cap_matches_absurd_z():
+    """Working-volume Z and absurd Z stay in lockstep.
+
+    The Browser doesn't help with Z overflow, so both thresholds use
+    the same Z value. Future Z-cap tweaks must update both numbers
+    together or this test fails.
+    """
+    assert WORKING_VOLUME_MM[2] == ABSURDLY_LARGE_MM[2]

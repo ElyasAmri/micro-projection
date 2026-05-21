@@ -175,10 +175,10 @@ def test_successful_load_populates_state(main_window, tmp_path, monkeypatch):
 
 
 def test_z_overflow_stl_rejected(main_window, tmp_path, monkeypatch):
-    # 100 mm cube: Z = 100 mm exceeds the 55 mm working-volume Z cap.
+    # 130 mm cube: Z = 130 mm exceeds the 120 mm working-volume Z cap.
     # Z-reject branch precedes XY classification — even though X/Y are
     # also too large, the Z check fires first.
-    big = _make_cube_stl(tmp_path / "tall.stl", side=100.0)
+    big = _make_cube_stl(tmp_path / "tall.stl", side=130.0)
     prev_idx = main_window.surface_combo.currentIndex()
     _patch_file_dialog(monkeypatch, return_path=str(big))
     warnings = _patch_warning(monkeypatch)
@@ -238,7 +238,7 @@ def test_change_button_cancel_keeps_cache(main_window, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 def test_browser_mode_populates_full_cache(main_window, tmp_path, monkeypatch):
     # 100 x 80 x 30 mm: XY exceeds working volume (68 x 55), Z fits the
-    # 55 mm cap, XY within ABSURDLY_LARGE_MM (272 x 220). -> Browser path.
+    # 120 mm cap, XY within ABSURDLY_LARGE_MM (272 x 220). -> Browser path.
     stl_path = _make_box_stl(
         tmp_path / "wide.stl", sx=100.0, sy=80.0, sz=30.0,
     )

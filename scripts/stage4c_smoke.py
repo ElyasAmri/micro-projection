@@ -9,7 +9,7 @@ One-shot, non-interactive. Run ONE mode per process invocation:
 
 `verify`   constructs MainWindow and asserts the dropdown is exactly
            ["Flat", "Gaussian", "STL file..."] and that the Gaussian
-           amplitude slider's effective float maximum is 55.0 mm. No
+           amplitude slider's effective float maximum is 120.0 mm. No
            capture.
 
 `Flat` / `Gaussian`
@@ -72,13 +72,13 @@ def run_verify() -> int:
 
     expected_labels = ["Flat", "Gaussian", "STL file..."]
     ok_labels = labels == expected_labels
-    ok_amp = amp_max == 55.0
+    ok_amp = amp_max == 120.0
 
     print(f"[verify] dropdown labels        = {labels}")
     print(f"[verify] expected               = {expected_labels}")
     print(f"[verify] labels OK              = {ok_labels}")
     print(f"[verify] gaussian amp float max = {amp_max}")
-    print(f"[verify] amp-max == 55.0 OK     = {ok_amp}")
+    print(f"[verify] amp-max == 120.0 OK    = {ok_amp}")
 
     app.quit()
     return 0 if (ok_labels and ok_amp) else 1
@@ -132,13 +132,13 @@ def run_capture(surface: str) -> int:
         w.surface_combo.setCurrentText(surface)
     elif surface == "Gaussian":
         # Defaults are amplitude=0.5, sigma=8.0. Drive both to clearly
-        # non-default values that stay inside the new caps
-        # (amplitude 0..55, sigma 1..30).
+        # non-default values that stay inside the current caps
+        # (amplitude 0..120, sigma 1..30).
         w.surface_combo.setCurrentText(surface)
         w.gaussian_amplitude.set_value(30.0)
         w.gaussian_sigma.set_value(14.0)
     elif surface == "STL":
-        # 30x30x15 mm cube — well inside the 68x55x55 working volume.
+        # 30x30x15 mm cube — well inside the 68x55x120 working volume.
         # Drive through _load_stl_from_path to bypass the QFileDialog
         # entirely; the surface_combo flip to "STL file..." happens via
         # the same setCurrentText path the GUI uses (no cache present
@@ -148,7 +148,7 @@ def run_capture(surface: str) -> int:
         stl_path = os.path.join(
             tempfile.gettempdir(), "stage4c_smoke_cube.stl"
         )
-        _write_cube_stl(30.0, stl_path)  # 30 mm cube, well under 68/55/55
+        _write_cube_stl(30.0, stl_path)  # 30 mm cube, well under 68/55/120
         ok = w._load_stl_from_path(Path(stl_path))
         if not ok:
             print("[capture] _load_stl_from_path returned False",

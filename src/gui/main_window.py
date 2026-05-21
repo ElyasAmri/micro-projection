@@ -125,10 +125,22 @@ STL_LABEL: str = "STL file..."
 #     pipeline. Browser tab + minimap land in sub-tasks 3-5.
 #   - XY exceeds ABSURDLY_LARGE_MM: hard-reject (memory bound +
 #     usability ceiling; a 272 x 220 mm part is 5.98M pixels / 48 MB).
-WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 55.0)
+#
+# Z-cap rationale (Stage 4d sub-task 2.5): the 120 mm Z cap is a
+# PLACEHOLDER, not a derived hardware constraint. At 100 mm part
+# height the user's hardware did not contact the part during
+# measurement; 120 mm includes a 20 mm safety margin for related
+# specimens that may run slightly taller. The real Z constraint
+# depends on projector focus depth, phase unambiguity range, and
+# triangulation lateral-spill — none of which map to a clean single
+# number and all of which need real hardware to derive. To be
+# revisited empirically in Stage 5/6. WORKING_VOLUME_MM[2] and
+# ABSURDLY_LARGE_MM[2] are kept in lockstep because the Browser
+# doesn't help with Z overflow — both thresholds share the same Z.
+WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 120.0)
 # TODO(stage-4d-user): dial in based on real specimen sizes encountered.
 # Placeholder: 4x the working-volume XY. Z stays at the hardware cap.
-ABSURDLY_LARGE_MM: tuple[float, float, float] = (272.0, 220.0, 55.0)
+ABSURDLY_LARGE_MM: tuple[float, float, float] = (272.0, 220.0, 120.0)
 
 # Hardcoded geometry constants in NOTEBOOK PIXEL-SPACE UNITS.
 # The math layer (synthetic_fringes.project's X = np.arange(W),
@@ -398,11 +410,15 @@ class MainWindow(QMainWindow):
     def _build_gaussian_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        # Range was 0..100 mm in task 4b; tightened to 0..55 mm in Stage
-        # 4c sub-task 1 (the 55 mm vertical-FOV bound). Default 0.5 mm is
+        # Range history: 0..100 (Stage 4a 4b); tightened to 0..55 in
+        # Stage 4c sub-task 1 to match the (then-coincidental) FOV Y
+        # bound; widened to 0..120 in Stage 4d sub-task 2.5 to follow
+        # the bench-empirical Z cap (100 mm specimen + 20 mm safety
+        # margin). The cap is decoupled from FOV Y — it tracks
+        # WORKING_VOLUME_MM[2], not the camera FOV. Default 0.5 mm is
         # well under the cap, so it is unchanged.
         self.gaussian_amplitude = LabeledFloatSlider(
-            "amplitude_mm", 0.0, 55.0, 0.5, 0.01
+            "amplitude_mm", 0.0, 120.0, 0.5, 0.01
         )
         self.gaussian_sigma = LabeledFloatSlider("sigma_mm", 1.0, 30.0, 8.0, 0.1)
         layout.addWidget(self.gaussian_amplitude)

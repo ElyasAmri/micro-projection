@@ -20,7 +20,7 @@ Module scope
   is the CAD default). No unit parameter — a wrong-unit file is caught
   by the downstream bbox check in main_window.py's _load_stl_from_path,
   not here.
-- The 55 mm height cap and any per-part working-volume policy are
+- The 120 mm height cap and any per-part working-volume policy are
   downstream concerns (main_window.py's bbox guard); this loader does
   not enforce them.
 """
@@ -182,7 +182,7 @@ def load_stl_heightmap(
     pixels with no part above them are also 0. The base is the true
     minimum-Z vertex over *all* triangles, including the camera-invisible
     bottom shell of a closed solid (which the max-z envelope discards but
-    which still defines where the part contacts the stage). The 55 mm
+    which still defines where the part contacts the stage). The 120 mm
     height cap is a downstream concern (main_window.py's bbox guard);
     this loader does not enforce it.
 
