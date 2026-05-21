@@ -207,7 +207,8 @@ Fringe_Projection_Project_Phase1/
 │       ├── surface_preview.py     # SurfacePreview + HardwareScene host + ErrorColorbar
 │       ├── hardware_scene.py      # Stage 4b — HardwareScene class + compute_arm_transforms
 │       ├── clip_detection.py      # Stage 4b — pure NumPy clip-detection (5 checks)
-│       └── stages_view.py         # 2×3 grid of pipeline-stage images
+│       ├── stages_view.py         # 2×3 grid of pipeline-stage images
+│       └── stl_browser.py         # Stage 4d — Browser tab (whole-STL + minimap + windowed slice + FOV overlay)
 ├── tests/
 │   ├── test_geometry.py
 │   ├── test_synthetic_fringes.py
@@ -223,11 +224,13 @@ Fringe_Projection_Project_Phase1/
 │   ├── test_hardware_scene.py     # Stage 4b — arm transforms integration
 │   ├── test_clip_detection.py     # Stage 4b — 10 cases (3 collision + 4 coverage advisories)
 │   ├── test_stl_loader.py         # Stage 4c — 14 cases (synthetic in-memory meshes via tmp_path)
-│   ├── test_main_window_stl.py    # Stage 4c — 6 GUI-level tests for the STL import flow
+│   ├── test_stl_loader_full_scale.py # Stage 4d — full-scale loader (oversized STL → (heightmap, origin))
+│   ├── test_main_window.py        # Stage 4d sub-task 1.5 — module-level invariants (no GUI construction)
+│   ├── test_main_window_stl.py    # Stage 4c+4d — GUI-level tests (small-path + Browser flow + commit)
 │   ├── regression_data.npz
 │   └── conftest.py
 ├── scripts/                       # standalone runnable scripts
-│   └── stage4c_smoke.py           # Stage 4c — GUI smoke harness (verify | Flat | Gaussian | STL)
+│   └── stage4c_smoke.py           # Stage 4c — GUI smoke harness (verify | Flat | Gaussian | STL). Verify mode updated in Stage 4d sub-task 2.5 to assert Gaussian amp cap == 120.0.
 ├── data/                          # synthetic frames, calibration files
 ├── docs/
 │   ├── Projector_Geometry_Summary.docx
@@ -251,7 +254,7 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | **4a** | **PyQt6 GUI digital twin: surface library + pipeline + recovered-height view + error overlay + warning banner + stages viewer** | No | ✅ Done |
 | **4b** | **Unified hardware-bodies scene: camera + projector bodies + cones added to the same 3D view; live pose sliders; clip-detection (collisions + coverage advisories)** | No | ✅ Done |
 | **4c** | **STL import for arbitrary specimens: surface dropdown reduced to (Flat, Gaussian, STL file...); pure-NumPy STL→heightmap loader; QFileDialog flow; hard-reject for STLs exceeding the (68, 55, 55) mm working volume** | No | ✅ Done |
-| 4d | STL Browser for full-scale specimens (windowed FOV selection on larger parts); QTabWidget refactor for view modes | No | ⏳ Next |
+| **4d** | **STL Browser for full-scale specimens: windowed FOV selection on oversized parts via minimap + draggable cyan FOV rectangle; live windowed-slice preview; surface-following highlight overlay on whole-STL view; Commit FOV button promotes dragged slice to lab view + math pipeline; QTabWidget refactor for view modes (3D Scene / Pipeline Stages / STL Browser)** | No | ✅ Done |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
 
@@ -513,7 +516,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 
 - **The fringe-frame equation displayed in the stages viewer matches what the code actually computes**, not the textbook Taylor form. The pipeline's object leg skips `project()` (matches integration test's deliberate omission); the rendered fringe frame is `I = A + B·cos[2π·x/p + h/λ_eq + δ_k]`. This is honest.
 
-- **The "View Mode" radio toggle lives on the left pane**, not as an overlay on the right. Keeps the right pane pure visualization, no UI chrome. Locked design decision.
+- **The "View Mode" radio toggle lives on the left pane**, not as an overlay on the right. Keeps the right pane pure visualization, no UI chrome. ~~Locked design decision.~~ **Superseded by Stage 4d sub-task 1:** when the third tab (STL Browser) was added, the radio toggle's two-state ergonomics didn't scale to three states cleanly. Refactored to a `QTabWidget` at the top of the right pane. The original principle ("right pane stays pure visualization") still holds — the tab bar is a navigation chrome at the top of the pane, not an overlay on the GL viewport.
 
 - **STL-import flow (delivered in Stage 4c, see "Stage 4c — Done" section below)** plugs into the existing `make_*` surface contract `(shape, pixel_size_mm) → (H, W) float64 heightmap in mm`. The Stage 4c loader `src/stl_loader.py` produces this contract; the GUI surface dropdown gained an "STL file..." entry; no math-layer changes required.
 
@@ -539,7 +542,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 | Decision | Rationale |
 |---|---|
 | Distance sliders = lens-front (optics convention), NOT body-center | Matches Edmund spec + chapter math. `compute_arm_transforms` adds body offsets internally. |
-| `Z_EXAGGERATION = 1.0` honest scale | Hardware bodies provide visual scale reference; exaggeration would desync visual from clip math. Sub-mm specimens vanish — by design; error overlay handles fine variation. |
+| `Z_EXAGGERATION = 1.0` honest scale | Hardware bodies provide visual scale reference; exaggeration would desync visual from clip math. Sub-mm specimens vanish — by design; error overlay handles fine variation. **Confirmed permanent doctrine in Stage 4d:** the lab view IS the real-scale view; exaggerating Z would lie about geometry the system is designed to measure honestly. Configurable Z exaggeration is NOT on the roadmap. |
 | Theta sliders ±75° (was ±60°) | Surface-clip cases need ~67° to fire at minimum WD. Defaults stay ±30°. |
 | No surface-vs-lens contact checks | Unreachable in practice with slider ranges. Removing dead code keeps the module clean. |
 | FOV/cone coverage as banner-only, not gray | Coverage failure = measurement incompleteness, not physical collision. Gray would imply unbuildable rig. |
@@ -665,13 +668,13 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 | Control | Type | Range / Options | Status |
 |---|---|---|---|
 | Surface type | dropdown | Flat, Gaussian, STL file... | ✅ Wired (3-entry as of Stage 4c). |
-| Per-surface params | sliders | Flat (none); Gaussian (amplitude 0–55 mm, sigma 1–30 mm) | ✅ Wired. Amplitude cap tightened 100→55 mm in Stage 4c. |
+| Per-surface params | sliders | Flat (none); Gaussian (amplitude 0–120 mm, sigma 1–30 mm) | ✅ Wired. Amplitude cap was 100 → 55 in Stage 4c, then 55 → 120 in Stage 4d sub-task 2.5 (empirical: user's 100 mm specimen + 20 mm safety margin). |
 | **θ_projector** | slider | **−75° to +75°** (extended in 4b) | ✅ Wired (Eq. 2-51 triangulation). |
 | **θ_camera** | slider | **−75° to +75°** (extended in 4b) | ✅ Wired (Eq. 2-51 triangulation). |
 | Projector throw distance (lens-front to surface) | slider | 50–200 mm | ✅ Wired (4b). Drives projector body translation + cone size. |
 | Camera working distance (lens-front to surface) | slider | 132–182 mm | ✅ Wired (4b). Drives camera body translation. |
 | PSI step count | spinbox | 3–8 | ✅ Wired. |
-| View Mode | radio | 3D Scene / Pipeline Stages | ✅ Wired. |
+| View Mode | tabs | 3D Scene / Pipeline Stages / STL Browser | ✅ Wired. QTabWidget at top of right pane (refactored from radio toggle in Stage 4d sub-task 1). |
 | Show error overlay | checkbox | on/off | ✅ Wired. |
 
 **Locked in code, shown in read-only info panel:**
@@ -690,7 +693,7 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 | `p` (fringe period, info panel display) | 2.0 mm | Hardware estimate (Stage 5/6 reconcile) |
 | `λ_eq` | live (internal) | Derived: `Mp / [2π·(tan θ_proj + tan θ_cam)]` (code form, = λ_textbook/(2π); see Section 9) |
 | Forward model | `'taylor'` | Stage 3 default; toggle in GUI deferred |
-| GUI resolution | 480×640 | Live updates |
+| GUI resolution | (550, 680) | Live updates. Math grid sized to camera FOV exactly: 68×55 mm at 0.1 mm/px (Stage 4d sub-task 1.5 — was (480, 640) in Stages 4a–4c). |
 
 **Degenerate case handling (implemented):**
 - When `|tan(θ_proj) + tan(θ_cam)| < 1e-3`, the pipeline short-circuits; warning banner shows with textbook-form Eq. 2-51 and the explanation that triangulation requires angular separation.
@@ -723,49 +726,136 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 
 **Click-and-drag scene manipulation.** Still deferred. Originally queued as a lower-priority Stage 4c item; not touched. Remains a design problem (drag what — lens, body, cone, surface? drag does what — rotate, translate, free 6DOF? sync back to sliders how?), not a sub-task. Needs its own planning conversation before any implementation. Deferred to a future stage; same status as before Stage 4c.
 
-### Stage 4d planning anchor — STL Browser for full-scale specimens
+### Stage 4d — Done (STL Browser for full-scale specimens)
 
-**Headline:** lets a user import an STL that exceeds the (68, 55, 55) mm working volume and explore it FOV-by-FOV. The math layer continues to measure one 68×55 mm patch at a time; the Browser is a UI for choosing which patch.
+**Goal achieved.** A user can import an STL that exceeds the (68, 55, ~~55~~) mm working volume (Z cap raised to 120 mm during Stage 4d, see sub-task 2.5 below) and explore it FOV-by-FOV. The math layer continues to measure one 68×55 mm patch at a time; the Browser is a UI for choosing which patch via a draggable cyan rectangle on a top-down minimap, with live windowed-slice preview and a surface-following highlight overlay on the whole-STL view. A Commit FOV button promotes the dragged slice to the lab view + Pipeline Stages + math pipeline.
 
-**Why this design (and not rescale/truncate, the earlier draft of Stage 4c sub-task 4):** rescale shrinks the part to fit, lying about its true size; truncate clips data, lying about what was measurable. Both distort the geometry the simulation claims to measure. Windowed FOV selection preserves the part at native scale and is also how real-world large-part metrology actually works (commercial FPP systems do exactly this with translation stages).
+**Why this design (and not rescale/truncate, the earlier draft of Stage 4c sub-task 4):** rescale shrinks the part to fit, lying about its true size; truncate clips data, lying about what was measurable. Both distort the geometry the simulation claims to measure. Windowed FOV selection preserves the part at native scale and is also how real-world large-part metrology works (commercial FPP systems do exactly this with translation stages).
 
-**Three-panel layout inside the Browser view:**
+**Stage 4d sub-task table:**
 
-1. **Whole-STL 3D preview** — orientation only. Spin/zoom like SolidWorks. Plays no role in measurement, no role in math, no role in lab view. Just "this is the part."
-2. **Top-down 2D minimap of the STL** with a draggable rectangle representing the FOV (68×55 mm). Dragging the rectangle = selecting which patch to measure.
-3. **Real-scale 3D preview of the windowed patch only** — what's under the rectangle right now, rendered with the same fidelity as Gaussian. This is what feeds the lab view when the user commits.
+| # | Commit | What landed |
+|---|---|---|
+| 1 | `759c933` | **QTabWidget refactor.** Replaced View Mode radio + QStackedWidget with `QTabWidget` at top of right pane. Tabs: "3D Scene", "Pipeline Stages". `right_pane_stack → right_pane_tabs`. `currentChanged` wired to `_refresh_surface_preview` to preserve slider-drag-while-tab-hidden refresh. 142 tests. |
+| 1.5 | `6e1c434` | **Math grid reconciled to camera FOV.** `SURFACE_SHAPE (480, 640) → (550, 680)` at `SURFACE_PIXEL_SIZE_MM = 0.1`, giving an exact 68×55 mm patch matching the advertised camera FOV. New `test_surface_grid_matches_camera_fov` invariant test (in `tests/test_main_window.py`, the new module-level invariants file). Recovered Gaussian min shifted 0.578 → 0.289 mm per Gaussian-floor prediction (boundary-zero-fixed grid is larger). 143 tests. |
+| 2 | `fd5cb9f` | **Full-scale STL data model + bbox-reject three-way branch.** Added `load_stl_heightmap_full_scale(path, pixel_size_mm) → (heightmap, (x_min, y_min))` in `src/stl_loader.py`. MainWindow gains `_stl_full_heightmap`, `_stl_full_origin_mm`, `_stl_fov_origin_mm`, `_stl_is_browser_mode` cache state. `WORKING_VOLUME_MM = (68, 55, 55)` and `ABSURDLY_LARGE_MM = (272, 220, 55)` constants. Three-way branch in `_load_stl_from_path`: Z-overflow → hard-reject; XY within working volume → existing direct path; oversized XY but within ABSURDLY_LARGE → Browser path with centered FOV slice; XY > ABSURDLY_LARGE → reject. New `_extract_fov_slice` helper handles off-part windows with 0.0 fill. 154 tests. |
+| 3 | `4d82d98` | **Browser tab skeleton.** New `src/gui/stl_browser.py` with `STLBrowser(QWidget)`. QStackedWidget pattern: placeholder page (no Browser-mode STL) vs three-panel layout (horizontal QSplitter `[400, 600]` of `(vertical QSplitter [440, 360] minimap-on-top / whole-STL-on-bottom) / windowed-on-right`). Always-enabled-with-placeholder visibility model. `_refresh_browser_panel` trigger sites locked to the 3 mutation points of `_stl_is_browser_mode`. 160 tests. |
+| 2.5 | `bce7a7c` | **STL Z cap + Gaussian amplitude cap raised 55 → 120 mm.** `WORKING_VOLUME_MM[2]` and `ABSURDLY_LARGE_MM[2]` both rise to 120; Gaussian amplitude slider cap likewise. Empirical: user's hardware did not contact the 100 mm specimen during bench testing; +20 mm safety margin gives 120. New `test_z_cap_matches_absurd_z` invariant locks `WORKING_VOLUME_MM[2] == ABSURDLY_LARGE_MM[2]` (Browser doesn't help with Z). Lands AFTER sub-task 3 (half-step name records planning order, not execution order). Bug-bait classification critical: "55" appeared in three semantic buckets — Z-cap/Gaussian cap (a, change to 120), camera FOV Y extent (b, stays at 55), and hardware-body dimensions like Pico Genie cube + camera lens radius (c, stays). Diagnostic chain documented in commit body. Smoke script + stl_loader docstrings updated in same commit. 161 tests. |
+| 4 | `366fac8` | **Browser Panels 1 + 3 read-only 3D rendering.** Replaced QFrame placeholders with `GLViewWidget` + lazy-constructed `GLSurfacePlotItem`. Two methods: `update_whole_stl(heightmap, ps)` (Panel 1) and `update_windowed_slice(heightmap, ps)` (Panel 3) — separated so sub-task 5's drag handler can re-render Panel 3 without re-meshing Panel 1. Camera defaults: Panel 1 isometric `(distance=1.5×max_bbox, elevation=30°, azimuth=45°)`; Panel 3 `(distance=200, elevation=20°, azimuth=45°)` — distance decoupled from `SurfacePreview`'s 600 (mid-sub-task correction after screenshot review showed 600 left the windowed surface as a tiny diamond; surface-only scene needs closer pose). `z=heightmap.T` transpose required by pyqtgraph. `shader="shaded"`, `smooth=False`, `drawEdges=False`. 166 tests. |
+| 5 | `ce3667a` | **Panel 2 minimap + draggable FOV rectangle + live Panel 3 update.** `pg.GraphicsLayoutWidget` + `PlotItem` + `ImageItem` (grayscale, row-major, Y-up, aspect-locked) + `pg.RectROI` with bright cyan `(0, 220, 255)` 2 px outline, fixed FOV size 68×55 mm, `movable=True, resizable=False, rotatable=False`, all handles scrubbed in a loop for pg version safety. `fov_dragged = pyqtSignal(tuple)` emits on `sigRegionChanged`. MainWindow's `_on_fov_dragged` slot updates the cache, calls `_extract_fov_slice`, calls `update_windowed_slice`. Lab view and Pipeline Stages NOT touched on drag (drag-vs-commit separation). Mid-execution correction: initial view padding bumped from half-FOV to full-FOV when C3 capture showed rectangle clipped at extreme off-part drag (`+40, -27.5`). 172 tests. |
+| 5.5 | `8fafa94` | **Panel 1 FOV highlight overlay (surface-following, live, alpha=1.0 cyan).** Second `GLSurfacePlotItem` at the FOV-windowed region in Panel 1's GLView, positioned at Z = part-surface + 0.05 mm epsilon, rendered in opaque cyan matching the minimap rectangle. Updates live on `_on_fov_dragged`. **Pyqtgraph 0.14.0 alpha-rendering bug discovered:** `alpha < 1.0` on `GLSurfacePlotItem` produces inverted-complement colors (empirical: `output_X ≈ 127 - 44·input_X`) regardless of shader, color-input path, sibling-item presence, or `glOptions`. Six diagnostic experiments ran (single-item, white-on-white, pure-RGB inputs, shader=None, alpha=1.0) before isolating alpha as the trigger. Workaround locked at alpha=1.0; root cause undiagnosed (would require Qt/driver source dive). Diagnostic chain captured as a 17-line comment above `_FOV_HIGHLIGHT_COLOR_RGBA`. 176 tests. |
+| 6 | `27385b9` | **Commit FOV button + lab view promotion path.** `QPushButton("Commit FOV")` lives below the minimap in Panel 2 (wrapped with the minimap in a `QVBoxLayout(panel2_wrapper)` so the inner splitter stays two-region). `commit_fov_requested = pyqtSignal()` (no payload — cache already current from drag handler). MainWindow's `_on_commit_fov_requested` slot calls `_refresh_surface_preview` to propagate `_stl_heightmap` to the lab view + Pipeline Stages + math pipeline. Button enabled on `show_panels`, disabled on `show_placeholder`, belt-and-suspenders `setEnabled(False)` in `__init__`. Lab view auto-shows the centered initial FOV at load via the implicit refresh chain through `_open_stl_dialog` (line 958 calls `_refresh_surface_preview` after `_load_stl_browser` returns) — no explicit auto-commit needed; the implicit chain is the load-bearing contract, documented in `_load_stl_browser`'s docstring. Z-overflow at commit is impossible by construction (load-time bbox classification already rejects Z > 120, and `_extract_fov_slice` is monotonic in Z). Degenerate-geometry short-circuit is handled by `_refresh_surface_preview` itself. 181 tests. |
+| close (this commit) | docs update + tag `stage-4d-complete`. |
 
-**Interaction model:**
+**Key design decisions locked during Stage 4d:**
 
-- Dragging the rectangle updates **panel 3 (windowed preview) live**. This is cheap (heightmap slicing).
-- The **lab view (3D Scene) and Pipeline Stages update only when the user commits to a FOV position.** Re-running phase unwrap on every mouse-drag would be unacceptably laggy.
-- Switching back to 3D Scene or Pipeline Stages tabs renders the **most recently committed** FOV, fed through the unchanged math layer.
+| Decision | Rationale |
+|---|---|
+| Math grid reconciled to exact 68×55 mm patch ((550, 680) at 0.1 mm/px) | Sub-task 1.5. Stage 4a chose (480, 640) at 0.1 mm/px = 48×64 mm grid, which never honestly matched the advertised 68×55 mm camera FOV. Stage 4d's Browser couldn't proceed with that mismatch — the FOV rectangle on the minimap is the user's mental model of what the camera sees, and it has to match the math grid bit-for-bit. |
+| Three-way bbox classification: direct / Browser / hard-reject | Sub-task 2. Two thresholds (`WORKING_VOLUME_MM`, `ABSURDLY_LARGE_MM`) give three buckets. The direct path stays for parts that fit; the Browser path activates for oversized-but-bounded XY; absurd-sized XY (>272×220 mm) hard-rejects with the same memory-bound + usability ceiling reasoning as Stage 4c's hard-reject. |
+| Z cap raised 55 → 120 mm (placeholder backed by empirical observation) | Sub-task 2.5. Stage 4c chose 55 mm to match the camera FOV Y extent — a coincidence-equal value, not a derived hardware constraint. User's bench testing showed 100 mm parts cleared the hardware without contact. 120 mm = 100 mm specimen + 20 mm safety margin. Real Z constraint (projector focus depth, phase unambiguity range, triangulation lateral-spill) is a Stage 5/6 derivation. |
+| `Z_EXAGGERATION` permanently locked at 1.0 (honest scale) — **DOCTRINE** | Stage 4b locked Z=1.0 at honest scale; Stage 4d makes this permanent. The lab view's job is to show the part as the system sees it — at true scale, in proper proportion to camera/projector/stage. Exaggerating Z would lie about the geometry the rest of the simulation is designed to measure honestly. A 50 µm bump shouldn't look like a 5 mm bump because the visualization would then communicate different information than the math is computing. **Configurable Z exaggeration is NOT on the roadmap; do not add it.** |
+| Lab view shows only the committed FOV slice (3D mesh with depth) | Sub-task 6. The slice is itself a heightmap, so the lab view renders it as a 3D mesh with full Z relief — user can orbit around to read the depth profile. Whole-part-with-FOV-cone visualization is deferred to Stage 5/6 (depends on real hardware-mounting geometry to set the relative scale of part vs apparatus). |
+| Drag updates Panel 3 + Panel 1 highlight only; lab view + Pipeline Stages wait for commit | Sub-tasks 5 + 5.5 + 6. Re-running the math pipeline at 60 Hz drag rate would be unacceptably laggy. Two NumPy slices + two GPU uploads per drag tick is the cheap path; pipeline + tab-render is the expensive path. The Commit FOV button is the latency boundary. |
+| Browser tab placeholder always visible; panels shown only when Browser-mode STL active | Sub-task 3. The QTabWidget always shows "STL Browser" as a tab — clicking it shows either the placeholder ("Load an oversized STL to use the Browser") or the three-panel layout. Tab-disable was rejected as worse UX (the user can't see what the tab does until they try). |
+| FOV highlight color matches minimap rectangle cyan exactly | Sub-task 5.5. Visual continuity — "the same region" across two panels reinforces the FOV selection metaphor. Bright cyan `(0, 220, 255)` is high-contrast against grayscale minimap content and unused elsewhere in the GUI color vocabulary. |
+| FOV highlight opaque (alpha=1.0), not translucent | Sub-task 5.5. Pyqtgraph 0.14.0 alpha-rendering bug forces alpha=1.0 — translucency was a nice-to-have, not load-bearing. Panel 3 (windowed preview) shows the FOV contents directly anyway; the highlight's job is "show WHICH region" not "show through to underlying contour." |
+| Implicit refresh chain via `_open_stl_dialog`, not explicit auto-commit in `_load_stl_browser` | Sub-task 6. `_open_stl_dialog` already calls `_refresh_surface_preview` after `_load_stl_browser` returns. Adding an explicit auto-commit would be a redundant 2nd/3rd refresh per load — a real perf cost (272×220 mm parts can be 10s of MB heightmaps × pipeline run) for hypothetical future-caller decoupling we don't have a concrete use case for. The implicit chain is the load-bearing contract, documented in `_load_stl_browser`'s docstring. Future direct callers would invoke `_refresh_surface_preview` themselves. |
+| Two-method update API for Browser content (`update_whole_stl` + `update_windowed_slice` separate, not unified) | Sub-task 4. Sub-task 5's drag handler calls `update_windowed_slice` on every mouse-move tick; redoing Panel 1's whole-STL mesh on every drag would be wasted GPU work. Separation is the perf path. |
+| Panel 1 distance scales to part bbox; Panel 3 distance fixed at 200 mm | Sub-task 4. Panel 1's content size varies with the part (100×80 → 272×220 mm); a fixed distance would over-zoom small parts or under-zoom large ones. `1.5 × max(W, H)` keeps the part filling ~30% of frame width across the range. Panel 3 always shows a fixed 68×55 mm slice, so fixed distance is fine. |
+| Minimap initial view padded by full-FOV on each side | Sub-task 5. Half-FOV padding (the original spec) clipped the rectangle at extreme off-part drag positions, surfaced by the C3 capture. Full-FOV padding keeps the rectangle visible across all drag positions including worst-case dragged-fully-off-part. Cosmetic cost: part appears ~30% of minimap width instead of ~60%. The silent-failure mode of "I dragged my rectangle and now I can't see it" loses to the cosmetic-failure mode of "part looks smaller." |
+| FOV rectangle: 2 px cyan outline, no fill | Sub-task 5. Outline-only keeps the part's grayscale content visible inside the rectangle, which is the region the user is about to measure. Adding fill would compete with the part content the user wants to see. |
 
-**Stage 4d structural opener:** view-mode switching gets refactored from the current radio-toggle-on-left-pane pattern (3D Scene / Pipeline Stages) to a `QTabWidget` at the top of the right pane. STL Browser earns its own tab. This is a small structural change that lands before any Browser content. It can be a single sub-task with no new content — just the refactor.
+**Architectural decisions worth carrying forward from Stage 4d:**
 
-**STL data model implications:**
+- **`Z_EXAGGERATION = 1.0` is a permanent design tenet, not a "for now" value.** The lab view IS the real-scale view of the measurement geometry. Exaggerating Z would desync the visual from the math. If a part's features look subtle at honest scale, that's information about the part, not a deficiency in the visualization.
 
-- The cache currently holds a rasterized 480×640 heightmap (Stage 4c). For Stage 4d, the loader will need to store the **full-scale STL as a mesh** (or as a high-resolution heightmap larger than the FOV grid). Windowing into the FOV-sized region is then either array slicing (heightmap approach) or a re-rasterization of the relevant patch (mesh approach).
-- Leaning heightmap-slicing for v1 (rasterize whole part once at 0.1 mm/px, slice as the user drags). A 200×200 mm part is 2000×2000 = 32 MB at float64 — manageable. Mesh-and-rerasterize is more honest but adds rasterization-per-window cost.
-- Hard-reject for absurdly-large STLs (e.g., 1 m × 1 m) — threshold TBD; user will raise this separately when designing Stage 4d.
+- **The lab view shows only the committed FOV slice, not the whole part.** Whole-part context lives in the Browser's Panel 1 (whole-STL 3D preview, rotatable from any angle). The "whole part on stage with FOV cone highlighting the measured region" visualization is deferred to Stage 5/6 when real hardware-mounting geometry determines the relative scale of part vs apparatus.
 
-**What stays unchanged:** the math layer, the hardware scene, clip-detection, the surface dropdown's contract, `_load_stl_from_path`'s role as the GUI-facing entry. Stage 4d adds **a new browsing layer above the existing import**; it doesn't refactor what's already there.
+- **Drag-vs-commit separation is the core interaction discipline.** Drag updates the cheap previews (Panel 3 windowed slice, Panel 1 surface-following highlight). Commit promotes to the expensive paths (lab view, Pipeline Stages, math pipeline). The Commit FOV button is the latency boundary between exploration and measurement.
 
-**Open design questions for Stage 4d planning:**
-1. Minimap rendering: 2D image (top-down rasterized projection of the heightmap) or 3D ortho view? 2D image is simpler.
-2. FOV rectangle's initial position when an oversized STL loads (center of part? bbox corner?).
-3. Edge cases: rectangle dragged off the part (partial coverage, all-bare-stage); rectangle over a Z-overflow region (still needs the 55 mm Z cap somehow — applied to the windowed slice, not the whole STL).
-4. Whether the click-and-drag scene manipulation problem (still deferred) and the FOV-rectangle drag problem share enough Qt-mouse-event infrastructure to merit a shared abstraction.
+- **The math layer never knew Browser mode existed.** Sub-tasks 1.5 through 6 added zero lines to `src/pipeline.py`, `src/geometry.py`, `src/synthetic_fringes.py`, `src/calibration.py`, `src/reconstruction.py`. The math layer continues to receive one 68×55 mm heightmap and produces one 68×55 mm recovered surface. The Browser is a UI for choosing which 68×55 mm patch the math sees, nothing more.
+
+- **MainWindow's cache is the surface-state contract.** `_stl_heightmap` (the currently active slice — what the math reads), `_stl_full_heightmap` (the entire rasterized part, Browser mode only), `_stl_fov_origin_mm` (current FOV position in part-local coordinates), `_stl_is_browser_mode` flag. `_extract_fov_slice(origin_xy_mm)` is the shared arithmetic used by both `_on_fov_dragged` (drag refresh) and the highlight-overlay path.
+
+- **Module-level invariants live in their own test file (`tests/test_main_window.py`).** Established by sub-task 1.5 for `test_surface_grid_matches_camera_fov` (parses `HARDWARE_INFO_ROWS` to verify the grid matches the advertised FOV at byte-level). Sub-task 2.5 added `test_z_cap_matches_absurd_z`. The pattern: lightweight invariants that don't need a MainWindow QApplication go in this file; full GUI-level integration tests go in `test_main_window_stl.py`.
+
+- **Half-step sub-task naming records planning order, not execution order.** Sub-task 1.5 landed between 1 and 2 (in execution order); sub-task 2.5 was planned between 2 and 3 but landed after 3 (execution order: 1 → 1.5 → 2 → 3 → 2.5 → 4 → 5 → 5.5 → 6). The half-step name preserves the rationale ("this is the small one-constant addition to that sub-task's logical neighborhood") even when execution order shifts. The chronological vs logical mismatch is documented in the commit body when it happens.
+
+- **Browser internal state attributes use the `_*_item is not None` pattern for lifecycle.** `_whole_stl_item`, `_windowed_item`, `_minimap_image_item`, `_minimap_roi`, `_whole_stl_highlight_item` all start at `None` and get lazy-constructed on first `update_*` call. The `has_*` properties read `is not None`. `clear_panel1_highlight()` is the only path that resets one back to `None` (real `removeItem` + reassignment, not just `setVisible(False)`). Sub-tasks 4, 5, 5.5 use this pattern consistently.
+
+- **Pyqtgraph 0.14.0 has a destructor-noise quirk on shutdown** (harmless `RuntimeError` from `ViewBox.forgetView` lambda when `sid`/`name` go out of scope). Smoke harness output greps `^Traceback|^  File|^RuntimeError|^    ` to filter these out. Documented in PROJECT_CONTEXT §14.
+
+- **Pyqtgraph 0.14.0 GL state hazard: sibling `GLSurfacePlotItem`s with different `a_color` paths in the same view are unsafe.** SurfacePreview (one item per view) works fine. Browser Panel 1 (two items: whole-STL using constant-attribute path + highlight using buffer-backed path) initially produced GL state leakage. Workaround: both items now use the constant-attribute path via `setColor()` at construction. Documented in `stl_browser.py`'s `update_panel1_highlight` docstring. (This was an intermediate diagnostic finding; the actual rendering bug turned out to be alpha-rendering, but the GL-path hazard is still real and worth recording.)
+
+### Stage 4d FOV semantics + coordinate reconciliation reference
+
+This subsection documents the coordinate-frame math the Browser uses. Self-contained so a fresh chat can reconstruct it.
+
+**Three coordinate frames are in play:**
+
+1. **Part-local frame (CAD coordinates).** The STL file's own coordinate system. `_stl_full_origin_mm = (x_min, y_min)` is the part's bbox bottom-left corner in this frame. `_stl_fov_origin_mm = (x_origin, y_origin)` is the FOV slice's bottom-left corner in this frame — what the user effectively "dragged to."
+
+2. **Minimap plot frame.** Same as part-local. The minimap's `ImageItem.setRect(x_min, y_min, W_full*ps, H_full*ps)` positions the image so axes display real mm in part-local coords. The `pg.RectROI.pos()` returns its bottom-left in this same frame, with Y growing up (`axisOrder="row-major"`, plot Y not inverted). Row 0 of the heightmap array ⇒ Y = `y_min` ⇒ bottom of minimap.
+
+3. **Panel 1 GLView frame (part-bbox-centered).** Panel 1's whole-STL `GLSurfacePlotItem` is constructed with x/y arrays centered at origin: `x = (arange(W) - (W-1)/2) * ps`. The mesh's center is at GLView's (0, 0). The highlight overlay must use the same centering convention so it aligns with the whole-STL surface. **The reconciliation formula** (in `update_panel1_highlight`):
+
+```python
+part_center_x = x_full_min + W_full * pixel_size_mm / 2
+part_center_y = y_full_min + H_full * pixel_size_mm / 2
+
+x_highlight = (fov_origin_x - part_center_x) + arange(W_fov) * pixel_size_mm
+y_highlight = (fov_origin_y - part_center_y) + arange(H_fov) * pixel_size_mm
+```
+
+The `(fov_origin - part_center)` subtraction undoes the part's arbitrary CAD-offset so Panel 1's whole-STL and the highlight share the same GLView origin regardless of where the STL sat in its source coordinates.
+
+**`_extract_fov_slice(origin_xy_mm)` arithmetic (in MainWindow):**
+
+```python
+col = int(round((fov_origin_x - x_full_min) / pixel_size_mm))
+row = int(round((fov_origin_y - y_full_min) / pixel_size_mm))
+# Slice _stl_full_heightmap[row:row+H_fov, col:col+W_fov] with off-part 0.0 fill.
+```
+
+Row 0 corresponds to Y = `y_full_min` (bottom of part in plot frame), consistent with the minimap's Y-up convention.
+
+**FOV size in pixels:** `SURFACE_SHAPE = (H_fov, W_fov) = (550, 680)` at `SURFACE_PIXEL_SIZE_MM = 0.1` ⇒ 55×68 mm patch matching the camera FOV exactly (sub-task 1.5 invariant).
+
+### Stage 4d diagnostic-pattern lessons (for stage close)
+
+Recording these because they came up repeatedly and the pattern matters more than the specific bugs.
+
+**Diagnostic-prompt-before-decision.** When strategy chat catches itself about to recommend a decision built on guesses about library internals, code-not-yet-read, or environment-specific quirks, the right move is to pause and write a **read-only diagnostic prompt** for Claude Code to investigate first. Evidence drives the next recommendation. The pattern surfaced repeatedly in sub-task 5.5's cyan-vs-maroon investigation — the original recommendation (try per-vertex layout) was strategy-chat guessing at pyqtgraph 0.14.0's color-binding API. Replacing it with "investigate first, then decide" caught two wrong recommendation cycles before they landed in code.
+
+**Two failure modes to watch for:**
+
+1. Confident-sounding recommendations built on guesses about library behavior or unread code. These sound identical to recommendations built on evidence. When strategy chat notices "I'm not sure what pyqtgraph 0.14.0 actually does here, but I think..." — that's the signal to write a diagnostic prompt instead of finishing the sentence.
+
+2. Treating "make the symptom go away" workarounds as equivalent to fixing the underlying bug without diagnosing it. In sub-task 5.5, the first two "fixes" (per-vertex layout swap, then setColor switch) both failed because the actual bug was alpha-rendering, not what strategy chat hypothesized. Each fix attempt without diagnosis cost a cycle. The pattern is **"fix attempt → diagnose if it doesn't work" not "fix attempt → different fix attempt."**
+
+**Prompt-assumption catches.** Three times during Stage 4d, halt-gate summarize-back caught strategy-chat prompt assumptions that were factually wrong about the codebase:
+
+1. Sub-task 2.5: prompt said "55 doesn't appear in `src/stl_loader.py`" — it actually appears at lines 23 and 185 in docstrings. Honoring the prompt's "Do NOT touch stl_loader.py" rule would have left stale documentation.
+2. Sub-task 2.5: prompt omitted `scripts/stage4c_smoke.py` from the in-scope-to-edit list — but the script has a hard-coded `amp_max == 55.0` assertion that the bump would break.
+3. Sub-task 6: prompt said "the lab view doesn't show the FOV at load time" — it actually does, via the implicit refresh chain through `_open_stl_dialog`. Strategy chat's proposed explicit auto-commit would have been a redundant 2nd/3rd refresh.
+
+The pattern: when strategy chat writes "X doesn't appear in module Y" or "Currently the system doesn't do Z," that's a claim about state the strategy chat doesn't have direct access to. Halt-gate summarize-back's grep-level read catches the discrepancy before code lands. The fix is to grep first, claim second.
 
 ### Deferred from Stage 4 (still deferred)
 
 - **MockCamera, MockProjector, Camera/Projector protocols** → Stage 5/6.
 - **Taylor/exact model toggle in GUI** → adds two lines later; not v1.
-- **Resolution toggle (480×640 vs 1280×1024)** → adds a "Compute at full res" button later.
+- **Resolution toggle (480×640 vs 1280×1024)** → adds a "Compute at full res" button later. Note: math grid is now (550, 680) post-Stage-4d-sub-task-1.5.
 - **Three.js embed for lab view** → explicitly rejected; lab view is native PyQt6 (now part of unified scene).
 - **Object position offset** → locked at center.
 - **`equivalent_wavelength()` → `height_per_radian()` rename** → cosmetic; documented in code instead.
 - **Unit reconciliation between info panel mm-values and math-layer pixel-values** → Stage 5/6 when real hardware arrives.
+- **Click-and-drag scene manipulation (rotate/translate hardware bodies + surface via mouse, sync back to sliders)** → still deferred. The FOV-rectangle drag in Stage 4d's Browser was a concrete instance of mouse-event handling, but it's specialized to a 2D ImageItem + RectROI in a `pg.PlotItem`, not the 3D scene manipulation problem. No shared abstraction was extracted; YAGNI until a second concrete use case appears.
+- **Multi-FOV stitching / batch capture** → not in any planned stage yet. Would let the user queue several FOV positions and process them in sequence, producing a stitched result. Out of scope for the simulation; possibly relevant when real hardware lands with motorized stages.
+- **Persistence (save/load FOV positions, save committed slices, export results)** → not in any planned stage yet. The simulation is currently stateless across runs.
+- **Performance work for absurd-limit (272×220 mm) parts** → flagged as a known issue; rasterization on load can be 5–15 seconds for ~50k-triangle parts. A loading indicator is the obvious palliative; full perf work depends on real use patterns.
+- **Robust STL ingestion (degenerate triangles, non-manifold meshes, very large files)** → handled to a basic standard (empty mesh raises `ValueError`, XY-degenerate returns zeros). Hardening against pathological inputs is deferred.
 
 ### When real hardware arrives (Stage 6 prep)
 
@@ -774,6 +864,8 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 - Empirically calibrate `λ_eq` against a step gauge; override formula-derived value if needed.
 - `test_project_is_lambda_eq_independent` must still pass after the update — `HybridGeometry` and `SymmetricGeometry` defaults must change in lockstep.
 - Scene primitives in `src/scene.py` (Stage 4b) update to reflect real lab layout. Projector lens dimensions (~20mm dia × 5mm protrusion) refined from lab measurement.
+- **Re-derive the STL Z cap from hardware** — the 120 mm value is a placeholder backed by bench observation + safety margin. Real value depends on projector focus depth, phase unambiguity range, and triangulation lateral-spill, none of which map to a clean single number until measured against real hardware. `WORKING_VOLUME_MM[2]` and `ABSURDLY_LARGE_MM[2]` must update in lockstep (locked by `test_z_cap_matches_absurd_z`).
+- **Whole-part-with-FOV-cone visualization in the lab view** becomes viable. Currently the lab view shows only the committed FOV slice because hardware-mounting geometry isn't finalized — the relative scale of part vs apparatus depends on real mounting. Once real mounting is in, the lab view can show the whole part on the stage with the camera/projector cones highlighting the active FOV region, and the Browser's role narrows to FOV-selection-on-minimap (Panel 1's whole-STL view may then be redundant). Significant lab view refactor; planned as a Stage 5/6 sub-task.
 
 ### Future-stage hooks deferred during Stages 2–4
 
@@ -929,6 +1021,10 @@ A future OBB (oriented bounding box) implementation would be more accurate but m
 **pyqtgraph 0.14.0 colormap availability** — doesn't bundle 'gray' or 'hsv'. Workarounds: manual 2-stop black-to-white `ColorMap` for the fringe-frame panel; `CET-C1` (perceptually-uniform cyclic) for wrapped-phase panel. Documented in `stages_view.py`.
 
 **pyqtgraph 0.14.0 `GLSurfacePlotItem.setData(colors=...)` docstring is wrong** — claims `(width, height, 4)`, actually needs flat `(N_vertices, 4)`. Workaround documented in `surface_preview.py`.
+
+**pyqtgraph 0.14.0 `GLSurfacePlotItem` alpha-rendering bug (Stage 4d sub-task 5.5)** — `alpha < 1.0` on a `GLSurfacePlotItem` produces inverted-complement colors in the rendered output, regardless of shader (`shaded`, `None`, or any other), regardless of color-input path (per-vertex `colors=` or uniform `setColor()`), regardless of sibling-item presence, regardless of `glOptions`. Empirical formula: `output_X ≈ 127 - 44 · input_X` for `alpha=0.5`. Six diagnostic experiments ran during sub-task 5.5 (single-item, white-on-white, pure-RGB inputs, shader=None, alpha=1.0) before isolating alpha as the trigger. Root cause undiagnosed analytically — would require Qt OpenGL driver source-level inspection. **Workaround: use `alpha=1.0` (opaque)** anywhere `GLSurfacePlotItem` color matters. Full diagnostic chain captured in the comment above `_FOV_HIGHLIGHT_COLOR_RGBA` in `stl_browser.py`.
+
+**pyqtgraph 0.14.0 sibling `GLSurfacePlotItem` GL state hazard (Stage 4d sub-task 5.5)** — two `GLSurfacePlotItem`s in the same `GLViewWidget` using different `a_color` GL paths (one with constant-attribute `glVertexAttrib4f`, the other with buffer-backed `glVertexAttribPointer`) introduces unreliable GL state transitions. Discovered as a candidate hypothesis during the maroon-vs-cyan investigation (eventually superseded by the alpha-rendering finding above — but the hazard is real even after the alpha workaround). `SurfacePreview` works because it has one `GLSurfacePlotItem` per view. Browser Panel 1 has two, and both must now use the constant-attribute path via `setColor()` at construction. Documented in `stl_browser.py`'s `update_panel1_highlight` docstring.
 
 ---
 
