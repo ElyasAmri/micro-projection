@@ -71,6 +71,30 @@ _WHOLE_STL_DISTANCE_FACTOR = 1.5  # distance = 1.5 * max(bbox XY)
 _FOV_RECT_PEN = (0, 220, 255)
 _FOV_RECT_WIDTH_PX = 2
 
+# Panel 1 highlight visual style. RGBA normalized to [0, 1] for
+# GLSurfacePlotItem. RGB matches _FOV_RECT_PEN / 255 for visual
+# continuity — "the same region" across the minimap rectangle and
+# Panel 1's surface-following overlay.
+#
+# pyqtgraph 0.14.0 (in this Qt OpenGL environment) has a
+# rendering bug where alpha < 1.0 on GLSurfacePlotItem
+# produces inverted-complement colors regardless of shader.
+# Empirical: output_X ≈ 127 - 44 × input_X for alpha=0.5.
+# Bug ruled out at the shader, the per-vertex-vs-constant
+# color path, sibling-item state, glOptions/blending, and
+# the color-input layer (full diagnostic chain in Stage 4d
+# sub-task 5.5 captures, ~/AppData/Local/Temp/stage4d_st55_*).
+# Workaround: use opaque cyan (alpha=1.0). Translucency was
+# a nice-to-have, not load-bearing — Panel 3 shows the
+# FOV contents directly, and the highlight's job is "show
+# WHICH region" not "show through to underlying contour."
+_FOV_HIGHLIGHT_COLOR_RGBA = (0.0, 220.0 / 255.0, 1.0, 1.0)
+# Z-offset to lift the highlight above the part surface and avoid
+# z-fighting. 0.05 mm is ~28000x the depth-buffer precision floor
+# and sub-pixel at the 0.1 mm/px grid — sits "on" the surface
+# visually without floating.
+_FOV_HIGHLIGHT_Z_EPSILON_MM = 0.05
+
 
 def _panel(label_text: str) -> QFrame:
     """Build a sunken QFrame containing a centered descriptive label.
@@ -160,6 +184,12 @@ class STLBrowser(QWidget):
             azimuth=_WHOLE_STL_AZIMUTH,
         )
         self._whole_stl_item: Optional[gl.GLSurfacePlotItem] = None
+        # Sub-task 5.5: Panel 1 FOV highlight overlay. Second
+        # GLSurfacePlotItem at the FOV-windowed region, lifted by
+        # epsilon and rendered in translucent cyan. Added AFTER the
+        # whole-STL item so it sits on top in the GLViewWidget's
+        # scene-insertion order.
+        self._whole_stl_highlight_item: Optional[gl.GLSurfacePlotItem] = None
 
         # Panel 3 (right): windowed 3D preview.
         self._windowed_view = _new_3d_view(**_WINDOWED_CAMERA)
@@ -391,3 +421,115 @@ class STLBrowser(QWidget):
         """Emit fov_dragged with the ROI's current (x, y) in mm."""
         pos = self._minimap_roi.pos()
         self.fov_dragged.emit((float(pos[0]), float(pos[1])))
+
+    # ------------------------------------------------------------------
+    # Panel 1 FOV highlight overlay (sub-task 5.5)
+    # ------------------------------------------------------------------
+    @property
+    def has_panel1_highlight(self) -> bool:
+        """True when Panel 1's FOV highlight overlay is present."""
+        return self._whole_stl_highlight_item is not None
+
+    def update_panel1_highlight(
+        self,
+        full_heightmap: np.ndarray,
+        full_origin_mm: tuple[float, float],
+        pixel_size_mm: float,
+        fov_origin_mm: tuple[float, float],
+        fov_shape_pixels: tuple[int, int],
+    ) -> None:
+        """Update Panel 1's translucent cyan highlight to follow the
+        part surface at the current FOV region.
+
+        Slices the FOV-sized window from `full_heightmap` at the given
+        origin (same arithmetic as MainWindow._extract_fov_slice but
+        reads from the input array, not MainWindow state), positions
+        a second GLSurfacePlotItem at the corresponding XY in the
+        part-bbox-centered frame so it aligns with the existing
+        whole-STL surface (which `update_whole_stl` centers at the
+        origin). Z is lifted by `_FOV_HIGHLIGHT_Z_EPSILON_MM` to avoid
+        z-fighting.
+
+        Off-part regions (FOV extends past the full heightmap edges)
+        get 0.0 fill — same convention as MainWindow._extract_fov_slice.
+        The highlight visibly extends into bare stage at the edges so
+        the user can see when their selection runs off the part.
+
+        Color uses the GL constant-attribute path (`setColor` at
+        lazy-construction). CRITICAL: do NOT pass colors= to setData.
+        The sub-task 5.5 diagnostic showed per-vertex colors caused
+        rendering corruption (maroon instead of cyan) due to GL state
+        leakage between sibling GLSurfacePlotItems in the same view
+        — the whole-STL item uses constant-attribute and the highlight
+        item using buffer-backed-array introduced an unreliable state
+        transition. Both items now use the constant-attribute path.
+
+        Lazy-constructs the highlight item on first call; subsequent
+        calls reuse it via setData (no item accumulation in the scene).
+        Called by MainWindow at the end of `_load_stl_browser` and
+        from `_on_fov_dragged` for live updates during drag.
+        """
+        full_heightmap = np.asarray(full_heightmap, dtype=np.float64)
+        H_full, W_full = full_heightmap.shape
+        H_fov, W_fov = fov_shape_pixels
+        x_full_min, y_full_min = full_origin_mm
+        fov_origin_x, fov_origin_y = fov_origin_mm
+
+        # Pixel-index window into the full heightmap (same arithmetic
+        # as MainWindow._extract_fov_slice).
+        col = int(round((fov_origin_x - x_full_min) / pixel_size_mm))
+        row = int(round((fov_origin_y - y_full_min) / pixel_size_mm))
+
+        slice_z = np.zeros((H_fov, W_fov), dtype=np.float64)
+        row_start = max(0, row)
+        row_end = min(H_full, row + H_fov)
+        col_start = max(0, col)
+        col_end = min(W_full, col + W_fov)
+        if row_start < row_end and col_start < col_end:
+            out_row_start = row_start - row
+            out_row_end = out_row_start + (row_end - row_start)
+            out_col_start = col_start - col
+            out_col_end = out_col_start + (col_end - col_start)
+            slice_z[out_row_start:out_row_end, out_col_start:out_col_end] = (
+                full_heightmap[row_start:row_end, col_start:col_end]
+            )
+
+        # Position the highlight in the part-bbox-centered plot frame
+        # so it aligns with the existing whole-STL surface (which uses
+        # centered coords). part_center = full_origin + W_full*ps/2.
+        part_center_x = x_full_min + W_full * pixel_size_mm / 2.0
+        part_center_y = y_full_min + H_full * pixel_size_mm / 2.0
+        x = (
+            fov_origin_x - part_center_x
+            + np.arange(W_fov, dtype=np.float64) * pixel_size_mm
+        )
+        y = (
+            fov_origin_y - part_center_y
+            + np.arange(H_fov, dtype=np.float64) * pixel_size_mm
+        )
+
+        z_lifted = (slice_z + _FOV_HIGHLIGHT_Z_EPSILON_MM).T
+
+        if self._whole_stl_highlight_item is None:
+            self._whole_stl_highlight_item = gl.GLSurfacePlotItem(
+                shader="shaded", smooth=False, drawEdges=False,
+            )
+            # Set the uniform color ONCE at construction. Color is fixed;
+            # only geometry changes on subsequent updates. CRITICAL: do
+            # NOT pass colors= to setData below — see method docstring.
+            self._whole_stl_highlight_item.setColor(_FOV_HIGHLIGHT_COLOR_RGBA)
+            self._whole_stl_view.addItem(self._whole_stl_highlight_item)
+        self._whole_stl_highlight_item.setData(x=x, y=y, z=z_lifted)
+
+    def clear_panel1_highlight(self) -> None:
+        """Remove Panel 1's FOV highlight overlay from the scene.
+
+        Called by MainWindow on small-STL loads — direct-path STLs
+        don't have a meaningful FOV-selection context, so leaving a
+        stale highlight from a prior Browser-mode load would be
+        misleading. Resets `_whole_stl_highlight_item` to None;
+        `has_panel1_highlight` reads False after.
+        """
+        if self._whole_stl_highlight_item is not None:
+            self._whole_stl_view.removeItem(self._whole_stl_highlight_item)
+            self._whole_stl_highlight_item = None

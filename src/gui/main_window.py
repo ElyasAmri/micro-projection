@@ -1045,6 +1045,10 @@ class MainWindow(QMainWindow):
         self._stl_is_browser_mode = False
         self._update_stl_page_state()
         self._refresh_browser_panel()
+        # Sub-task 5.5: clear any Panel 1 FOV highlight left over from
+        # a prior Browser-mode load. Direct-path STLs don't have a
+        # meaningful FOV-selection context.
+        self.stl_browser.clear_panel1_highlight()
         return True
 
     def _load_stl_browser(self, path: Path) -> bool:
@@ -1079,9 +1083,9 @@ class MainWindow(QMainWindow):
         self._stl_is_browser_mode = True
         self._update_stl_page_state()
         self._refresh_browser_panel()
-        # Stage 4d sub-task 4 + 5: push content into all three Browser
-        # panels. Order: Panel 1 (whole-STL mesh), Panel 2 (minimap +
-        # FOV rectangle), Panel 3 (windowed slice).
+        # Stage 4d sub-tasks 4 + 5 + 5.5: push content into all three
+        # Browser panels. Order matters for Panel 1: whole-STL surface
+        # is added FIRST, then the FOV highlight overlay on top.
         self.stl_browser.update_whole_stl(
             self._stl_full_heightmap, SURFACE_PIXEL_SIZE_MM,
         )
@@ -1094,6 +1098,13 @@ class MainWindow(QMainWindow):
         )
         self.stl_browser.update_windowed_slice(
             self._stl_heightmap, SURFACE_PIXEL_SIZE_MM,
+        )
+        self.stl_browser.update_panel1_highlight(
+            self._stl_full_heightmap,
+            self._stl_full_origin_mm,
+            SURFACE_PIXEL_SIZE_MM,
+            self._stl_fov_origin_mm,
+            SURFACE_SHAPE,
         )
         return True
 
@@ -1155,19 +1166,27 @@ class MainWindow(QMainWindow):
             self.stl_browser.show_placeholder()
 
     def _on_fov_dragged(self, origin_xy_mm: tuple[float, float]) -> None:
-        """Stage 4d sub-task 5: FOV rectangle drag handler.
+        """Stage 4d sub-tasks 5 + 5.5: FOV rectangle drag handler.
 
-        Updates the FOV origin cache, re-extracts the slice, and
-        pushes it to Panel 3. The lab view and Pipeline Stages do
-        NOT update here — they stay on the most-recently-committed
-        FOV until sub-task 6's commit button. Drag is cheap (a
-        NumPy slice plus a GPU upload); the math pipeline is not.
+        Updates the FOV origin cache, re-extracts the slice, pushes
+        it to Panel 3, and refreshes Panel 1's surface-following
+        highlight overlay. The lab view and Pipeline Stages do NOT
+        update here — they stay on the most-recently-committed FOV
+        until sub-task 6's commit button. Drag is cheap (two NumPy
+        slices plus two GPU uploads); the math pipeline is not.
         """
         self._stl_fov_origin_mm = origin_xy_mm
         new_slice = self._extract_fov_slice(origin_xy_mm)
         self._stl_heightmap = new_slice
         self.stl_browser.update_windowed_slice(
             new_slice, SURFACE_PIXEL_SIZE_MM,
+        )
+        self.stl_browser.update_panel1_highlight(
+            self._stl_full_heightmap,
+            self._stl_full_origin_mm,
+            SURFACE_PIXEL_SIZE_MM,
+            origin_xy_mm,
+            SURFACE_SHAPE,
         )
 
     def _update_stl_page_state(self) -> None:

@@ -682,3 +682,96 @@ def test_drag_off_part_renders_bare_stage(main_window, tmp_path, monkeypatch):
     # The in-part portion contains non-zero values from the cube top.
     in_part = slice_hm[:, :100]
     assert (in_part > 0.0).any(), "in-part region should carry cube-top values"
+
+
+# ---------------------------------------------------------------------------
+# Stage 4d sub-task 5.5: Panel 1 FOV highlight overlay.
+# ---------------------------------------------------------------------------
+def test_browser_load_constructs_panel1_highlight(
+    main_window, tmp_path, monkeypatch,
+):
+    """A Browser-mode STL load constructs Panel 1's FOV highlight
+    overlay alongside the whole-STL surface."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    browser = main_window.stl_browser
+    assert browser.has_panel1_highlight is True
+    assert browser._whole_stl_highlight_item is not None
+
+
+def test_small_stl_load_clears_panel1_highlight(
+    main_window, tmp_path, monkeypatch,
+):
+    """Loading a small STL after a Browser STL clears the Panel 1
+    FOV highlight (no meaningful FOV-selection context for the
+    direct path)."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window.stl_browser.has_panel1_highlight is True
+
+    small = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    main_window.stl_change_button.click()
+
+    assert main_window.stl_browser.has_panel1_highlight is False
+    assert main_window.stl_browser._whole_stl_highlight_item is None
+
+
+def test_drag_updates_panel1_highlight_position(
+    main_window, tmp_path, monkeypatch,
+):
+    """Dragging the FOV rectangle updates the highlight item's x/y
+    coordinates to reflect the new part-bbox-centered position."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    # Drag the ROI to a known position.
+    new_origin = (-10.0, +5.0)
+    main_window.stl_browser._minimap_roi.setPos(new_origin)
+
+    # Expected: highlight x[0] = fov_origin_x - part_center_x.
+    # Part center: x_min + W_full * ps / 2 = -50 + 1000*0.1/2 = 0.
+    # x[0] = -10 - 0 = -10.0. Same for y[0] = +5 - 0 = +5.0.
+    highlight = main_window.stl_browser._whole_stl_highlight_item
+    assert highlight is not None
+    assert highlight._x[0] == pytest.approx(-10.0, abs=1e-9)
+    assert highlight._y[0] == pytest.approx(+5.0, abs=1e-9)
+
+
+def test_panel1_highlight_uses_cyan_color(
+    main_window, tmp_path, monkeypatch,
+):
+    """The highlight overlay's uniform color matches
+    _FOV_HIGHLIGHT_COLOR_RGBA. Locks the visual link between the
+    minimap rectangle and the Panel 1 highlight against accidental
+    color changes during future refactors.
+
+    The highlight uses setColor() for the GL constant-attribute path
+    (sub-task 5.5 diagnostic showed per-vertex colors caused state
+    leakage between sibling GLSurfacePlotItems in Panel 1). The color
+    is stored in opts['color'] rather than _meshdata._vertexColors.
+    """
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    from gui.stl_browser import _FOV_HIGHLIGHT_COLOR_RGBA
+    highlight = main_window.stl_browser._whole_stl_highlight_item
+    assert highlight.opts["color"] == _FOV_HIGHLIGHT_COLOR_RGBA
+    # Alpha MUST be 1.0 — pyqtgraph 0.14.0 has an alpha < 1.0
+    # rendering bug that produces inverted-complement colors on
+    # GLSurfacePlotItem regardless of shader. Locking alpha here
+    # prevents future "let's make it translucent" regressions.
+    assert highlight.opts["color"][3] == 1.0
+    # Confirm the per-vertex path is NOT being used — that's the
+    # invariant that prevents the maroon-rendering bug.
+    assert highlight._meshdata._vertexColors is None
