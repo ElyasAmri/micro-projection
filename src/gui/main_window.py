@@ -83,6 +83,7 @@ from PyQt6.QtWidgets import (
 from geometry import HybridGeometry
 from pipeline import run_pipeline
 from src.gui.stages_view import StagesView
+from src.gui.stl_browser import STLBrowser
 from src.gui.surface_preview import ErrorColorbar, SurfacePreview
 from src.stl_loader import (
     get_stl_bbox_mm,
@@ -283,6 +284,11 @@ class MainWindow(QMainWindow):
         # identity transforms (overlapping at the world origin) until
         # the first slider drag.
         self._on_pose_changed()
+        # Stage 4d sub-task 3: sync the Browser tab to the (no-STL)
+        # cache state on construction. STLBrowser defaults to its
+        # placeholder page; this call makes the dispatch authority
+        # explicit (main_window owns it, the widget mirrors).
+        self._refresh_browser_panel()
 
     # ------------------------------------------------------------------
     # Left pane — control panel
@@ -504,22 +510,28 @@ class MainWindow(QMainWindow):
         return box
 
     # ------------------------------------------------------------------
-    # Right pane — QTabWidget with two tabs (3D Scene / Pipeline Stages)
+    # Right pane — QTabWidget with three tabs
+    # (3D Scene / Pipeline Stages / STL Browser)
     # ------------------------------------------------------------------
     def _build_right_pane(self) -> QWidget:
-        """Build the right pane as a QTabWidget with two tabs.
+        """Build the right pane as a QTabWidget with three tabs.
 
         Tab 0 (default): the 3D scene (banner + SurfacePreview +
         error colorbar).
         Tab 1: StagesView, the 2x3 grid of pipeline-stage images.
+        Tab 2: STLBrowser, the Stage 4d FOV-by-FOV navigation view
+        for oversized specimens. Shows a placeholder until a
+        Browser-mode STL is loaded.
         """
         page_3d = self._build_3d_scene_page()
 
         self.stages_view = StagesView()
+        self.stl_browser = STLBrowser()
 
         self.right_pane_tabs = QTabWidget()
         self.right_pane_tabs.addTab(page_3d, "3D Scene")
         self.right_pane_tabs.addTab(self.stages_view, "Pipeline Stages")
+        self.right_pane_tabs.addTab(self.stl_browser, "STL Browser")
 
         return self.right_pane_tabs
 
@@ -1011,6 +1023,7 @@ class MainWindow(QMainWindow):
         self._stl_fov_origin_mm = None
         self._stl_is_browser_mode = False
         self._update_stl_page_state()
+        self._refresh_browser_panel()
         return True
 
     def _load_stl_browser(self, path: Path) -> bool:
@@ -1044,6 +1057,7 @@ class MainWindow(QMainWindow):
         self._stl_filename = path.name
         self._stl_is_browser_mode = True
         self._update_stl_page_state()
+        self._refresh_browser_panel()
         return True
 
     def _extract_fov_slice(
@@ -1088,6 +1102,20 @@ class MainWindow(QMainWindow):
             self._stl_full_heightmap[row_start:row_end, col_start:col_end]
         )
         return out
+
+    def _refresh_browser_panel(self) -> None:
+        """Sync the STL Browser tab to the current cache state.
+
+        Called at the end of every site that mutates
+        `_stl_is_browser_mode`: `_load_stl_direct` (= False),
+        `_load_stl_browser` (= True), and `__init__` (= False).
+        `_on_surface_combo_changed` does not mutate the flag and
+        therefore does not need to be a trigger site.
+        """
+        if self._stl_is_browser_mode:
+            self.stl_browser.show_panels()
+        else:
+            self.stl_browser.show_placeholder()
 
     def _update_stl_page_state(self) -> None:
         """Switch the STL inner page between placeholder and loaded row."""

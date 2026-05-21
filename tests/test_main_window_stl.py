@@ -133,6 +133,7 @@ def test_dropdown_has_three_entries(main_window):
     assert [tabs.tabText(i) for i in range(tabs.count())] == [
         "3D Scene",
         "Pipeline Stages",
+        "STL Browser",
     ]
 
 
@@ -376,3 +377,77 @@ def test_extract_fov_slice_entirely_off_part(main_window):
     out = main_window._extract_fov_slice((500.0, 500.0))
     assert out.shape == (550, 680)
     np.testing.assert_array_equal(out, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Stage 4d sub-task 3: STL Browser tab state dispatch.
+# ---------------------------------------------------------------------------
+def test_browser_tab_present_and_initial_placeholder(main_window):
+    """Tab exists at construction; initial state is placeholder."""
+    tabs = main_window.right_pane_tabs
+    assert tabs.count() == 3
+    assert tabs.tabText(2) == "STL Browser"
+    assert main_window.stl_browser.is_showing_panels is False
+
+
+def test_switching_to_flat_keeps_placeholder(main_window):
+    """Dropdown change from Gaussian to Flat doesn't flip panel state."""
+    main_window.surface_combo.setCurrentText("Flat")
+    assert main_window.stl_browser.is_showing_panels is False
+
+
+def test_small_stl_load_shows_placeholder(main_window, tmp_path, monkeypatch):
+    """A small STL goes through the direct path; Browser tab stays in
+    placeholder."""
+    stl_path = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(stl_path))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    assert main_window.stl_browser.is_showing_panels is False
+
+
+def test_oversized_stl_load_shows_panels(main_window, tmp_path, monkeypatch):
+    """A Browser-mode STL load flips the panel state to visible."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    assert main_window.stl_browser.is_showing_panels is True
+
+
+def test_browser_to_flat_dropdown_keeps_panels(
+    main_window, tmp_path, monkeypatch,
+):
+    """Dropdown change Browser-STL -> Flat preserves panels (Browser
+    cache survives the dropdown switch per sub-task 2's lifetime rule)."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window.stl_browser.is_showing_panels is True
+
+    main_window.surface_combo.setCurrentText("Flat")
+
+    assert main_window.stl_browser.is_showing_panels is True
+
+
+def test_browser_to_small_stl_shows_placeholder(
+    main_window, tmp_path, monkeypatch,
+):
+    """Loading a small STL after a Browser STL clears Browser cache and
+    flips the panel state back to placeholder."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window.stl_browser.is_showing_panels is True
+
+    small = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    main_window.stl_change_button.click()
+
+    assert main_window.stl_browser.is_showing_panels is False
