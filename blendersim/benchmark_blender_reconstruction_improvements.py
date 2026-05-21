@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from projection_simulation.scanning.synthetic_surfaces import SURFACE_KINDS
+from shared.synthetic_surfaces import SURFACE_KINDS
 
 IMPROVEMENT_ORDER: tuple[str, ...] = (
     "truth-render-alignment",

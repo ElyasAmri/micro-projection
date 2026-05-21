@@ -25,7 +25,7 @@ from projection_simulation.scanning.reconstruction import (
     robust_modulation_mask,
     similarity_metrics,
 )
-from projection_simulation.scanning.synthetic_surfaces import SURFACE_KINDS, height_field_depth_m
+from shared.synthetic_surfaces import SURFACE_KINDS, height_field_depth_m
 
 DEFAULT_PHASE_DEG = [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0]
 MEASUREMENT_FIDELITY_PHASE_DEG = [float(index) * 22.5 for index in range(16)]

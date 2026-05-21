@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from projection_simulation.scanning.synthetic_surfaces import SURFACE_KINDS, height_field_depth_m
+from shared.synthetic_surfaces import SURFACE_KINDS, height_field_depth_m
 
 
 def _parse_args() -> argparse.Namespace:
