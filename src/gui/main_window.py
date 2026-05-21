@@ -304,8 +304,14 @@ class MainWindow(QMainWindow):
 
         # Stage 4d sub-task 5: connect the FOV drag signal. Drag
         # updates Panel 3 only — the lab view and Pipeline Stages
-        # stay on the most-recently-committed FOV until sub-task 6.
+        # stay on the most-recently-committed FOV.
         self.stl_browser.fov_dragged.connect(self._on_fov_dragged)
+        # Stage 4d sub-task 6: connect the commit signal. Click on
+        # the "Commit FOV" button promotes the cached _stl_heightmap
+        # to the lab view + math pipeline.
+        self.stl_browser.commit_fov_requested.connect(
+            self._on_commit_fov_requested
+        )
 
     # ------------------------------------------------------------------
     # Left pane — control panel
@@ -1052,7 +1058,24 @@ class MainWindow(QMainWindow):
         return True
 
     def _load_stl_browser(self, path: Path) -> bool:
-        """Stage 4d Browser path: oversized-but-bounded XY part."""
+        """Stage 4d Browser path: oversized-but-bounded XY part.
+
+        Populates the Browser-mode cache (`_stl_full_heightmap`,
+        `_stl_full_origin_mm`, `_stl_fov_origin_mm`, `_stl_heightmap`)
+        and pushes content into all three Browser panels.
+
+        Lab view refresh: this method does NOT call
+        `_refresh_surface_preview` itself. The only current caller is
+        `_open_stl_dialog`, which calls `_refresh_surface_preview`
+        unconditionally after this returns (line ~958). That call
+        picks up `_stl_heightmap` from the cache (the centered initial
+        FOV slice) and propagates it to the 3D Scene + Pipeline Stages
+        tabs. The implicit chain through the caller is the
+        load-bearing contract for "lab view shows real content
+        immediately on Browser load." Future direct callers of this
+        method (smoke scripts, headless tests) would need to invoke
+        `_refresh_surface_preview` themselves.
+        """
         try:
             full, origin = load_stl_heightmap_full_scale(
                 path, SURFACE_PIXEL_SIZE_MM
@@ -1188,6 +1211,37 @@ class MainWindow(QMainWindow):
             origin_xy_mm,
             SURFACE_SHAPE,
         )
+
+    def _on_commit_fov_requested(self) -> None:
+        """Stage 4d sub-task 6: promote the dragged FOV to the lab view.
+
+        Reads `_stl_heightmap` from the cache and triggers the lab
+        view + Pipeline Stages refresh through the existing
+        `_refresh_surface_preview` path. The cache is already current
+        from the drag handler (`_on_fov_dragged`), so this slot is a
+        pure trigger — no payload needed on the signal.
+
+        Z-overflow is impossible by construction here: load-time bbox
+        classification rejects STLs with Z > WORKING_VOLUME_MM[2]
+        (sub-task 2 hard-reject branch with the 120 mm cap from
+        sub-task 2.5), and `_extract_fov_slice` cannot produce a
+        heightmap with Z higher than the source. No defensive
+        Z-check is added — it would never fire.
+
+        Degenerate-geometry short-circuit: if
+        |tan(θ_proj) + tan(θ_cam)| < threshold,
+        `_refresh_surface_preview` shows the warning banner and
+        returns without updating the lab view. The commit click is a
+        silent no-op in this state — the user already sees the
+        banner; no extra UI is needed.
+
+        Tab-current dependence: if the Pipeline Stages tab is current
+        when commit fires, `_refresh_surface_preview` updates
+        `stages_view` and returns before touching `view_3d`. The
+        committed FOV reaches `view_3d` when the user next switches
+        to the 3D Scene tab (sub-task 1's tab-switch refresh).
+        """
+        self._refresh_surface_preview()
 
     def _update_stl_page_state(self) -> None:
         """Switch the STL inner page between placeholder and loaded row."""

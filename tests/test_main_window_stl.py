@@ -26,7 +26,7 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from gui.main_window import MainWindow, STL_LABEL  # noqa: E402
+from gui.main_window import MainWindow, STL_LABEL, SURFACE_SHAPE  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -775,3 +775,124 @@ def test_panel1_highlight_uses_cyan_color(
     # Confirm the per-vertex path is NOT being used — that's the
     # invariant that prevents the maroon-rendering bug.
     assert highlight._meshdata._vertexColors is None
+
+
+# ---------------------------------------------------------------------------
+# Stage 4d sub-task 6 — Commit FOV button.
+# ---------------------------------------------------------------------------
+def test_commit_button_present_and_initially_disabled(main_window):
+    """Button exists on STLBrowser after MainWindow construction; its
+    initial enabled state is False (placeholder mode, no Browser STL).
+
+    Locks the belt-and-suspenders __init__-time setEnabled(False) call
+    in stl_browser.py — __init__ uses setCurrentIndex(0) directly
+    instead of show_placeholder(), so the dispatch-driven enable
+    logic alone wouldn't fire on initial construction.
+    """
+    button = main_window.stl_browser.commit_fov_button
+    assert button is not None
+    assert button.text() == "Commit FOV"
+    assert button.isEnabled() is False
+
+
+def test_commit_button_enables_on_browser_load(
+    main_window, tmp_path, monkeypatch,
+):
+    """Browser-mode STL load enables the commit button via the
+    show_panels() dispatch path."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    assert main_window.stl_browser.is_showing_panels is True
+    assert main_window.stl_browser.commit_fov_button.isEnabled() is True
+
+
+def test_commit_button_disables_on_small_stl_load(
+    main_window, tmp_path, monkeypatch,
+):
+    """Loading a small STL after a Browser-mode load flips back to the
+    placeholder, which disables the commit button via
+    show_placeholder()."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window.stl_browser.commit_fov_button.isEnabled() is True
+
+    small = _make_box_stl(tmp_path / "small.stl", sx=40.0, sy=30.0, sz=10.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    # The Change button triggers the dialog flow; small STL takes the
+    # direct path, which calls show_placeholder() in turn.
+    main_window.stl_change_button.click()
+
+    assert main_window.stl_browser.is_showing_panels is False
+    assert main_window.stl_browser.commit_fov_button.isEnabled() is False
+
+
+def test_load_populates_lab_view_via_implicit_refresh(
+    main_window, tmp_path, monkeypatch,
+):
+    """Browser-mode STL load results in lab view (view_3d) showing
+    real content immediately, via the implicit refresh chain through
+    _open_stl_dialog. This locks the auto-show behavior even though
+    _load_stl_browser itself doesn't trigger refresh — the implicit
+    chain through the caller is the load-bearing contract.
+
+    If a future refactor breaks that chain (e.g., moves the
+    _refresh_surface_preview call out of _open_stl_dialog without
+    adding an explicit auto-commit), this test fails loudly.
+    """
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    lab_heightmap = main_window.view_3d._last_heightmap
+    assert lab_heightmap is not None
+    # Shape matches the FOV-sized recovered surface, not the full
+    # heightmap. (_compute_current_heightmap returns the centered
+    # FOV slice as input; pipeline output has the same shape.)
+    assert lab_heightmap.shape == SURFACE_SHAPE
+
+
+def test_drag_then_commit_propagates_to_lab_view(
+    main_window, tmp_path, monkeypatch,
+):
+    """Headline integration test for sub-task 6.
+
+    Browser STL load (auto-show populates lab view via implicit
+    refresh). Drag ROI to a new position — lab view STILL shows the
+    original centered slice (sub-task 5 drag-vs-commit separation).
+    Click commit_fov_button — lab view now shows the dragged slice.
+
+    Identity check via the `is` operator rather than value comparison
+    — same pattern as test_drag_does_not_update_lab_view. A new
+    pipeline run produces a fresh array, so a successful commit
+    breaks the identity. Reusing the same array would indicate the
+    refresh didn't fire.
+    """
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    lab_after_load = main_window.view_3d._last_heightmap
+    assert lab_after_load is not None
+
+    # Drag the ROI off-center.
+    initial_origin = main_window._stl_fov_origin_mm
+    new_origin = (initial_origin[0] - 20.0, initial_origin[1] + 5.0)
+    main_window.stl_browser._minimap_roi.setPos(new_origin)
+
+    # Drag alone: lab view unchanged (identity preserved).
+    assert main_window.view_3d._last_heightmap is lab_after_load
+
+    # Click commit.
+    main_window.stl_browser.commit_fov_button.click()
+
+    # Now lab view reflects the dragged slice — fresh recovered array.
+    lab_after_commit = main_window.view_3d._last_heightmap
+    assert lab_after_commit is not None
+    assert lab_after_commit is not lab_after_load

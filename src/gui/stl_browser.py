@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
@@ -145,10 +146,20 @@ class STLBrowser(QWidget):
     `_stl_fov_origin_mm`, calls `_extract_fov_slice`, and pushes the
     new slice via `update_windowed_slice`. The lab view and Pipeline
     Stages stay pinned to the most-recently-COMMITTED FOV — drag is
-    Panel 3 only; sub-task 6 adds the commit button.
+    Panel 3 only.
+
+    Commit signal
+    -------------
+    `commit_fov_requested()` fires when the user clicks the "Commit
+    FOV" button below the minimap (sub-task 6). No payload — the
+    cached `_stl_heightmap` on MainWindow is already current from
+    the drag handler. MainWindow's slot calls
+    `_refresh_surface_preview` to propagate the cached slice to the
+    lab view + Pipeline Stages + math pipeline.
     """
 
     fov_dragged = pyqtSignal(tuple)
+    commit_fov_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -195,7 +206,27 @@ class STLBrowser(QWidget):
         self._windowed_view = _new_3d_view(**_WINDOWED_CAMERA)
         self._windowed_item: Optional[gl.GLSurfacePlotItem] = None
 
-        inner.addWidget(self._minimap)
+        # Sub-task 6: Commit FOV button. Lives in Panel 2's interaction
+        # region (below the minimap). Wrapping the minimap + button in
+        # a QVBoxLayout keeps the inner splitter two-region (minimap-
+        # wrapper / whole-STL). Button initial state is disabled —
+        # belt-and-suspenders against the show_panels/show_placeholder
+        # dispatch path: __init__ uses setCurrentIndex(0) directly,
+        # bypassing show_placeholder, so we lock the disabled state
+        # here too.
+        self.commit_fov_button = QPushButton("Commit FOV")
+        self.commit_fov_button.setEnabled(False)
+        self.commit_fov_button.clicked.connect(
+            self.commit_fov_requested.emit
+        )
+
+        panel2_wrapper = QWidget()
+        panel2_layout = QVBoxLayout(panel2_wrapper)
+        panel2_layout.setContentsMargins(0, 0, 0, 0)
+        panel2_layout.addWidget(self._minimap, 1)
+        panel2_layout.addWidget(self.commit_fov_button, 0)
+
+        inner.addWidget(panel2_wrapper)
         inner.addWidget(self._whole_stl_view)
         inner.setSizes([440, 360])  # ~55/45 within the left half
 
@@ -234,10 +265,14 @@ class STLBrowser(QWidget):
     def show_placeholder(self) -> None:
         """Switch to the placeholder view (no Browser-mode STL active)."""
         self._stack.setCurrentIndex(0)
+        # Sub-task 6: commit only makes sense in Browser mode.
+        self.commit_fov_button.setEnabled(False)
 
     def show_panels(self) -> None:
         """Switch to the three-panel layout (Browser-mode STL active)."""
         self._stack.setCurrentIndex(1)
+        # Sub-task 6: enable the commit button once Browser mode is live.
+        self.commit_fov_button.setEnabled(True)
 
     # ------------------------------------------------------------------
     # Content updates (sub-task 4)
