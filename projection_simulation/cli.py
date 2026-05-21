@@ -23,6 +23,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Target screen index. Default: 0.",
     )
     parser.add_argument(
+        "--diagnose-optics",
+        action="store_true",
+        help="Run telecentric optics invariant checks and exit.",
+    )
+    parser.add_argument(
         "--fullscreen",
         action="store_true",
         help="Use fullscreen projector mode.",

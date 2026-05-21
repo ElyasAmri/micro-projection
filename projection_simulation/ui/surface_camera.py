@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import imageio.v2 as imageio
@@ -12,6 +11,8 @@ from ..core.constants import (
     MINIMAP_RAYCAST_COLUMNS,
     MINIMAP_RAYCAST_EDGE_SUBDIVISIONS,
     MINIMAP_RAYCAST_ROWS,
+    SURFACE_CAMERA_SENSOR_HEIGHT_PX,
+    SURFACE_CAMERA_SENSOR_WIDTH_PX,
     SWEEP_RECORD_FPS,
     SWEEP_RECORD_FRAMES,
     SWEEP_RECORD_HEIGHT,
@@ -29,6 +30,26 @@ TelecentricScanContext = tuple[Vec3, Vec3, Vec3, Vec3, float, float]
 
 
 class SurfaceCameraMixin:
+    def _telecentric_scan_half_extents(
+        self,
+        image_width: int,
+        image_height: int,
+    ) -> tuple[float, float]:
+        if image_width <= 0 or image_height <= 0:
+            return (0.0, 0.0)
+        # Telecentric object-space field is a physical lens property; requested
+        # render resolution only changes sampling density, never the field size.
+        sensor_aspect = SURFACE_CAMERA_SENSOR_WIDTH_PX / SURFACE_CAMERA_SENSOR_HEIGHT_PX
+        lens_diameter_cm = max(0.5, float(self._telecentric_lens_diameter_cm))
+        aperture_radius = lens_diameter_cm * 0.5
+        if sensor_aspect >= 1.0:
+            half_h = aperture_radius / ((sensor_aspect * sensor_aspect + 1.0) ** 0.5)
+            half_w = half_h * sensor_aspect
+        else:
+            half_w = aperture_radius / ((1.0 + 1.0 / (sensor_aspect * sensor_aspect)) ** 0.5)
+            half_h = half_w / sensor_aspect
+        return (half_w, half_h)
+
     def _surface_camera_telecentric_scan_context(
         self,
         image_width: int,
@@ -47,35 +68,13 @@ class SurfaceCameraMixin:
         if right is None:
             return None
         up = vec_cross(right, forward)
-
-        primary_surface = self._primary_projection_surface()
-        target_center = primary_surface[0] if primary_surface is not None else self._look_target()
-        target_depth = vec_dot(vec_subtract(target_center, telecentric_origin), forward)
-        if target_depth <= 1e-5:
-            target_depth = max(1.0, self.distance_m)
-        half_h = target_depth * math.tan(math.radians(self._effective_projector_fov_deg()) / 2.0)
-        half_w = half_h * (float(image_width) / float(image_height))
+        half_w, half_h = self._telecentric_scan_half_extents(
+            image_width,
+            image_height,
+        )
+        if half_w <= 0.0 or half_h <= 0.0:
+            return None
         return (telecentric_origin, right, up, forward, half_w, half_h)
-
-    def _surface_camera_projection_context(
-        self, image_width: int, image_height: int
-    ) -> tuple[Vec3, Vec3, Vec3, Vec3, float, float] | None:
-        if image_width <= 0 or image_height <= 0:
-            return None
-        telecentric_origin = self._surface_telecentric_lens_center_world()
-        if telecentric_origin is None:
-            return None
-        forward = self._horizontal_forward_direction(telecentric_origin)
-        world_up: Vec3 = (0.0, 0.0, 1.0)
-        if abs(vec_dot(forward, world_up)) > 0.98:
-            world_up = (0.0, 1.0, 0.0)
-        right = vec_normalize(vec_cross(forward, world_up))
-        if right is None:
-            return None
-        up = vec_cross(right, forward)
-        aspect = float(image_width) / float(image_height)
-        tan_half_fov = math.tan(math.radians(self._effective_projector_fov_deg()) / 2.0)
-        return (telecentric_origin, right, up, forward, tan_half_fov, aspect)
 
     def record_surface_camera_sweep_video(
         self,

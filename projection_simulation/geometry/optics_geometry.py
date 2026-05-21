@@ -7,6 +7,7 @@ from ..core.constants import (
     DEFAULT_PROJECTION_ANGLE_DEG,
     PROJECTOR_ANGLE_LIMIT_DEG,
     PROJECTOR_IMAGE_ASPECT,
+    PROJECTOR_LENS_HEIGHT_CM,
     PROJECTOR_THROW_RATIO,
     SURFACE_CAMERA_LENS_HEIGHT_CM,
     TELECENTRIC_LENS_TO_CAMERA_LENS_CM,
@@ -16,6 +17,13 @@ from ..core.types import Vec3
 
 
 class OpticsGeometryMixin:
+    def _projector_projection_origin_world(self) -> Vec3 | None:
+        lens_data = self._projector_lens_rectangle_world()
+        if lens_data is None:
+            return None
+        _, projector_origin = lens_data
+        return projector_origin
+
     def _resolve_base_plane_center(self, distance_m: float) -> Vec3:
         if self.use_axis_distance:
             if self.projector_axis == "y":
@@ -80,6 +88,7 @@ class OpticsGeometryMixin:
         return abs(2.0 * radius_cm * math.sin(math.radians(angle_deg)))
 
     def _clamp_aperture_center_world(self, origin: Vec3) -> Vec3 | None:
+        """Return the front telecentric aperture center on the optical-axis height."""
         forward = self._horizontal_forward_direction(origin)
         world_up: Vec3 = (0.0, 0.0, 1.0)
         if abs(vec_dot(forward, world_up)) > 0.98:
@@ -114,10 +123,9 @@ class OpticsGeometryMixin:
         return (telecentric_center, camera_lens_center, forward)
 
     def _ray_origins_world(self) -> tuple[Vec3, Vec3] | None:
-        lens_data = self._projector_lens_rectangle_world()
-        if lens_data is None:
+        projector_origin = self._projector_projection_origin_world()
+        if projector_origin is None:
             return None
-        _, projector_origin = lens_data
         lens_centers = self._surface_camera_lens_centers_world()
         if lens_centers is None:
             return None
@@ -176,9 +184,26 @@ class OpticsGeometryMixin:
             center[1] + n[1] * normal_offset - t[1] * lateral_offset,
             center[2] + n[2] * normal_offset - t[2] * lateral_offset,
         )
+        # Reposition device bodies until their optical origins, not chassis
+        # origins, satisfy the requested symmetry and spacing constraints.
         for _ in range(20):
+            self._align_projector_lens_to_optical_axis()
             self._align_ray_starts_to_x_axis()
             self._enforce_ray_origin_spacing()
+
+    def _align_projector_lens_to_optical_axis(self) -> None:
+        lens_data = self._projector_lens_rectangle_world()
+        if lens_data is None:
+            return
+        _, lens_center = lens_data
+        delta_z = PROJECTOR_LENS_HEIGHT_CM - lens_center[2]
+        if abs(delta_z) <= 1e-6:
+            return
+        self._projector_pos = (
+            self._projector_pos[0],
+            self._projector_pos[1],
+            self._projector_pos[2] + delta_z,
+        )
 
     def _align_ray_starts_to_x_axis(self) -> None:
         for _ in range(4):

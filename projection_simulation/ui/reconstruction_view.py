@@ -123,7 +123,7 @@ class ReconstructionWindow(QWidget):
             68,
             (
                 f"Similarity: corr={metrics.correlation:.3f}, R2={metrics.r2:.3f}, "
-                f"RMSE={metrics.rmse:.3f}, valid={metrics.count}"
+                f"RMSE={metrics.rmse:.3f}, eval={metrics.count}"
             ),
         )
         painter.drawText(16, 90, "Left-drag to rotate, mouse wheel to zoom")

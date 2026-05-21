@@ -7,9 +7,10 @@ from PySide6.QtGui import QGuiApplication, QImage, QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from .cli import parse_args
-from .core.constants import DEFAULT_DEVICE_SPACING_CM
+from .core.constants import DEFAULT_DEVICE_SPACING_CM, TELECENTRIC_LENS_DIAMETER_CM
 from .core.fringe import generate_fringe_image
 from .core.types import Vec3
+from .diagnostics import run_optics_smoke_checks
 from .ui.application import ProjectionApplicationWindow
 from .ui.window import ProjectionWindow
 
@@ -193,7 +194,9 @@ def _apply_args_to_window(window: ProjectionWindow, args: argparse.Namespace) ->
     window._device_distance_m = window.distance_m
     window._device_lateral_sign = -1.0 if window._projection_angle_deg < 0.0 else 1.0
     window._device_spacing_cm = DEFAULT_DEVICE_SPACING_CM
+    window._telecentric_lens_diameter_cm = TELECENTRIC_LENS_DIAMETER_CM
     window._base_distance_m = window.distance_m
+    window._default_telecentric_lens_diameter_cm = window._telecentric_lens_diameter_cm
     window._plane_shift_direction = (
         -window._symmetry_normal[0],
         -window._symmetry_normal[1],
@@ -249,6 +252,21 @@ def main(argv: list[str] | None = None, *, debug_mode: bool = False) -> int:
         app.aboutToQuit.connect(
             lambda: print("[reload-debug] QApplication.aboutToQuit emitted", flush=True)
         )
+
+    if args.diagnose_optics:
+        view: ProjectionWindow | None = None
+        try:
+            view = _create_projection_view(args, image)
+            for message in run_optics_smoke_checks(view):
+                print(f"[optics] {message}", flush=True)
+        except ValueError as exc:
+            print(f"[optics] {exc}", file=sys.stderr, flush=True)
+            return 1
+        finally:
+            if view is not None:
+                view.dispose_gpu_renderer()
+                view.close()
+        return 0
 
     screens = QGuiApplication.screens()
     if not screens:

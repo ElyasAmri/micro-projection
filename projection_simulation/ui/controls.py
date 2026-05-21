@@ -47,6 +47,16 @@ class ProjectionControlsMixin:
         self._projector_fov_slider.setValue(int(round(initial_fov)))
         self._projector_fov_slider.valueChanged.connect(self._on_projector_fov_changed)
 
+        self._telecentric_lens_label = QLabel(self._controls_frame)
+        self._telecentric_lens_slider = QSlider(Qt.Horizontal, self._controls_frame)
+        self._telecentric_lens_slider.setRange(5, 100)
+        self._telecentric_lens_slider.setValue(
+            int(round(max(0.5, self._telecentric_lens_diameter_cm) * 10.0))
+        )
+        self._telecentric_lens_slider.valueChanged.connect(
+            self._on_telecentric_lens_diameter_changed
+        )
+
         self._reset_controls_button = QPushButton("Reset controls to default", self._controls_frame)
         self._reset_controls_button.clicked.connect(self._on_reset_controls_clicked)
 
@@ -70,6 +80,8 @@ class ProjectionControlsMixin:
         layout.addWidget(self._distance_slider)
         layout.addWidget(self._projector_fov_label)
         layout.addWidget(self._projector_fov_slider)
+        layout.addWidget(self._telecentric_lens_label)
+        layout.addWidget(self._telecentric_lens_slider)
         layout.addWidget(self._reset_controls_button)
         layout.addWidget(self._object_label)
         layout.addWidget(self._object_combo)
@@ -81,7 +93,7 @@ class ProjectionControlsMixin:
     def _refresh_control_labels(self) -> None:
         if hasattr(self, "_spacing_label"):
             self._spacing_label.setText(
-                f"Proj-telecentric spacing (ray origins): {self._device_spacing_cm:.1f} cm"
+                f"Projector-telecentric origin spacing: {self._device_spacing_cm:.1f} cm"
             )
         if hasattr(self, "_spacing_slider"):
             spacing_max = max(1, int(round(max(5.0, self._device_distance_m * 2.0) * 10.0)))
@@ -93,7 +105,7 @@ class ProjectionControlsMixin:
                 self._spacing_slider.blockSignals(True)
                 self._spacing_slider.setValue(spacing_value)
                 self._spacing_slider.blockSignals(False)
-        self._distance_label.setText(f"Plane distance: {self.distance_m:.1f} cm")
+        self._distance_label.setText(f"Optical-axis plane distance: {self.distance_m:.1f} cm")
         if self.projector_fov_deg is None:
             effective = self._effective_projector_fov_now()
             self._projector_fov_label.setText(f"Projector FOV: Auto ({effective:.1f}°)")
@@ -105,6 +117,18 @@ class ProjectionControlsMixin:
             self._projector_fov_slider.blockSignals(True)
             self._projector_fov_slider.setValue(int(round(self.projector_fov_deg)))
             self._projector_fov_slider.blockSignals(False)
+        if hasattr(self, "_telecentric_lens_label"):
+            self._telecentric_lens_label.setText(
+                f"Telecentric aperture diameter: {self._telecentric_lens_diameter_cm:.1f} cm"
+            )
+        if hasattr(self, "_telecentric_lens_slider"):
+            value = int(round(max(0.5, self._telecentric_lens_diameter_cm) * 10.0))
+            value = max(self._telecentric_lens_slider.minimum(), value)
+            value = min(self._telecentric_lens_slider.maximum(), value)
+            if self._telecentric_lens_slider.value() != value:
+                self._telecentric_lens_slider.blockSignals(True)
+                self._telecentric_lens_slider.setValue(value)
+                self._telecentric_lens_slider.blockSignals(False)
         if hasattr(self, "_record_sweep_button"):
             self._record_sweep_button.setEnabled(
                 self.mode == "plane3d"
@@ -144,6 +168,11 @@ class ProjectionControlsMixin:
         self._refresh_control_labels()
         self.update()
 
+    def _on_telecentric_lens_diameter_changed(self, value: int) -> None:
+        self._telecentric_lens_diameter_cm = max(0.5, float(value) / 10.0)
+        self._refresh_control_labels()
+        self.update()
+
     def _on_object_kind_changed(self, index: int) -> None:
         kind = self._object_combo.itemData(index)
         self.field_object_kind = str(kind or "box")
@@ -154,6 +183,7 @@ class ProjectionControlsMixin:
         self._device_spacing_cm = self._default_device_spacing_cm
         self.distance_m = self._default_distance_m
         self.projector_fov_deg = self._default_projector_fov_setting
+        self._telecentric_lens_diameter_cm = self._default_telecentric_lens_diameter_cm
         self._update_reflected_devices()
         self._refresh_control_labels()
         self.update()
@@ -218,7 +248,6 @@ class ProjectionControlsMixin:
         self._scan_in_progress = True
         self._scan_reconstruct_button.setText("Scanning...")
         self._refresh_control_labels()
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         record_path = Path(".artifacts") / "viewport-scan-sweep.mp4"
         try:
             reconstruction = self.reconstruct_current_object_from_viewport(
@@ -228,7 +257,6 @@ class ProjectionControlsMixin:
             QMessageBox.critical(self, "Scan failed", str(exc))
             return
         finally:
-            QApplication.restoreOverrideCursor()
             self._scan_in_progress = False
             self._scan_reconstruct_button.setText("Scan and reconstruct")
             self._refresh_control_labels()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
@@ -14,9 +14,44 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.constants import SURFACE_CAMERA_SENSOR_HEIGHT_PX, SURFACE_CAMERA_SENSOR_WIDTH_PX
 from ..scanning.scan_pipeline import ScanReconstruction
 from .reconstruction_view import ReconstructionWindow
 from .window import ProjectionWindow
+
+RIGHT_PANEL_MIN_WIDTH = 420
+SURFACE_CAMERA_ASPECT = SURFACE_CAMERA_SENSOR_WIDTH_PX / SURFACE_CAMERA_SENSOR_HEIGHT_PX
+RECONSTRUCTION_ASPECT = 4.0 / 3.0
+
+
+class AspectRatioLabel(QLabel):
+    def __init__(self, aspect_ratio: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._aspect_ratio = aspect_ratio
+
+    def hasHeightForWidth(self) -> bool:  # type: ignore[override]
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # type: ignore[override]
+        return max(1, int(round(width / self._aspect_ratio)))
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(RIGHT_PANEL_MIN_WIDTH, self.heightForWidth(RIGHT_PANEL_MIN_WIDTH))
+
+
+class AspectRatioFrame(QFrame):
+    def __init__(self, aspect_ratio: float, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._aspect_ratio = aspect_ratio
+
+    def hasHeightForWidth(self) -> bool:  # type: ignore[override]
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # type: ignore[override]
+        return max(1, int(round(width / self._aspect_ratio)))
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(RIGHT_PANEL_MIN_WIDTH, self.heightForWidth(RIGHT_PANEL_MIN_WIDTH))
 
 
 class ProjectionApplicationWindow(QMainWindow):
@@ -33,14 +68,11 @@ class ProjectionApplicationWindow(QMainWindow):
         root.setChildrenCollapsible(False)
         self.setCentralWidget(root)
 
-        sidebar = self._build_sidebar()
-        root.addWidget(sidebar)
         root.addWidget(self.projection_view)
-        root.addWidget(self._build_observation_panel())
-        root.setStretchFactor(0, 0)
-        root.setStretchFactor(1, 1)
-        root.setStretchFactor(2, 0)
-        root.setSizes([300, 980, 420])
+        root.addWidget(self._build_inspector_panel())
+        root.setStretchFactor(0, 1)
+        root.setStretchFactor(1, 0)
+        root.setSizes([980, 460])
 
         self._surface_timer = QTimer(self)
         self._surface_timer.setInterval(250)
@@ -50,50 +82,37 @@ class ProjectionApplicationWindow(QMainWindow):
     def set_reload_handler(self, handler: Callable[[], None] | None) -> None:
         self.projection_view.set_reload_handler(handler)
 
-    def _build_sidebar(self) -> QWidget:
-        sidebar = QFrame(self)
-        sidebar.setObjectName("controlsSidebar")
-        sidebar.setMinimumWidth(280)
-        sidebar.setMaximumWidth(360)
-        sidebar.setStyleSheet(
-            "#controlsSidebar { background-color: #151922; border-right: 1px solid #2d3442; }"
-            "QLabel { color: #E6EAF2; }"
-        )
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-        title = QLabel("Controls", sidebar)
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
-        layout.addWidget(title)
-
-        controls = self.projection_view._controls_frame
-        controls.setParent(sidebar)
-        controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        controls.setVisible(True)
-        layout.addWidget(controls)
-        layout.addStretch(1)
-        return sidebar
-
-    def _build_observation_panel(self) -> QWidget:
+    def _build_inspector_panel(self) -> QWidget:
         panel = QFrame(self)
-        panel.setObjectName("observationPanel")
-        panel.setMinimumWidth(340)
+        panel.setObjectName("inspectorPanel")
+        panel.setMinimumWidth(RIGHT_PANEL_MIN_WIDTH)
         panel.setStyleSheet(
-            "#observationPanel { background-color: #10141C; border-left: 1px solid #2d3442; }"
+            "#inspectorPanel { background-color: #151922; border-left: 1px solid #2d3442; }"
             "QLabel { color: #E6EAF2; }"
         )
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
+        controls_title = QLabel("Controls", panel)
+        controls_title.setStyleSheet("font-size: 16px; font-weight: 600;")
+        layout.addWidget(controls_title)
+
+        controls = self.projection_view._controls_frame
+        controls.setParent(panel)
+        controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        controls.setVisible(True)
+        layout.addWidget(controls)
+
         surface_title = QLabel("Surface camera", panel)
         surface_title.setStyleSheet("font-size: 16px; font-weight: 600;")
         layout.addWidget(surface_title)
 
-        self._surface_camera_label = QLabel(panel)
+        self._surface_camera_label = AspectRatioLabel(SURFACE_CAMERA_ASPECT, panel)
         self._surface_camera_label.setObjectName("surfaceCameraPane")
-        self._surface_camera_label.setMinimumSize(300, 180)
+        self._surface_camera_label.setMinimumSize(360, 203)
         self._surface_camera_label.setAlignment(Qt.AlignCenter)
+        self._surface_camera_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._surface_camera_label.setStyleSheet(
             "#surfaceCameraPane { background-color: #080A0E; border: 1px solid #2d3442; }"
         )
@@ -103,8 +122,10 @@ class ProjectionApplicationWindow(QMainWindow):
         reconstruction_title.setStyleSheet("font-size: 16px; font-weight: 600;")
         layout.addWidget(reconstruction_title)
 
-        self._reconstruction_container = QFrame(panel)
+        self._reconstruction_container = AspectRatioFrame(RECONSTRUCTION_ASPECT, panel)
         self._reconstruction_container.setObjectName("reconstructionPane")
+        self._reconstruction_container.setMinimumSize(360, 270)
+        self._reconstruction_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._reconstruction_container.setStyleSheet(
             "#reconstructionPane { background-color: #080A0E; border: 1px solid #2d3442; }"
         )
@@ -122,9 +143,10 @@ class ProjectionApplicationWindow(QMainWindow):
     def _refresh_surface_camera(self) -> None:
         if self._surface_camera_label.width() <= 2 or self._surface_camera_label.height() <= 2:
             return
+        capture_width, capture_height = self._surface_camera_capture_size()
         image = self.projection_view.render_surface_camera_telecentric_capture(
-            self._surface_camera_label.width(),
-            self._surface_camera_label.height(),
+            capture_width,
+            capture_height,
         )
         pixmap = QPixmap.fromImage(image)
         self._surface_camera_label.setPixmap(
@@ -135,6 +157,15 @@ class ProjectionApplicationWindow(QMainWindow):
             )
         )
 
+    def _surface_camera_capture_size(self) -> tuple[int, int]:
+        width = max(2, self._surface_camera_label.width())
+        height = max(2, self._surface_camera_label.height())
+        if width / height > SURFACE_CAMERA_ASPECT:
+            width = int(round(height * SURFACE_CAMERA_ASPECT))
+        else:
+            height = int(round(width / SURFACE_CAMERA_ASPECT))
+        return (max(2, width), max(2, height))
+
     def set_reconstruction(self, reconstruction: ScanReconstruction) -> None:
         if self._reconstruction_view is not None:
             self._reconstruction_layout.removeWidget(self._reconstruction_view)
@@ -143,6 +174,7 @@ class ProjectionApplicationWindow(QMainWindow):
             self._reconstruction_view = None
         self._reconstruction_placeholder.setVisible(False)
         self._reconstruction_view = ReconstructionWindow(reconstruction, loop_frames=False)
+        self._reconstruction_view.setMinimumSize(360, 270)
         self._reconstruction_view.setParent(self._reconstruction_container)
         self._reconstruction_layout.addWidget(self._reconstruction_view)
         self._reconstruction_view.show()

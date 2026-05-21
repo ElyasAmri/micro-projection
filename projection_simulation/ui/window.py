@@ -19,7 +19,7 @@ from PySide6.QtGui import (
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QWidget
 
-from ..core.constants import DEFAULT_DEVICE_SPACING_CM
+from ..core.constants import DEFAULT_DEVICE_SPACING_CM, TELECENTRIC_LENS_DIAMETER_CM
 from ..core.profiling import FrameProfiler
 from ..core.types import CameraContext, Vec3
 from ..geometry.camera_navigation import CameraNavigationMixin
@@ -158,9 +158,11 @@ class ProjectionWindow(
         self._device_distance_m = self.distance_m
         self._device_lateral_sign = -1.0 if self._projection_angle_deg < 0.0 else 1.0
         self._device_spacing_cm = DEFAULT_DEVICE_SPACING_CM
+        self._telecentric_lens_diameter_cm = TELECENTRIC_LENS_DIAMETER_CM
         self._base_distance_m = self.distance_m
         self._default_device_spacing_cm = self._device_spacing_cm
         self._default_distance_m = self.distance_m
+        self._default_telecentric_lens_diameter_cm = self._telecentric_lens_diameter_cm
         self._default_projector_fov_setting = self.projector_fov_deg
         self._projector_pos: Vec3 = (self.projector_x, self.projector_y, self.projector_z)
         self._surface_camera_pos: Vec3 = (

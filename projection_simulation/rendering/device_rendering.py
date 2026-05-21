@@ -5,7 +5,7 @@ import math
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 
-from ..core.constants import SURFACE_CAMERA_REAR_LENS_DIAMETER_CM, TELECENTRIC_LENS_DIAMETER_CM
+from ..core.constants import SURFACE_CAMERA_REAR_LENS_DIAMETER_CM
 from ..core.math3d import vec_cross, vec_dot, vec_normalize, vec_subtract
 from ..core.types import CameraContext, Vec3
 from .device_dimensions import (
@@ -24,6 +24,79 @@ from .device_dimensions import (
 
 
 class DeviceRenderingMixin:
+    def _projection_plane_surface_world(self) -> list[Vec3] | None:
+        if not self.project_projection_plane:
+            return None
+        return self._surface_world_corners(
+            self._plane_center(),
+            self.plane_width_m,
+            self.plane_height_m,
+        )
+
+    def _projector_hit_on_projection_plane(
+        self,
+        x_pixel: float,
+        y_pixel: float,
+        image_width: int,
+        image_height: int,
+        projector_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float],
+        plane_surface: list[Vec3] | None,
+    ) -> Vec3 | None:
+        if plane_surface is None or len(plane_surface) < 4:
+            return None
+        ray_direction = self._projector_ray_direction(
+            x_pixel,
+            y_pixel,
+            image_width,
+            image_height,
+            projector_context,
+        )
+        if ray_direction is None:
+            return None
+        edge_u = vec_subtract(plane_surface[1], plane_surface[0])
+        edge_v = vec_subtract(plane_surface[3], plane_surface[0])
+        plane_normal = vec_normalize(vec_cross(edge_u, edge_v))
+        if plane_normal is None:
+            return None
+        return self._intersect_ray_with_plane(
+            projector_context[0],
+            ray_direction,
+            plane_surface[0],
+            plane_normal,
+        )
+
+    def _telecentric_hit_on_projection_plane(
+        self,
+        x_pixel: float,
+        y_pixel: float,
+        image_width: int,
+        image_height: int,
+        scan_context: tuple[Vec3, Vec3, Vec3, Vec3, float, float],
+        plane_surface: list[Vec3] | None,
+    ) -> Vec3 | None:
+        if plane_surface is None or len(plane_surface) < 4:
+            return None
+        ray_origin = self._telecentric_ray_origin(
+            x_pixel,
+            y_pixel,
+            image_width,
+            image_height,
+            scan_context,
+        )
+        if ray_origin is None:
+            return None
+        edge_u = vec_subtract(plane_surface[1], plane_surface[0])
+        edge_v = vec_subtract(plane_surface[3], plane_surface[0])
+        plane_normal = vec_normalize(vec_cross(edge_u, edge_v))
+        if plane_normal is None:
+            return None
+        return self._intersect_ray_with_plane(
+            ray_origin,
+            scan_context[3],
+            plane_surface[0],
+            plane_normal,
+        )
+
     def _draw_projector_contours(
         self,
         painter: QPainter,
@@ -68,7 +141,8 @@ class DeviceRenderingMixin:
             painter.drawLine(pa, pb)
 
         scene_surfaces = self._scene_surfaces()
-        if not scene_surfaces:
+        plane_surface = self._projection_plane_surface_world()
+        if not scene_surfaces and plane_surface is None:
             return
 
         source_corners = [
@@ -80,17 +154,26 @@ class DeviceRenderingMixin:
         hit_world_points: list[Vec3] = []
         projection_points: list[QPointF] = []
         for sx, sy in source_corners:
-            hit = self._first_projector_hit(
+            hit_world = self._projector_hit_on_projection_plane(
                 sx,
                 sy,
                 pixmap.width(),
                 pixmap.height(),
                 projector_context,
-                scene_surfaces,
+                plane_surface,
             )
-            if hit is None:
-                continue
-            hit_world = hit[1]
+            if hit_world is None:
+                hit = self._first_projector_hit(
+                    sx,
+                    sy,
+                    pixmap.width(),
+                    pixmap.height(),
+                    projector_context,
+                    scene_surfaces,
+                )
+                if hit is None:
+                    continue
+                hit_world = hit[1]
             projected = self._project_world_point(hit_world, view_context)
             if projected is None:
                 continue
@@ -118,15 +201,24 @@ class DeviceRenderingMixin:
             pa, pb = segment
             painter.drawLine(pa, pb)
 
-        center_hit = self._first_projector_hit(
+        projector_hit = self._projector_hit_on_projection_plane(
             pixmap.width() * 0.5,
             pixmap.height() * 0.5,
             pixmap.width(),
             pixmap.height(),
             projector_context,
-            scene_surfaces,
+            plane_surface,
         )
-        projector_hit = center_hit[1] if center_hit is not None else None
+        if projector_hit is None:
+            center_hit = self._first_projector_hit(
+                pixmap.width() * 0.5,
+                pixmap.height() * 0.5,
+                pixmap.width(),
+                pixmap.height(),
+                projector_context,
+                scene_surfaces,
+            )
+            projector_hit = center_hit[1] if center_hit is not None else None
         if projector_hit is not None:
             center_line = self._project_segment_clipped(
                 lens_center_world, projector_hit, view_context
@@ -150,14 +242,20 @@ class DeviceRenderingMixin:
             clamp_origin, camera_lens_origin, _ = lens_centers
             self._clamp_ray_origin_world = clamp_origin
             self._surface_camera_lens_origin_world = camera_lens_origin
-            clamp_right = clamp_context[1]
-            clamp_up = clamp_context[2]
+            _, clamp_right, clamp_up, _, clamp_half_w, clamp_half_h = clamp_context
             clamp_corners_world = self._lens_plane_corners(
                 clamp_origin,
                 clamp_right,
                 clamp_up,
-                TELECENTRIC_LENS_DIAMETER_CM,
-                TELECENTRIC_LENS_DIAMETER_CM,
+                self._telecentric_lens_diameter_cm,
+                self._telecentric_lens_diameter_cm,
+            )
+            scan_origin_corners = self._lens_plane_corners(
+                clamp_origin,
+                clamp_right,
+                clamp_up,
+                clamp_half_w * 2.0,
+                clamp_half_h * 2.0,
             )
             camera_lens_corners_world = self._lens_plane_corners(
                 camera_lens_origin,
@@ -207,17 +305,26 @@ class DeviceRenderingMixin:
             clamp_projection_points: list[QPointF] = []
             clamp_hit_world_points: list[Vec3] = []
             for sx, sy in source_corners:
-                clamp_hit = self._first_telecentric_scan_hit(
+                hit_world = self._telecentric_hit_on_projection_plane(
                     sx,
                     sy,
                     pixmap.width(),
                     pixmap.height(),
                     clamp_context,
-                    scene_surfaces,
+                    plane_surface,
                 )
-                if clamp_hit is None:
-                    continue
-                hit_world = clamp_hit[1]
+                if hit_world is None:
+                    clamp_hit = self._first_telecentric_scan_hit(
+                        sx,
+                        sy,
+                        pixmap.width(),
+                        pixmap.height(),
+                        clamp_context,
+                        scene_surfaces,
+                    )
+                    if clamp_hit is None:
+                        continue
+                    hit_world = clamp_hit[1]
                 projected = self._project_world_point(hit_world, view_context)
                 if projected is None:
                     continue
@@ -239,8 +346,8 @@ class DeviceRenderingMixin:
                 painter.restore()
 
             for i, hit in enumerate(clamp_hit_world_points):
-                clamp_corner = clamp_corners_world[i % len(clamp_corners_world)]
-                segment = self._project_segment_clipped(clamp_corner, hit, view_context)
+                scan_origin_corner = scan_origin_corners[i % len(scan_origin_corners)]
+                segment = self._project_segment_clipped(scan_origin_corner, hit, view_context)
                 if segment is None:
                     continue
                 painter.save()
@@ -249,15 +356,24 @@ class DeviceRenderingMixin:
                 painter.drawLine(pa, pb)
                 painter.restore()
 
-            clamp_center_hit = self._first_telecentric_scan_hit(
+            clamp_hit = self._telecentric_hit_on_projection_plane(
                 pixmap.width() * 0.5,
                 pixmap.height() * 0.5,
                 pixmap.width(),
                 pixmap.height(),
                 clamp_context,
-                scene_surfaces,
+                plane_surface,
             )
-            clamp_hit = clamp_center_hit[1] if clamp_center_hit is not None else None
+            if clamp_hit is None:
+                clamp_center_hit = self._first_telecentric_scan_hit(
+                    pixmap.width() * 0.5,
+                    pixmap.height() * 0.5,
+                    pixmap.width(),
+                    pixmap.height(),
+                    clamp_context,
+                    scene_surfaces,
+                )
+                clamp_hit = clamp_center_hit[1] if clamp_center_hit is not None else None
             self._clamp_projection_hit_world = clamp_hit
             if clamp_hit is not None:
                 clamp_segment = self._project_segment_clipped(clamp_origin, clamp_hit, view_context)
@@ -296,6 +412,12 @@ class DeviceRenderingMixin:
         camera_lens_origin_2d = (
             self._project_world_point(camera_lens_origin, view_context)
             if camera_lens_origin is not None
+            else None
+        )
+        object_center = self._field_center() if self.project_field_object else None
+        object_center_2d = (
+            self._project_world_point(object_center, view_context)
+            if object_center is not None
             else None
         )
 
@@ -339,6 +461,13 @@ class DeviceRenderingMixin:
                 camera_lens_origin,
                 QColor(92, 222, 255),
                 "Camera lens",
+            )
+        if object_center_2d is not None and object_center is not None:
+            draw_hit_marker(
+                object_center_2d,
+                object_center,
+                QColor(132, 255, 120),
+                "Object center",
             )
 
     def _projected_surface_quad(

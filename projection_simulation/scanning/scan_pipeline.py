@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from PySide6.QtGui import QImage
 
+from ..core.constants import SURFACE_CAMERA_CAPTURE_HEIGHT_PX, SURFACE_CAMERA_CAPTURE_WIDTH_PX
 from ..core.fringe import generate_fringe_image
 from ..core.math3d import vec_dot, vec_subtract
 from ..core.types import Vec3
@@ -70,7 +71,7 @@ def capture_phase_sequence(
                 bias=window.fringe_bias,
             )
             window._processed = window._process_image(fringe)
-            capture = window.render_surface_camera_capture(width, height)
+            capture = window.render_surface_camera_telecentric_capture(width, height)
             frames.append(_qimage_to_luma(capture))
     finally:
         window._processed = previous_processed
@@ -80,8 +81,8 @@ def capture_phase_sequence(
 def reconstruct_current_object(
     window: ProjectionWindow,
     *,
-    width: int = 192,
-    height: int = 108,
+    width: int = SURFACE_CAMERA_CAPTURE_WIDTH_PX,
+    height: int = SURFACE_CAMERA_CAPTURE_HEIGHT_PX,
     steps: int = 8,
 ) -> ScanReconstruction:
     original_project_field_object = window.project_field_object
@@ -166,9 +167,15 @@ def _reconstruct_frame(
     if np.count_nonzero(valid_mask) < 2:
         raise ValueError("Scan did not produce enough valid samples to reconstruct.")
 
-    calibration = fit_height_calibration(phase_delta, truth, valid_mask)
+    calibration_mask, evaluation_mask = _calibration_evaluation_masks(valid_mask)
+    calibration = fit_height_calibration(
+        phase_delta,
+        truth,
+        calibration_mask,
+        include_spatial_terms=True,
+    )
     height_map = apply_height_calibration(phase_delta, calibration)
-    metrics = similarity_metrics(height_map, truth, valid_mask)
+    metrics = similarity_metrics(height_map, truth, evaluation_mask)
     return ReconstructionFrame(
         height=height_map,
         mask=valid_mask,
@@ -176,6 +183,15 @@ def _reconstruct_frame(
         phase_delta=phase_delta,
         label=label,
     )
+
+
+def _calibration_evaluation_masks(valid_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    rows, columns = np.indices(valid_mask.shape)
+    calibration_mask = valid_mask & ((rows + columns) % 2 == 0)
+    evaluation_mask = valid_mask & ~calibration_mask
+    if np.count_nonzero(calibration_mask) < 2 or np.count_nonzero(evaluation_mask) < 1:
+        return valid_mask, valid_mask
+    return calibration_mask, evaluation_mask
 
 
 def nuanced_field_object_faces(

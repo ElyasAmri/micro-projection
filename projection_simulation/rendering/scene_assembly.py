@@ -11,9 +11,6 @@ from ..core.constants import (
     PROJECTOR_LENS_FACE_EPS,
     PROJECTOR_LENS_WINDOW_HEIGHT_CM,
     PROJECTOR_LENS_WINDOW_WIDTH_CM,
-    TELECENTRIC_LENS_DIAMETER_CM,
-    TELECENTRIC_LENS_TO_CAMERA_LENS_CM,
-    SURFACE_CAMERA_REAR_LENS_DIAMETER_CM,
 )
 from ..core.math3d import vec_cross, vec_dot, vec_normalize, vec_subtract
 from ..core.types import Vec3
