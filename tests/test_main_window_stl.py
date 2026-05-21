@@ -535,7 +535,7 @@ def test_update_whole_stl_resets_camera_distance(main_window, tmp_path):
 
 def test_update_windowed_slice_preserves_camera_pose(main_window, tmp_path):
     """Panel 3's camera pose is preserved across update_windowed_slice
-    calls — sub-task 5's drag handler must not cause view re-jolt."""
+    calls — the drag handler must not cause view re-jolt."""
     hm = np.zeros((550, 680), dtype=np.float64)
     browser = main_window.stl_browser
     browser.update_windowed_slice(hm, 0.1)
@@ -546,7 +546,7 @@ def test_update_windowed_slice_preserves_camera_pose(main_window, tmp_path):
     )
     params_before = browser._windowed_view.cameraParams().copy()
 
-    # Push a new slice (simulating sub-task 5's drag-update path).
+    # Push a new slice (simulating the drag-update path).
     hm2 = np.full((550, 680), 5.0, dtype=np.float64)
     browser.update_windowed_slice(hm2, 0.1)
 
@@ -554,3 +554,131 @@ def test_update_windowed_slice_preserves_camera_pose(main_window, tmp_path):
     assert params_after["distance"] == params_before["distance"]
     assert params_after["elevation"] == params_before["elevation"]
     assert params_after["azimuth"] == params_before["azimuth"]
+
+
+# ---------------------------------------------------------------------------
+# Stage 4d sub-task 5: minimap + draggable FOV rectangle.
+# ---------------------------------------------------------------------------
+def test_browser_load_constructs_minimap_and_roi(
+    main_window, tmp_path, monkeypatch,
+):
+    """A Browser-mode STL load populates the minimap ImageItem and
+    the FOV RectROI."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    browser = main_window.stl_browser
+    assert browser.has_minimap_content is True
+    assert browser._minimap_roi is not None
+
+
+def test_minimap_roi_initial_position_matches_fov_origin(
+    main_window, tmp_path, monkeypatch,
+):
+    """After a Browser load, the FOV rectangle's pos() matches
+    MainWindow's _stl_fov_origin_mm cache."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    roi_pos = main_window.stl_browser._minimap_roi.pos()
+    fov_origin = main_window._stl_fov_origin_mm
+    assert float(roi_pos[0]) == pytest.approx(fov_origin[0])
+    assert float(roi_pos[1]) == pytest.approx(fov_origin[1])
+
+
+def test_minimap_roi_size_is_fov_size(main_window, tmp_path, monkeypatch):
+    """The FOV rectangle is sized to the hardware FOV (68 x 55 mm) at
+    SURFACE_PIXEL_SIZE_MM=0.1, NOT scaled to the part bbox."""
+    # Load a part that's much larger than the FOV so a part-scaled
+    # rectangle would be obviously wrong.
+    big = _make_box_stl(tmp_path / "big.stl", sx=200.0, sy=160.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    roi_size = main_window.stl_browser._minimap_roi.size()
+    # W_fov = 680 * 0.1 = 68 mm, H_fov = 550 * 0.1 = 55 mm.
+    assert float(roi_size[0]) == pytest.approx(68.0)
+    assert float(roi_size[1]) == pytest.approx(55.0)
+
+
+def test_drag_updates_fov_origin_and_windowed_slice(
+    main_window, tmp_path, monkeypatch,
+):
+    """Programmatically moving the ROI fires fov_dragged, which
+    updates _stl_fov_origin_mm + _stl_heightmap and pushes a new
+    slice to Panel 3's GLSurfacePlotItem."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    initial_origin = main_window._stl_fov_origin_mm
+    initial_heightmap = main_window._stl_heightmap
+
+    # Move the ROI to a clearly different in-part position. The cube
+    # bbox is (-50, +50) x (-40, +40); shift the FOV origin -10 mm in X.
+    new_x = initial_origin[0] - 10.0
+    new_y = initial_origin[1]
+    main_window.stl_browser._minimap_roi.setPos((new_x, new_y))
+
+    # MainWindow's cache reflects the new origin.
+    assert main_window._stl_fov_origin_mm[0] == pytest.approx(new_x)
+    assert main_window._stl_fov_origin_mm[1] == pytest.approx(new_y)
+    # And the cached slice is a different array than the initial one
+    # (the actual heightmap content differs at the new origin because
+    # the cube's edge is partially clipped).
+    assert main_window._stl_heightmap is not initial_heightmap
+    # Panel 3's GLSurfacePlotItem exists and has been re-fed.
+    assert main_window.stl_browser._windowed_item is not None
+
+
+def test_drag_does_not_update_lab_view(main_window, tmp_path, monkeypatch):
+    """Drag updates Panel 3 only — the lab view's SurfacePreview keeps
+    its committed-FOV heightmap. Sub-task 6 will wire the commit."""
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    # Lab view's last-rendered heightmap (cached on view_3d).
+    lab_heightmap_before = main_window.view_3d._last_heightmap
+
+    # Drag the ROI off-center.
+    initial_origin = main_window._stl_fov_origin_mm
+    new_origin = (initial_origin[0] - 20.0, initial_origin[1] + 5.0)
+    main_window.stl_browser._minimap_roi.setPos(new_origin)
+
+    # Lab view's heightmap is the same array — not updated by drag.
+    assert main_window.view_3d._last_heightmap is lab_heightmap_before
+
+
+def test_drag_off_part_renders_bare_stage(main_window, tmp_path, monkeypatch):
+    """Drag the FOV to a position where it extends past the part's
+    bbox edge. The new slice has 0.0 (bare-stage) in the off-part
+    region; the in-part region carries real heightmap values."""
+    # 100x80 cube at center: bbox X in [-50, +50], Y in [-40, +40].
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    # FOV is 68 x 55 mm. Drag origin to (+40, -27.5) so the FOV spans
+    # X = [+40, +108]; everything past x_max=+50 is off-part bare stage.
+    main_window.stl_browser._minimap_roi.setPos((40.0, -27.5))
+
+    slice_hm = main_window._stl_heightmap
+    assert slice_hm.shape == (550, 680)
+    # Off-part columns (X > 50): col where x_world = 40 + col*0.1 > 50,
+    # i.e. col > 100. Those columns must be exact 0.0.
+    np.testing.assert_array_equal(slice_hm[:, 101:], 0.0)
+    # The in-part portion contains non-zero values from the cube top.
+    in_part = slice_hm[:, :100]
+    assert (in_part > 0.0).any(), "in-part region should carry cube-top values"

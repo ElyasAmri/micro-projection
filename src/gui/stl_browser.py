@@ -30,8 +30,9 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+import pyqtgraph as pg
 import pyqtgraph.opengl as gl
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -63,6 +64,12 @@ _WINDOWED_CAMERA = dict(distance=200, elevation=20, azimuth=45)
 _WHOLE_STL_ELEVATION = 30
 _WHOLE_STL_AZIMUTH = 45
 _WHOLE_STL_DISTANCE_FACTOR = 1.5  # distance = 1.5 * max(bbox XY)
+
+# FOV rectangle visual style. Bright cyan against the grayscale
+# minimap stands out without conflicting with the lab view's
+# blue/red diverging colormap or the gray hardware bodies.
+_FOV_RECT_PEN = (0, 220, 255)
+_FOV_RECT_WIDTH_PX = 2
 
 
 def _panel(label_text: str) -> QFrame:
@@ -97,16 +104,27 @@ class STLBrowser(QWidget):
     """Stage 4d Browser tab: FOV-by-FOV navigation of full-scale STLs.
 
     Three-panel layout when Browser-mode is active:
-      - Top-left:    minimap (sub-task 5; QFrame placeholder for now)
+      - Top-left:    minimap (2D top-down with draggable FOV rectangle)
       - Bottom-left: whole-STL 3D preview (orientation only)
       - Right:       windowed 3D preview (what the math measures)
     Placeholder shown otherwise.
 
     Whole-STL and windowed views are driven by `update_whole_stl` and
     `update_windowed_slice` respectively. The two methods stay separate
-    so sub-task 5's drag handler can refresh Panel 3 on every mouse
-    move without redoing Panel 1's larger mesh.
+    so the drag handler can refresh Panel 3 on every mouse move without
+    redoing Panel 1's larger mesh.
+
+    Drag signal
+    -----------
+    `fov_dragged((x_origin_mm, y_origin_mm))` fires on every RectROI
+    move. MainWindow connects this to a slot that updates
+    `_stl_fov_origin_mm`, calls `_extract_fov_slice`, and pushes the
+    new slice via `update_windowed_slice`. The lab view and Pipeline
+    Stages stay pinned to the most-recently-COMMITTED FOV — drag is
+    Panel 3 only; sub-task 6 adds the commit button.
     """
+
+    fov_dragged = pyqtSignal(tuple)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -130,8 +148,10 @@ class STLBrowser(QWidget):
         outer = QSplitter(Qt.Orientation.Horizontal)
         inner = QSplitter(Qt.Orientation.Vertical)
 
-        # Panel 2 (top-left): minimap placeholder — sub-task 5 fills.
-        self._minimap_panel = _panel("Minimap (2D top-down, FOV rectangle)")
+        # Panel 2 (top-left): minimap with draggable FOV rectangle.
+        self._minimap = self._build_minimap()
+        self._minimap_image_item: Optional[pg.ImageItem] = None
+        self._minimap_roi: Optional[pg.RectROI] = None
 
         # Panel 1 (bottom-left): whole-STL 3D preview.
         self._whole_stl_view = _new_3d_view(
@@ -145,7 +165,7 @@ class STLBrowser(QWidget):
         self._windowed_view = _new_3d_view(**_WINDOWED_CAMERA)
         self._windowed_item: Optional[gl.GLSurfacePlotItem] = None
 
-        inner.addWidget(self._minimap_panel)
+        inner.addWidget(self._minimap)
         inner.addWidget(self._whole_stl_view)
         inner.setSizes([440, 360])  # ~55/45 within the left half
 
@@ -160,6 +180,18 @@ class STLBrowser(QWidget):
         layout.addWidget(self._stack)
 
         self._stack.setCurrentIndex(0)
+
+    def _build_minimap(self) -> pg.GraphicsLayoutWidget:
+        """Build the minimap container (no data yet)."""
+        gw = pg.GraphicsLayoutWidget()
+        gw.setBackground((30, 30, 30))
+        self._minimap_plot = gw.addPlot()
+        self._minimap_plot.setAspectLocked(True)
+        self._minimap_plot.setMenuEnabled(False)
+        self._minimap_plot.hideButtons()
+        self._minimap_plot.setLabel("bottom", "X (mm)")
+        self._minimap_plot.setLabel("left", "Y (mm)")
+        return gw
 
     # ------------------------------------------------------------------
     # State-dispatch (sub-task 3)
@@ -235,9 +267,9 @@ class STLBrowser(QWidget):
         """Push the current FOV slice into Panel 3.
 
         Reconstructs (or reuses) a single GLSurfacePlotItem. Camera
-        pose is NOT reset between calls — sub-task 5's drag handler
-        will call this on every mouse move and a jolting camera would
-        be unusable. Initial pose comes from `__init__`.
+        pose is NOT reset between calls — the drag handler calls this
+        on every mouse move and a jolting camera would be unusable.
+        Initial pose comes from `__init__`.
         """
         heightmap = np.asarray(heightmap, dtype=np.float64)
         H, W = heightmap.shape
@@ -250,3 +282,112 @@ class STLBrowser(QWidget):
             )
             self._windowed_view.addItem(self._windowed_item)
         self._windowed_item.setData(x=x, y=y, z=heightmap.T)
+
+    @property
+    def has_minimap_content(self) -> bool:
+        """True when the minimap image+ROI have been constructed."""
+        return self._minimap_image_item is not None
+
+    def update_minimap(
+        self,
+        full_heightmap: np.ndarray,
+        full_origin_mm: tuple[float, float],
+        pixel_size_mm: float,
+        fov_origin_mm: tuple[float, float],
+        fov_shape_pixels: tuple[int, int],
+    ) -> None:
+        """Render the full-scale STL as a 2D top-down image with the
+        draggable FOV rectangle overlaid.
+
+        `full_origin_mm` = part-local (x_min, y_min) of the (0, 0)
+        pixel of `full_heightmap`. Used to position the ImageItem in
+        part-local plot coordinates so the user reads real mm on the
+        axes.
+
+        `fov_origin_mm` = part-local (x_origin, y_origin) of the FOV
+        slice's bottom-left corner (matches `_stl_fov_origin_mm`
+        convention; row 0 of the heightmap array = Y_min in plot
+        coords, Y growing up).
+
+        `fov_shape_pixels` = (H_fov, W_fov) for the FOV slice; the
+        rectangle's physical size is `fov_shape_pixels * pixel_size_mm`.
+        Passed in rather than imported from main_window to keep this
+        widget decoupled from the constants module.
+
+        Lazy-constructs the ImageItem and RectROI on first call;
+        subsequent calls reuse the same items (no accumulation in the
+        plot scene). The ROI's `setPos` happens under `blockSignals`
+        so a programmatic reposition doesn't fire a spurious
+        `fov_dragged` emit.
+        """
+        full_heightmap = np.asarray(full_heightmap, dtype=np.float64)
+        H_full, W_full = full_heightmap.shape
+        H_fov, W_fov = fov_shape_pixels
+        x_min, y_min = full_origin_mm
+
+        if self._minimap_image_item is None:
+            # First call: create image item.
+            self._minimap_image_item = pg.ImageItem(axisOrder="row-major")
+            self._minimap_plot.addItem(self._minimap_image_item)
+
+        self._minimap_image_item.setImage(full_heightmap)
+        self._minimap_image_item.setRect(
+            QRectF(
+                x_min, y_min,
+                W_full * pixel_size_mm, H_full * pixel_size_mm,
+            )
+        )
+
+        if self._minimap_roi is None:
+            # First call: create FOV rectangle.
+            self._minimap_roi = pg.RectROI(
+                pos=fov_origin_mm,
+                size=(W_fov * pixel_size_mm, H_fov * pixel_size_mm),
+                pen=pg.mkPen(_FOV_RECT_PEN, width=_FOV_RECT_WIDTH_PX),
+                movable=True,
+                resizable=False,
+                rotatable=False,
+            )
+            # Belt-and-suspenders against pg-version drift: scrub any
+            # default handles (RectROI adds a scale handle in __init__
+            # regardless of `resizable=False` on some versions).
+            while self._minimap_roi.handles:
+                self._minimap_roi.removeHandle(
+                    self._minimap_roi.handles[0]["item"]
+                )
+            self._minimap_plot.addItem(self._minimap_roi)
+            self._minimap_roi.sigRegionChanged.connect(self._on_roi_changed)
+        else:
+            # Subsequent call: reposition under blockSignals to avoid
+            # spurious emit during programmatic reposition.
+            self._minimap_roi.blockSignals(True)
+            self._minimap_roi.setPos(fov_origin_mm)
+            self._minimap_roi.blockSignals(False)
+
+        # Expand the initial view range by FULL-FOV padding on each
+        # side so the FOV rectangle stays fully visible across the
+        # full range of drag positions, including the worst case
+        # where the rectangle is dragged its full extent off the
+        # part. Rectangle bottom-left at part bbox edge => rectangle
+        # outermost edge at bbox edge + FOV, fully covered by this
+        # range. Trades initial-view tightness for guaranteed
+        # visibility of the interaction target — silent "rectangle
+        # dragged off-screen" failure is worse than cosmetic "part
+        # looks slightly smaller in the minimap."
+        full_fov_w = W_fov * pixel_size_mm
+        full_fov_h = H_fov * pixel_size_mm
+        self._minimap_plot.setXRange(
+            x_min - full_fov_w,
+            x_min + W_full * pixel_size_mm + full_fov_w,
+            padding=0,
+        )
+        self._minimap_plot.setYRange(
+            y_min - full_fov_h,
+            y_min + H_full * pixel_size_mm + full_fov_h,
+            padding=0,
+        )
+
+    def _on_roi_changed(self) -> None:
+        """Emit fov_dragged with the ROI's current (x, y) in mm."""
+        pos = self._minimap_roi.pos()
+        self.fov_dragged.emit((float(pos[0]), float(pos[1])))
