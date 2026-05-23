@@ -323,3 +323,35 @@ def test_clean_pose_no_coverage_warnings():
     assert not state.surface_outside_projector_cone
     assert not state.any_clip
     assert state.messages == []
+
+
+# ---------------------------------------------------------------------------
+# 11 — SAT body-overlap regression: two poses the old assembly-AABB check
+# flagged as overlapping despite several cm of true clearance.
+# ---------------------------------------------------------------------------
+def test_no_body_overlap_at_documented_false_positive_poses():
+    """Two poses the old assembly-AABB check flagged as overlapping
+    despite >2 cm of true clearance (read-only OBB probes measured
+    31.6 mm and 22.3 mm). SAT must report no overlap at both.
+
+    Pose 1: a long camera lens tilted -45 deg inflated its world AABB
+    into the projector body's box. Pose 2: an ordinary symmetric 30/30
+    close pose did the same. Locks the SAT fix against regression.
+    """
+    fp = compute_arm_transforms(
+        theta_camera_deg=-13.0,
+        theta_projector_deg=-45.0,
+        projector_distance_mm=200.0,
+        camera_distance_mm=180.0,
+    )
+    fp_state = detect_clips(fp)
+    assert not fp_state.bodies_overlapping
+    assert MSG_BODY_OVERLAP not in fp_state.messages
+
+    sym = compute_arm_transforms(
+        theta_camera_deg=30.0,
+        theta_projector_deg=30.0,
+        projector_distance_mm=50.0,
+        camera_distance_mm=132.0,
+    )
+    assert not detect_clips(sym).bodies_overlapping

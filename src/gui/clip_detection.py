@@ -12,7 +12,7 @@ physically buildable, or the coverage is incomplete):
 
   1. Camera lens vs test-surface plane (z = 0).
   2. Projector lens vs test-surface plane.
-  3. Camera assembly vs projector assembly (AABB overlap).
+  3. Camera assembly vs projector assembly (OBB intersection via SAT).
   4. Surface extends outside the camera viewing prism (coverage).
   5. Surface extends outside the projector cone (coverage).
 
@@ -46,14 +46,16 @@ surface first. We compute it from the transform directly (general
 form `center_z - r * sqrt(1 - Nz^2)`) so `detect_clips` stays a pure
 function of the transform dict.
 
-AABB approximation trade-off
-----------------------------
-The body-vs-body check transforms each mesh's local bounding-box
-corners to world space and takes an axis-aligned min/max. A rotated
-body's world AABB is larger than its true oriented bounding box, so
-this check is slightly OVER-sensitive: it can flag a near-miss as an
-overlap. Acceptable for an advisory warning — false positives nudge
-the user away from cramped geometry; they don't corrupt any math.
+Body-overlap check: oriented-box intersection (SAT)
+---------------------------------------------------
+The body-vs-body check tests the four camera/projector body+lens
+pairs with the Separating Axis Theorem on their oriented bounding
+boxes (each mesh's local bbox placed in world space by its 4x4
+transform). SAT is exact for boxes, so a long camera lens tilted in
+world frame no longer over-reports. The earlier world-AABB approach
+inflated a rotated body's footprint into a large diagonal volume and
+flagged clearances of several centimetres as overlaps (measured false
+positives of 22-32 mm true clearance at ordinary and extreme poses).
 """
 from __future__ import annotations
 
@@ -217,17 +219,54 @@ def _lens_front_disc_lowest_z(M_lens: np.ndarray, key: str) -> float:
     return float(front_center[2] - radial_drop)
 
 
-def _world_aabb(M: np.ndarray, local_corners: np.ndarray) -> tuple:
-    """World-space AABB (min, max) of local bbox corners under M."""
-    w = _apply(M, local_corners)
-    return w.min(axis=0), w.max(axis=0)
+def _obb_overlap(
+    transform_a: np.ndarray, local_corners_a: np.ndarray,
+    transform_b: np.ndarray, local_corners_b: np.ndarray,
+) -> bool:
+    """True if two oriented boxes intersect (Separating Axis Theorem).
 
+    Each box is the local axis-aligned bounding box of `local_corners_*`
+    placed in world space by its 4x4 transform. SAT tests 15 candidate
+    axes (3 face normals per box + 9 edge cross products); the boxes are
+    separated iff any axis separates their projections. Exact for boxes,
+    so a long tilted lens no longer over-reports the way its world AABB
+    did.
+    """
+    def _box(M, corners):
+        M = np.asarray(M, dtype=np.float64)
+        c = np.asarray(corners, dtype=np.float64)
+        mn, mx = c.min(axis=0), c.max(axis=0)
+        center = (M @ np.append((mn + mx) / 2.0, 1.0))[:3]
+        R = M[:3, :3]
+        axes = np.empty((3, 3))
+        for i in range(3):
+            a = R[:, i]
+            n = np.linalg.norm(a)
+            axes[i] = a / n if n > 0 else a
+        return center, axes, (mx - mn) / 2.0
 
-def _aabb_overlap(a_min, a_max, b_min, b_max) -> bool:
-    """Standard 3-axis interval-intersection AABB overlap test."""
-    return bool(
-        np.all(a_min <= b_max) and np.all(b_min <= a_max)
-    )
+    ca, Aa, ha = _box(transform_a, local_corners_a)
+    cb, Ab, hb = _box(transform_b, local_corners_b)
+    t = cb - ca
+
+    candidates = [Aa[0], Aa[1], Aa[2], Ab[0], Ab[1], Ab[2]]
+    for i in range(3):
+        for j in range(3):
+            cr = np.cross(Aa[i], Ab[j])
+            n = np.linalg.norm(cr)
+            if n > 1e-9:                      # skip degenerate (parallel) axes
+                candidates.append(cr / n)
+
+    for L in candidates:
+        ra = sum(ha[k] * abs(np.dot(Aa[k], L)) for k in range(3))
+        rb = sum(hb[k] * abs(np.dot(Ab[k], L)) for k in range(3))
+        # Strict separation, no epsilon: any positive gap clears, gap-0
+        # (touching) counts as collision. Deliberately no positive
+        # tolerance so this can't re-inflate into the AABB-style
+        # over-sensitivity this OBB test replaces.
+        if abs(np.dot(t, L)) > ra + rb:
+            return False
+    return True
 
 
 def _world_unit(M: np.ndarray, local_dir) -> np.ndarray:
@@ -369,26 +408,18 @@ def detect_clips(
         state.projector_clipping_surface = True
         state.messages.append(MSG_PROJECTOR_SURFACE)
 
-    # 3 — camera assembly AABB vs projector assembly AABB.
-    cam_body_min, cam_body_max = _world_aabb(
-        transforms[KEY_CAMERA_BODY], _LOCAL_CORNERS[KEY_CAMERA_BODY]
-    )
-    cam_lens_min, cam_lens_max = _world_aabb(
-        transforms[KEY_CAMERA_LENS], _LOCAL_CORNERS[KEY_CAMERA_LENS]
-    )
-    cam_min = np.minimum(cam_body_min, cam_lens_min)
-    cam_max = np.maximum(cam_body_max, cam_lens_max)
-
-    proj_body_min, proj_body_max = _world_aabb(
-        transforms[KEY_PROJECTOR_BODY], _LOCAL_CORNERS[KEY_PROJECTOR_BODY]
-    )
-    proj_lens_min, proj_lens_max = _world_aabb(
-        transforms[KEY_PROJECTOR_LENS], _LOCAL_CORNERS[KEY_PROJECTOR_LENS]
-    )
-    proj_min = np.minimum(proj_body_min, proj_lens_min)
-    proj_max = np.maximum(proj_body_max, proj_lens_max)
-
-    if _aabb_overlap(cam_min, cam_max, proj_min, proj_max):
+    # 3 — camera assembly vs projector assembly: oriented-box (SAT)
+    # intersection over the four body/lens pairs. A long tilted lens's
+    # world AABB fills a large diagonal volume and over-reports overlap;
+    # OBB-SAT is exact for boxes and removes those false positives.
+    if any(
+        _obb_overlap(
+            transforms[ck], _LOCAL_CORNERS[ck],
+            transforms[pk], _LOCAL_CORNERS[pk],
+        )
+        for ck in (KEY_CAMERA_BODY, KEY_CAMERA_LENS)
+        for pk in (KEY_PROJECTOR_BODY, KEY_PROJECTOR_LENS)
+    ):
         state.bodies_overlapping = True
         state.messages.append(MSG_BODY_OVERLAP)
 
