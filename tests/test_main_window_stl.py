@@ -896,3 +896,49 @@ def test_drag_then_commit_propagates_to_lab_view(
     lab_after_commit = main_window.view_3d._last_heightmap
     assert lab_after_commit is not None
     assert lab_after_commit is not lab_after_load
+
+
+# ---------------------------------------------------------------------------
+# Stage 4d follow-up: edge-extend off-part into pipeline, mask output to 0.
+# ---------------------------------------------------------------------------
+def test_browser_commit_masks_offpart_preserves_onpart(main_window):
+    """Browser commit: a fully-on-part FOV is byte-identical to the
+    unmodified pipeline (edge-extend + mask are no-ops with no off-part);
+    a straddling FOV has off-part recovered masked to exactly 0.0 while
+    on-part keeps real recovered relief.
+
+    Uses a synthetic full heightmap with an X ramp so the on-part region
+    carries genuine relief — a flat-topped box would collapse to z=0
+    under the visible-envelope lift and make the on-part check vacuous.
+    """
+    from pipeline import run_pipeline
+
+    main_window.right_pane_tabs.setCurrentIndex(0)        # 3D Scene tab
+    H_full, W_full = 550, 1200
+    ramp = np.linspace(0.0, 20.0, W_full, dtype=np.float64)
+    main_window._stl_full_heightmap = np.broadcast_to(ramp, (H_full, W_full)).copy()
+    main_window._stl_full_origin_mm = (0.0, 0.0)
+    main_window._stl_is_browser_mode = True
+
+    # --- Fully on-part (col 0; FOV width 680 < 1200): fix is a no-op ---
+    on_slice = main_window._extract_fov_slice((0.0, 0.0))
+    main_window._stl_fov_origin_mm = (0.0, 0.0)
+    main_window._stl_heightmap = on_slice
+    main_window.surface_combo.setCurrentText(STL_LABEL)   # cache set -> no dialog
+    main_window._refresh_surface_preview()
+    fixed = main_window.view_3d._last_heightmap.copy()
+    raw = run_pipeline(
+        heightmap=on_slice, geometry=main_window._build_geometry(),
+        n_psi_steps=main_window.psi_steps.value(),
+    )
+    np.testing.assert_allclose(fixed, raw, atol=1e-12)
+
+    # --- Straddling (+x edge): off-part masked to exactly 0.0 ---
+    main_window._stl_fov_origin_mm = (80.0, 0.0)          # col 800, off-part [400:680)
+    main_window._stl_heightmap = main_window._extract_fov_slice((80.0, 0.0))
+    main_window._refresh_surface_preview()
+    off_mask = main_window._browser_offpart_mask()
+    assert off_mask.any() and (~off_mask).any()           # genuine straddle
+    recovered = main_window.view_3d._last_heightmap
+    np.testing.assert_array_equal(recovered[off_mask], 0.0)
+    assert np.ptp(recovered[~off_mask]) > 1.0             # on-part keeps relief

@@ -759,20 +759,38 @@ class MainWindow(QMainWindow):
             return
         self.warning_banner.setVisible(False)
 
+        # Browser mode: the committed FOV slice fills off-part cells with
+        # 0 (bare stage), creating a discontinuity at the part edge that
+        # contaminates the self-cal tilt fit and makes the recovered
+        # off-part region ramp away from 0. Feed the pipeline an
+        # edge-extended (discontinuity-free) heightmap, then mask the
+        # off-part cells back to 0 in the recovered output so the user
+        # still sees physical truth (off-part = flat stage at 0).
+        pipeline_input = heightmap
+        if self._stl_is_browser_mode:
+            pipeline_input = self._edge_extend_offpart(heightmap)
+
         # Always request stages: the dict is cheap (references, not
         # copies) and the stages page may be visible.
         recovered, stages = run_pipeline(
-            heightmap=heightmap,
+            heightmap=pipeline_input,
             geometry=geometry,
             n_psi_steps=self.psi_steps.value(),
             return_stages=True,
         )
 
+        if self._stl_is_browser_mode:
+            recovered[self._browser_offpart_mask()] = 0.0
+
         if self.right_pane_tabs.currentIndex() == 1:
             # Pipeline Stages tab is current — push to it. Hide colorbar
             # (it belongs to the 3D scene tab anyway).
             self.stages_view.update_stages(
-                ground_truth=stages["ground_truth"],
+                # Show the original heightmap (off-part = 0 in Browser mode),
+                # not the edge-extended pipeline input — physical truth in
+                # the input panel. The phase panels still reflect the padded
+                # input the math actually processed.
+                ground_truth=heightmap,
                 fringe_frame=stages["fringe_frame"],
                 wrapped_phase=stages["wrapped_phase"],
                 unwrapped_phase=stages["unwrapped_phase"],
@@ -1172,6 +1190,54 @@ class MainWindow(QMainWindow):
         out[out_row_start:out_row_end, out_col_start:out_col_end] = (
             self._stl_full_heightmap[row_start:row_end, col_start:col_end]
         )
+        return out
+
+    def _browser_offpart_window(self) -> tuple[int, int, int, int]:
+        """On-part rectangle (r0, r1, c0, c1) in FOV-slice coords for the
+        current committed FOV. Cells outside it are off-part (bare stage).
+
+        Recomputes `_extract_fov_slice`'s clamped-window arithmetic
+        (source of truth: `_extract_fov_slice`) so that method's behavior
+        stays untouched. Returns an empty rect (0, 0, 0, 0) when the FOV
+        is entirely off-part.
+        """
+        H_fov, W_fov = SURFACE_SHAPE
+        x_orig, y_orig = self._stl_fov_origin_mm
+        x_full_min, y_full_min = self._stl_full_origin_mm
+        H_full, W_full = self._stl_full_heightmap.shape
+        col = int(round((x_orig - x_full_min) / SURFACE_PIXEL_SIZE_MM))
+        row = int(round((y_orig - y_full_min) / SURFACE_PIXEL_SIZE_MM))
+        rs, re = max(0, row), min(H_full, row + H_fov)
+        cs, ce = max(0, col), min(W_full, col + W_fov)
+        if rs >= re or cs >= ce:
+            return (0, 0, 0, 0)
+        return (rs - row, rs - row + (re - rs), cs - col, cs - col + (ce - cs))
+
+    def _browser_offpart_mask(self) -> np.ndarray:
+        """Boolean (H_fov, W_fov): True where the committed FOV is off-part."""
+        r0, r1, c0, c1 = self._browser_offpart_window()
+        mask = np.ones(SURFACE_SHAPE, dtype=bool)
+        mask[r0:r1, c0:c1] = False
+        return mask
+
+    def _edge_extend_offpart(self, hm: np.ndarray) -> np.ndarray:
+        """Fill off-part cells with their nearest on-part edge value so the
+        pipeline sees a discontinuity-free heightmap.
+
+        Off-part is a rectangular band / L / corner by construction (from
+        `_extract_fov_slice`), so a column-then-row edge copy fills it
+        correctly — corners inherit the corner value via the row pass after
+        the column pass. No general nearest-neighbour search needed. The
+        recovered output is masked back to 0 after the pipeline runs.
+        """
+        r0, r1, c0, c1 = self._browser_offpart_window()
+        if r0 >= r1 or c0 >= c1:
+            return hm  # entirely off-part: no on-part data to extend from
+        out = hm.copy()
+        out[r0:r1, :c0] = out[r0:r1, c0:c0 + 1]   # extend left
+        out[r0:r1, c1:] = out[r0:r1, c1 - 1:c1]   # extend right
+        out[:r0, :] = out[r0:r0 + 1, :]           # extend up (corners inherit)
+        out[r1:, :] = out[r1 - 1:r1, :]           # extend down
         return out
 
     def _refresh_browser_panel(self) -> None:
