@@ -124,7 +124,7 @@ STL_LABEL: str = "STL file..."
 #     mode — full-scale heightmap cached, FOV-sized slice fed to the
 #     pipeline. Browser tab + minimap land in sub-tasks 3-5.
 #   - XY exceeds ABSURDLY_LARGE_MM: hard-reject (memory bound +
-#     usability ceiling; a 272 x 220 mm part is 5.98M pixels / 48 MB).
+#     usability ceiling; a 500 x 500 mm part is 25M pixels / ~200 MB).
 #
 # Z-cap rationale (Stage 4d sub-task 2.5): the 120 mm Z cap is a
 # PLACEHOLDER, not a derived hardware constraint. At 100 mm part
@@ -140,7 +140,7 @@ STL_LABEL: str = "STL file..."
 WORKING_VOLUME_MM: tuple[float, float, float] = (68.0, 55.0, 120.0)
 # TODO(stage-4d-user): dial in based on real specimen sizes encountered.
 # Placeholder: 4x the working-volume XY. Z stays at the hardware cap.
-ABSURDLY_LARGE_MM: tuple[float, float, float] = (272.0, 220.0, 120.0)
+ABSURDLY_LARGE_MM: tuple[float, float, float] = (500.0, 500.0, 120.0)
 
 # Hardcoded geometry constants in NOTEBOOK PIXEL-SPACE UNITS.
 # The math layer (synthetic_fringes.project's X = np.arange(W),

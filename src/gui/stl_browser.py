@@ -47,7 +47,7 @@ from PyQt6.QtWidgets import (
 
 _PLACEHOLDER_TEXT = (
     "Load an oversized STL (XY larger than 68 × 55 mm but within "
-    "272 × 220 mm) to browse it FOV by FOV.\n\n"
+    "500 × 500 mm) to browse it FOV by FOV.\n\n"
     "Currently no Browser-mode STL is active. Small STLs use the "
     "3D Scene tab directly."
 )

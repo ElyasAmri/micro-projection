@@ -238,7 +238,7 @@ def test_change_button_cancel_keeps_cache(main_window, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 def test_browser_mode_populates_full_cache(main_window, tmp_path, monkeypatch):
     # 100 x 80 x 30 mm: XY exceeds working volume (68 x 55), Z fits the
-    # 120 mm cap, XY within ABSURDLY_LARGE_MM (272 x 220). -> Browser path.
+    # 120 mm cap, XY within ABSURDLY_LARGE_MM (500 x 500). -> Browser path.
     stl_path = _make_box_stl(
         tmp_path / "wide.stl", sx=100.0, sy=80.0, sz=30.0,
     )
@@ -263,9 +263,9 @@ def test_browser_mode_populates_full_cache(main_window, tmp_path, monkeypatch):
 
 
 def test_absurd_xy_rejected(main_window, tmp_path, monkeypatch):
-    # 300 x 250 mm: XY beyond ABSURDLY_LARGE_MM (272 x 220), Z fits.
+    # 550 x 550 mm: XY beyond ABSURDLY_LARGE_MM (500 x 500), Z fits.
     huge = _make_box_stl(
-        tmp_path / "absurd.stl", sx=300.0, sy=250.0, sz=10.0,
+        tmp_path / "absurd.stl", sx=550.0, sy=550.0, sz=10.0,
     )
     prev_idx = main_window.surface_combo.currentIndex()
     _patch_file_dialog(monkeypatch, return_path=str(huge))
@@ -278,8 +278,8 @@ def test_absurd_xy_rejected(main_window, tmp_path, monkeypatch):
     assert "exceeds the maximum supported size" in warnings[0][2]
     # Both the part's bbox and the threshold appear in the message so the
     # user can see the gap.
-    assert "300.0" in warnings[0][2]
-    assert "272" in warnings[0][2]
+    assert "550.0" in warnings[0][2]
+    assert "500" in warnings[0][2]
     assert main_window.surface_combo.currentIndex() == prev_idx
     assert main_window._stl_heightmap is None
     assert main_window._stl_full_heightmap is None
