@@ -63,8 +63,8 @@ def _write_stl(tris: np.ndarray, path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. 100 x 80 mm rectangular slab centered at origin: shape (800, 1000),
-# top of solid at z = sz everywhere on the top face.
+# 1. 100 x 80 mm rectangular slab centered at origin: shape (800, 1000).
+# Flat-topped box -> single-height visible envelope -> collapses to z = 0.
 # ---------------------------------------------------------------------------
 def test_full_scale_box_shape_and_top(tmp_path):
     p = _write_stl(
@@ -74,17 +74,18 @@ def test_full_scale_box_shape_and_top(tmp_path):
     hm, origin = load_stl_heightmap_full_scale(p, 0.1)
 
     assert hm.shape == (800, 1000), f"got {hm.shape}"
-    # Interior pixels: well inside the 100 x 80 footprint, top face at z=sz.
+    # The box fills its whole bbox and has a single-height visible top, so
+    # lifting by the visible minimum collapses the interior to z = 0.
     H, W = hm.shape
     interior = hm[H // 2 - 50:H // 2 + 50, W // 2 - 50:W // 2 + 50]
-    np.testing.assert_allclose(interior, 20.0, atol=1e-9)
+    np.testing.assert_allclose(interior, 0.0, atol=1e-9)
     # Origin is the part's (x_min, y_min) = (-50, -40).
     assert origin == (-50.0, -40.0)
 
 
 # ---------------------------------------------------------------------------
-# 2. 200 x 100 mm thin slab. Shape (1000, 2000); z=0 everywhere because
-# the slab itself has z=0..0.5 and the lift puts the base at 0.
+# 2. 200 x 100 mm thin slab. Shape (1000, 2000); flat-topped box ->
+# single-height visible envelope -> interior collapses to z = 0.
 # ---------------------------------------------------------------------------
 def test_full_scale_thin_slab(tmp_path):
     p = _write_stl(
@@ -94,10 +95,11 @@ def test_full_scale_thin_slab(tmp_path):
     hm, origin = load_stl_heightmap_full_scale(p, 0.1)
 
     assert hm.shape == (1000, 2000)
-    # Top face at z = 0.5 across the interior (after lift from z_min = -0.25).
+    # Flat top -> visible envelope is one height -> lift to the visible
+    # minimum gives z = 0 across the interior (no relief).
     H, W = hm.shape
     interior = hm[H // 2 - 50:H // 2 + 50, W // 2 - 50:W // 2 + 50]
-    np.testing.assert_allclose(interior, 0.5, atol=1e-9)
+    np.testing.assert_allclose(interior, 0.0, atol=1e-9)
     assert origin == (-100.0, -50.0)
 
 

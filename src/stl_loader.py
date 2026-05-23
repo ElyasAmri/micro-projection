@@ -177,14 +177,17 @@ def load_stl_heightmap(
     on a centered grid; the input STL's world origin need not be at the
     part centroid.
 
-    The returned heightmap is lifted so the part's lowest point (its
-    base — the plane it rests on in the FPP setup) is z = 0; bare-stage
-    pixels with no part above them are also 0. The base is the true
-    minimum-Z vertex over *all* triangles, including the camera-invisible
-    bottom shell of a closed solid (which the max-z envelope discards but
-    which still defines where the part contacts the stage). The 120 mm
-    height cap is a downstream concern (main_window.py's bbox guard);
-    this loader does not enforce it.
+    The returned heightmap is lifted so the part's lowest camera-visible
+    point (the minimum of the max-z upper envelope) is z = 0; bare-stage
+    pixels with no part above them are also 0. This matches what fringe
+    projection actually measures — only the visible top surface exists in
+    the data, so the visible base (not the camera-invisible bottom shell
+    of a closed solid) defines z = 0. A closed solid on the stage renders
+    with its visible base at z = 0: a sphere's visible equator at 0 and
+    apex at the radius; a flat-topped box, whose entire visible surface is
+    one height, collapses to a single z = 0 plane (zero relief). The
+    120 mm height cap is a downstream concern (main_window.py's bbox
+    guard); this loader does not enforce it.
 
     Empty mesh (zero triangles) raises ValueError. A non-empty mesh whose
     triangles all project degenerately, or whose footprint misses the
@@ -214,13 +217,13 @@ def load_stl_heightmap(
         # or footprint entirely off-grid). Bare stage everywhere.
         return np.zeros(shape, dtype=np.float64)
 
-    # Lift by the part's true base: the global minimum-Z vertex over all
-    # triangles, including the camera-invisible bottom shell discarded by
-    # the max-z envelope. That bottom is where the part rests on the
-    # stage, so it (not the visible envelope's low point) is z = 0.
-    z_min_mesh = tris[:, :, 2].min()
+    # Lift by the lowest camera-VISIBLE point: the minimum of the max-z
+    # upper envelope, not the global mesh minimum. FPP only measures the
+    # visible top surface, so the visible base (not the discarded bottom
+    # shell of a closed solid) defines z = 0.
+    z_min_visible = acc[finite].min()
     out = np.zeros(shape, dtype=np.float64)
-    out[finite] = acc[finite] - z_min_mesh
+    out[finite] = acc[finite] - z_min_visible
     return out
 
 
@@ -242,9 +245,9 @@ def load_stl_heightmap_full_scale(
     heightmap : (H, W) float64 mm
         H = ceil((y_max - y_min) / pixel_size_mm)
         W = ceil((x_max - x_min) / pixel_size_mm)
-        Lifted by the global mesh-Z minimum (same convention as
-        `load_stl_heightmap` — the part's true base, including
-        the bottom shell discarded by the max-z envelope).
+        Lifted by the lowest camera-visible point (the minimum of the
+        max-z upper envelope), same convention as `load_stl_heightmap`
+        — the visible base sits at z = 0, not the discarded bottom shell.
     origin_mm : (x_min_mm, y_min_mm)
         Part-local origin of the heightmap's (0, 0) pixel. Used by
         callers to convert part-local FOV positions to pixel
@@ -286,9 +289,9 @@ def load_stl_heightmap_full_scale(
     if not finite.any():
         return np.zeros((H, W), dtype=np.float64), (x_min, y_min)
 
-    z_min_mesh = float(tris[:, :, 2].min())
+    z_min_visible = float(acc[finite].min())
     out = np.zeros((H, W), dtype=np.float64)
-    out[finite] = acc[finite] - z_min_mesh
+    out[finite] = acc[finite] - z_min_visible
     return out, (x_min, y_min)
 
 
