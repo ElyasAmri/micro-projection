@@ -355,3 +355,38 @@ def test_no_body_overlap_at_documented_false_positive_poses():
         camera_distance_mm=132.0,
     )
     assert not detect_clips(sym).bodies_overlapping
+
+
+# ---------------------------------------------------------------------------
+# 12 — Projector-cone coverage: 2 mm advisory tolerance silences a
+# documented sub-mm hairline trigger.
+# ---------------------------------------------------------------------------
+def test_no_cone_clip_at_documented_hairline_pose():
+    """At theta_cam=0, theta_proj=-41, throw=149, WD=157 the projector
+    cone spilled by 0.40 mm at two FOV-patch corners under the strict
+    (pre-tolerance) check (read-only probe on fringe_demo_block_draft.stl).
+    The 2 mm advisory tolerance silences this honest-but-hairline trigger.
+
+    Reproduced with a flat 15 mm slab filling the FOV: the diagnosed
+    spill sat at the -X / +/-Y corners at z=15 mm, which this synthetic
+    surface places at the same world points (no STL fixture needed).
+    """
+    t = compute_arm_transforms(
+        theta_camera_deg=0.0,
+        theta_projector_deg=-41.0,
+        projector_distance_mm=149.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = np.full((550, 680), 15.0, dtype=np.float64)
+    state = detect_clips(
+        t,
+        heightmap_mm=hm,
+        surface_pixel_size_mm=0.1,
+        camera_distance_mm=157.0,
+        projector_distance_mm=149.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert not state.surface_outside_projector_cone
+    assert MSG_SURFACE_OUTSIDE_CONE not in state.messages

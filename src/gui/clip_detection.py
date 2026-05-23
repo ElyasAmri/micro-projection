@@ -56,6 +56,16 @@ world frame no longer over-reports. The earlier world-AABB approach
 inflated a rotated body's footprint into a large diagonal volume and
 flagged clearances of several centimetres as overlaps (measured false
 positives of 22-32 mm true clearance at ordinary and extreme poses).
+
+Coverage advisories: cone tolerance vs. exact prism
+---------------------------------------------------
+The projector-cone coverage check applies a 2 mm advisory tolerance
+(_CONE_COVERAGE_TOLERANCE_MM): the cone math has a sharp geometric
+boundary, but a real projector's edge falloff is gradual, so sub-mm
+and minor (< 2 mm) corner spills don't represent real illumination
+loss. The camera viewing-prism check stays EXACT (no tolerance) — a
+parallel-sided telecentric prism doesn't soften at its bounds: the
+camera either sees a point or it doesn't.
 """
 from __future__ import annotations
 
@@ -160,6 +170,17 @@ _PRISM_HALF_V_MM = float(np.abs(_vc_verts[0:4, 1]).max())   # 27.5
 _pc_verts, _ = make_projection_cone_wireframe(1.0)
 _CONE_HALF_U_PER_L = float(np.abs(_pc_verts[1:5, 0]).max())  # (1/1.2)/2
 _CONE_HALF_V_PER_L = float(np.abs(_pc_verts[1:5, 1]).max())  # *9/16
+
+_CONE_COVERAGE_TOLERANCE_MM = 2.0
+"""Projector cone coverage check tolerance (mm).
+
+The cone math models an idealized projection volume with a sharp
+boundary; real projectors have gradual edge falloff at the cone's
+geometric bounds. A 2 mm tolerance silences hairline-spill triggers
+(< 1 mm) and minor edge-case spills (1-2 mm) that wouldn't materially
+affect real fringe projection illumination. Spills of > 2 mm still
+fire, indicating practical illumination failure worth warning about.
+"""
 
 
 @dataclass
@@ -327,7 +348,9 @@ def _surface_exceeds_cone(
     The cone grows linearly from the apex; half-extents at axial
     distance s from the apex are `(_CONE_HALF_*_PER_L) * s`. A point
     is lit iff it is in front of the projector (s >= 0) and within
-    the angular cross-section at its own depth.
+    the angular cross-section at its own depth, widened by
+    `_CONE_COVERAGE_TOLERANCE_MM` (advisory tolerance for the real
+    projector's gradual edge falloff vs. this sharp-boundary model).
 
     Note: there is deliberately NO `s <= throw` upper bound. `throw`
     is only the nominal DLP focus distance; the light cone keeps
@@ -347,8 +370,12 @@ def _surface_exceeds_cone(
     lat = rel - np.outer(s, axis)
     lu = lat @ u
     lv = lat @ v
-    hw = _CONE_HALF_U_PER_L * s
-    hh = _CONE_HALF_V_PER_L * s
+    # Widen the per-depth lateral half-extents by the advisory tolerance
+    # (real projector edge falloff vs. the math's sharp cone wall). The
+    # axial s >= 0 check is NOT relaxed — a point behind the apex is a
+    # different failure mode, not a near-edge spill.
+    hw = _CONE_HALF_U_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
+    hh = _CONE_HALF_V_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
     inside = (s >= 0.0) & (np.abs(lu) <= hw) & (np.abs(lv) <= hh)
     return bool(np.any(~inside))
 
