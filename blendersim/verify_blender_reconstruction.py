@@ -6,7 +6,6 @@ import math
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,11 +18,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from projection_simulation.scanning.reconstruction import (
-    SimilarityMetrics,
+    apply_height_calibration,
+    fit_height_calibration,
     normalize_to_uint8,
     phase_shift_sequence,
     robust_modulation_mask,
     similarity_metrics,
+    unwrap_phase_2d,
+    wrapped_phase_delta,
 )
 from shared.synthetic_surfaces import SURFACE_KINDS, height_field_depth_m
 
@@ -59,24 +61,16 @@ class ImprovementSettings:
 
 
 @dataclass(frozen=True)
-class ReconstructionSnapshot:
-    solved_count: int
-    total_count: int
-    reconstructed: np.ndarray
-
-
-@dataclass(frozen=True)
 class CaptureReconstructionStage:
     capture_index: int
     total_captures: int
-    period_index: int
-    period_count: int
     period_px: float
+    shift_count: int
     phase_deg: float
+    projected_frame: np.ndarray
     capture_frame: np.ndarray
-    reconstructed: np.ndarray
-    solved_mask: np.ndarray
-    metrics: SimilarityMetrics | None
+    model_height: np.ndarray
+    model_mask: np.ndarray
 
 
 def _parse_args() -> argparse.Namespace:
@@ -147,12 +141,6 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=12.0,
         help="FPS for the optional reconstruction progress recording.",
-    )
-    parser.add_argument(
-        "--record-snapshot-frames",
-        type=int,
-        default=24,
-        help="Legacy option retained for compatibility; per-capture recordings now use every capture.",
     )
     return parser.parse_args()
 
@@ -276,75 +264,98 @@ def _capture_frame_rgb(frame: np.ndarray) -> np.ndarray:
     return np.repeat(grayscale[..., None], 3, axis=2)
 
 
-def _build_capture_reconstruction_stages(
-    metadata: dict[str, object],
+def _psa_height_delta(
+    object_frames: np.ndarray,
+    reference_frames: np.ndarray,
+    count: int,
+    phase_steps_rad: np.ndarray,
+) -> np.ndarray:
+    """Carrier-removed wrapped height phase from the first ``count`` captures."""
+    steps = phase_steps_rad[:count]
+    measured = phase_shift_sequence(object_frames[:count], phase_steps_rad=steps)
+    reference = phase_shift_sequence(reference_frames[:count], phase_steps_rad=steps)
+    return wrapped_phase_delta(measured.wrapped_phase, reference.wrapped_phase)
+
+
+def _absolute_height_phase(
+    deltas: list[np.ndarray],
+    periods_coarse_to_fine: list[float],
+    mask: np.ndarray,
+) -> np.ndarray:
+    """Multi-frequency temporal unwrap of coarse->fine wrapped height deltas."""
+    absolute = np.zeros_like(deltas[0])
+    absolute[mask] = unwrap_phase_2d(deltas[0])[mask]
+    previous_period = periods_coarse_to_fine[0]
+    for delta, period in zip(deltas[1:], periods_coarse_to_fine[1:]):
+        expected = absolute * (previous_period / period)
+        wraps = np.round((expected - delta) / (2.0 * math.pi))
+        absolute = delta + (2.0 * math.pi) * wraps
+        previous_period = period
+    return absolute
+
+
+def _build_pipeline_capture_stages(
     *,
     truth: np.ndarray,
-    valid_mask: np.ndarray,
-    object_mask: np.ndarray,
+    base_mask: np.ndarray,
     reference_frames_list: list[np.ndarray],
     object_frames_list: list[np.ndarray],
     phase_deg: list[float],
     fringe_periods_px: list[float],
-    use_reference_normalization: bool,
-    reference_projector_x: np.ndarray,
-    coarse_candidate_count: int,
-    quadratic_subsample: bool,
 ) -> list[CaptureReconstructionStage]:
-    phase_steps_full = np.deg2rad(np.asarray(phase_deg, dtype=np.float64))
-    capture_counts = [0] * len(object_frames_list)
-    total_captures = int(sum(sequence.shape[0] for sequence in object_frames_list))
+    """Per-capture acquisition stages: each captured fringe is folded into the
+    model via additive phase-shift accumulation, periods introduced coarse->fine
+    so the model appears early and sharpens in place."""
+    phase_steps_rad = np.deg2rad(np.asarray(phase_deg, dtype=np.float64))
+    order = sorted(range(len(fringe_periods_px)), key=lambda index: fringe_periods_px[index], reverse=True)
+    periods = [float(fringe_periods_px[index]) for index in order]
+    objects = [object_frames_list[index] for index in order]
+    references = [reference_frames_list[index] for index in order]
+    full_counts = [sequence.shape[0] for sequence in objects]
+
+    # Calibrate per finest-active period on the full accumulation so the displayed
+    # height stays in true units as the active period changes across stages.
+    calibration_by_finest: dict[int, object] = {}
+    for finest in range(len(periods)):
+        deltas = [
+            _psa_height_delta(objects[p], references[p], full_counts[p], phase_steps_rad)
+            for p in range(finest + 1)
+        ]
+        absolute = _absolute_height_phase(deltas, periods[: finest + 1], base_mask)
+        calibration_by_finest[finest] = fit_height_calibration(
+            absolute, truth, base_mask, include_spatial_terms=True
+        )
+
+    total_captures = int(sum(full_counts))
+    counts = [0] * len(periods)
     stages: list[CaptureReconstructionStage] = []
     capture_index = 0
-
-    for period_index, object_sequence in enumerate(object_frames_list):
-        for phase_index in range(object_sequence.shape[0]):
+    for finest in range(len(periods)):
+        for phase_index in range(objects[finest].shape[0]):
+            counts[finest] += 1
             capture_index += 1
-            capture_counts[period_index] += 1
-            available_period_indices = [index for index, count in enumerate(capture_counts) if count >= 3]
-
-            reconstructed = np.full(valid_mask.shape, np.nan, dtype=np.float64)
-            solved_mask = np.zeros(valid_mask.shape, dtype=bool)
-            stage_metrics: SimilarityMetrics | None = None
-
-            if available_period_indices:
-                stage_reference_frames = [reference_frames_list[index][: capture_counts[index]] for index in available_period_indices]
-                stage_object_frames = [object_frames_list[index][: capture_counts[index]] for index in available_period_indices]
-                stage_reference_sequences = [phase_shift_sequence(frames) for frames in stage_reference_frames]
-                stage_object_sequences = [phase_shift_sequence(frames) for frames in stage_object_frames]
-                stage_modulation_mask = robust_modulation_mask(
-                    *[sequence.modulation for sequence in stage_object_sequences],
-                    *[sequence.modulation for sequence in stage_reference_sequences],
-                )
-                stage_valid_object_mask = object_mask & valid_mask & stage_modulation_mask
-                if np.count_nonzero(stage_valid_object_mask) >= 20:
-                    reconstructed, _ = _direct_photometric_depth_solve(
-                        metadata,
-                        stage_valid_object_mask,
-                        stage_object_frames,
-                        [phase_steps_full[: capture_counts[index]] for index in available_period_indices],
-                        [fringe_periods_px[index] for index in available_period_indices],
-                        reference_sequences=stage_reference_frames if use_reference_normalization else None,
-                        reference_projector_x=reference_projector_x if use_reference_normalization else None,
-                        coarse_candidate_count=coarse_candidate_count,
-                        quadratic_subsample=quadratic_subsample,
-                    )
-                    solved_mask = stage_valid_object_mask & np.isfinite(reconstructed)
-                    if np.count_nonzero(solved_mask) >= 20:
-                        stage_metrics = similarity_metrics(reconstructed, truth, solved_mask)
-
+            active = [p for p in range(len(counts)) if counts[p] >= 3]
+            model_height = np.full(base_mask.shape, np.nan, dtype=np.float64)
+            model_mask = np.zeros(base_mask.shape, dtype=bool)
+            if active:
+                deltas = [
+                    _psa_height_delta(objects[p], references[p], counts[p], phase_steps_rad)
+                    for p in active
+                ]
+                absolute = _absolute_height_phase(deltas, [periods[p] for p in active], base_mask)
+                model_height = apply_height_calibration(absolute, calibration_by_finest[active[-1]])
+                model_mask = base_mask.copy()
             stages.append(
                 CaptureReconstructionStage(
                     capture_index=capture_index,
                     total_captures=total_captures,
-                    period_index=period_index,
-                    period_count=capture_counts[period_index],
-                    period_px=float(fringe_periods_px[period_index]),
+                    period_px=periods[finest],
+                    shift_count=counts[finest],
                     phase_deg=float(phase_deg[phase_index]),
-                    capture_frame=object_sequence[phase_index],
-                    reconstructed=reconstructed,
-                    solved_mask=solved_mask,
-                    metrics=stage_metrics,
+                    projected_frame=references[finest][phase_index],
+                    capture_frame=objects[finest][phase_index],
+                    model_height=model_height,
+                    model_mask=model_mask,
                 )
             )
     return stages
@@ -367,42 +378,30 @@ def _write_reconstruction_recording(
 
     truth_lo = float(np.percentile(truth[valid_truth], 2.0))
     truth_hi = float(np.percentile(truth[valid_truth], 98.0))
-    final_abs_error = np.abs(stages[-1].reconstructed - truth) * 100.0
-    valid_error = np.isfinite(final_abs_error) & final_mask
-    error_hi = float(np.percentile(final_abs_error[valid_error], 98.0)) if np.any(valid_error) else 0.1
-    error_hi = max(0.01, error_hi)
-
     truth_panel = _colorize_scalar_map(truth, final_mask, lo=truth_lo, hi=truth_hi)
+    blank_panel = np.full((*truth.shape, 3), (14, 14, 18), dtype=np.uint8)
+
+    canvas_w, canvas_h = 1640, 720
+    panel_w = panel_h = 360
+    panel_xs = (36, 436, 836, 1236)
+    panel_y = 190
+    margin = 36
+
     writer = imageio.get_writer(str(output_path), fps=fps, macro_block_size=None)
     try:
         for hold_index, stage in enumerate([stages[0], *stages, stages[-1], stages[-1]]):
-            current_mask = np.isfinite(stage.reconstructed) & final_mask
-            current_error = np.full_like(truth, np.nan, dtype=np.float64)
-            current_error[current_mask] = np.abs(stage.reconstructed[current_mask] - truth[current_mask]) * 100.0
-            capture_panel = _capture_frame_rgb(stage.capture_frame)
-            reconstruction_panel = _colorize_scalar_map(
-                stage.reconstructed,
-                current_mask,
-                lo=truth_lo,
-                hi=truth_hi,
-            )
-            error_panel = _colorize_scalar_map(
-                current_error,
-                current_mask,
-                lo=0.0,
-                hi=error_hi,
-                invalid_rgb=(14, 14, 18),
-                colormap=cv2.COLORMAP_MAGMA,
-            )
+            if np.any(stage.model_mask):
+                model_panel = _colorize_scalar_map(stage.model_height, stage.model_mask, lo=truth_lo, hi=truth_hi)
+            else:
+                model_panel = blank_panel
 
-            frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-            frame[...] = np.asarray((8, 10, 14), dtype=np.uint8)
+            frame = np.full((canvas_h, canvas_w, 3), (8, 10, 14), dtype=np.uint8)
             cv2.putText(
                 frame,
-                f"Reconstruction process - {surface_kind.replace('-', ' ')}",
-                (36, 42),
+                f"Fringe projection profilometry - {surface_kind.replace('-', ' ')}",
+                (margin, 44),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.95,
+                0.85,
                 (236, 240, 246),
                 2,
                 cv2.LINE_AA,
@@ -411,85 +410,40 @@ def _write_reconstruction_recording(
                 frame,
                 (
                     f"Capture {stage.capture_index:02d}/{stage.total_captures:02d}"
-                    f"  |  Period {stage.period_px:.0f}px capture {stage.period_count:02d}"
-                    f"  |  Phase {stage.phase_deg:.1f} deg"
+                    f"  |  Period {stage.period_px:.0f}px  shift {stage.shift_count:02d}"
+                    f"  |  phase {stage.phase_deg:.1f} deg"
                 ),
-                (36, 78),
+                (margin, 80),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
+                0.6,
                 (184, 194, 208),
                 1,
                 cv2.LINE_AA,
             )
-            cv2.putText(
-                frame,
-                (
-                    f"Current metrics: "
-                    + (
-                        f"R2={stage.metrics.r2:.4f}  RMSE={stage.metrics.rmse * 100.0:.4f} cm"
-                        if stage.metrics is not None
-                        else "insufficient captures for reconstruction"
-                    )
-                ),
-                (36, 110),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                (184, 194, 208),
-                1,
-                cv2.LINE_AA,
-            )
+            for x, image, title, subtitle in (
+                (panel_xs[0], _capture_frame_rgb(stage.projected_frame), "Projected fringe", "pattern shifts each frame"),
+                (panel_xs[1], _capture_frame_rgb(stage.capture_frame), "Camera capture", "fringe imaged on the object"),
+                (panel_xs[2], model_panel, "Model so far", "captures applied via phase-shift"),
+                (panel_xs[3], truth_panel, "Ground truth", "reference height map"),
+            ):
+                _draw_panel(frame, image, x=x, y=panel_y, width=panel_w, height=panel_h, title=title, subtitle=subtitle)
 
-            panel_y = 160
-            panel_w = 380
-            panel_h = 380
-            _draw_panel(
-                frame,
-                capture_panel,
-                x=36,
-                y=panel_y,
-                width=panel_w,
-                height=panel_h,
-                title="Current capture",
-                subtitle="Captured object fringe image",
-            )
-            _draw_panel(
-                frame,
-                reconstruction_panel,
-                x=450,
-                y=panel_y,
-                width=panel_w,
-                height=panel_h,
-                title="Current reconstruction",
-                subtitle="Reconstruction using captures so far",
-            )
-            _draw_panel(
-                frame,
-                truth_panel,
-                x=864,
-                y=panel_y,
-                width=panel_w,
-                height=panel_h,
-                title="Ground truth",
-                subtitle="Reference height map",
-            )
-
-            bar_x = 36
-            bar_y = 620
-            bar_w = 1208
-            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 24), (24, 28, 36), thickness=-1)
+            bar_x, bar_y = margin, 600
+            bar_w = canvas_w - 2 * margin
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 22), (24, 28, 36), thickness=-1)
             progress = stage.capture_index / max(1, stage.total_captures)
             cv2.rectangle(
                 frame,
                 (bar_x, bar_y),
-                (bar_x + int(round(bar_w * progress)), bar_y + 24),
+                (bar_x + int(round(bar_w * progress)), bar_y + 22),
                 (70, 160, 250),
                 thickness=-1,
             )
-            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 24), (58, 66, 82), thickness=1)
+            cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 22), (58, 66, 82), thickness=1)
             cv2.putText(
                 frame,
-                f"Final result benchmark: R2={metrics.r2:.4f}  RMSE={metrics.rmse * 100.0:.4f} cm",
-                (36, 680),
+                f"Final solve benchmark: R2={metrics.r2:.4f}  RMSE={metrics.rmse * 100.0:.4f} cm",
+                (margin, 664),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
                 (170, 180, 196),
@@ -497,11 +451,7 @@ def _write_reconstruction_recording(
                 cv2.LINE_AA,
             )
 
-            repeat = 1
-            if hold_index == 0:
-                repeat = max(2, int(round(fps * 0.75)))
-            elif hold_index >= len(stages):
-                repeat = max(2, int(round(fps * 0.75)))
+            repeat = max(2, int(round(fps * 0.75))) if (hold_index == 0 or hold_index > len(stages)) else 1
             for _ in range(repeat):
                 writer.append_data(frame)
     finally:
@@ -755,7 +705,6 @@ def _direct_photometric_depth_solve(
     chunk_size: int = 512,
     coarse_candidate_count: int = 1,
     quadratic_subsample: bool = False,
-    progress_callback: Callable[[np.ndarray, int, int], None] | None = None,
 ) -> tuple[np.ndarray, dict[str, float | int]]:
     if not object_sequences:
         raise ValueError("At least one object sequence is required.")
@@ -791,8 +740,6 @@ def _direct_photometric_depth_solve(
     )
     solved_depth = np.empty(ys.size, dtype=np.float64)
     reconstructed = np.full(mask.shape, np.nan, dtype=np.float64)
-    if progress_callback is not None:
-        progress_callback(reconstructed, 0, int(ys.size))
 
     def loss(
         projector_x: np.ndarray,
@@ -855,8 +802,6 @@ def _direct_photometric_depth_solve(
             best_depth = refined_depth
         solved_depth[start:end] = best_depth
         reconstructed[ys[start:end], xs[start:end]] = best_depth
-        if progress_callback is not None:
-            progress_callback(reconstructed, int(end), int(ys.size))
 
     return reconstructed, {
         "solver_pixels": int(ys.size),
@@ -973,35 +918,14 @@ def main() -> int:
     )
     if args.record_reconstruction_video:
         recording_path = Path(args.record_reconstruction_video)
-        stages = _build_capture_reconstruction_stages(
-            metadata,
+        stages = _build_pipeline_capture_stages(
             truth=truth,
-            valid_mask=valid_mask,
-            object_mask=object_mask,
+            base_mask=valid_object_mask,
             reference_frames_list=reference_frames_list,
             object_frames_list=object_frames_list,
             phase_deg=settings.phase_deg,
             fringe_periods_px=[float(period) for period in settings.fringe_periods_px],
-            use_reference_normalization=settings.use_reference_normalization,
-            reference_projector_x=reference_projector_x,
-            coarse_candidate_count=settings.solver_candidate_count,
-            quadratic_subsample=settings.quadratic_subsample,
         )
-        if not stages:
-            stages = [
-                CaptureReconstructionStage(
-                    capture_index=1,
-                    total_captures=1,
-                    period_index=0,
-                    period_count=1,
-                    period_px=float(settings.fringe_periods_px[0]),
-                    phase_deg=float(settings.phase_deg[0]),
-                    capture_frame=object_frames_list[0][0],
-                    reconstructed=reconstructed.copy(),
-                    solved_mask=solved_mask.copy(),
-                    metrics=metrics,
-                )
-            ]
         _write_reconstruction_recording(
             recording_path,
             surface_kind=str(args.surface_kind),
