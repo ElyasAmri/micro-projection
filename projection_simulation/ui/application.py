@@ -181,5 +181,6 @@ class ProjectionApplicationWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         self._surface_timer.stop()
+        self.projection_view._abort_scan_thread()
         self.projection_view.dispose_gpu_renderer()
         super().closeEvent(event)

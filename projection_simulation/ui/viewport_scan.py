@@ -4,7 +4,7 @@ from pathlib import Path
 
 import imageio.v2 as imageio
 import numpy as np
-from PySide6.QtCore import QElapsedTimer, Qt, QThread
+from PySide6.QtCore import QElapsedTimer, QObject, Qt, QThread, Signal
 from PySide6.QtGui import QImage
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QApplication
@@ -23,6 +23,35 @@ from ..core.image_utils import even_video_frame, qimage_to_luma, qimage_to_rgb_a
 from ..scanning.scan_pipeline import ScanReconstruction, reconstruct_from_phase_sequences
 
 
+class _ViewportReconstructionWorker(QObject):
+    """Runs the CPU-bound reconstruction off the GUI thread."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, window, reference_frames, object_frames, width, height) -> None:
+        super().__init__()
+        self._window = window
+        self._reference_frames = reference_frames
+        self._object_frames = object_frames
+        self._width = width
+        self._height = height
+
+    def run(self) -> None:
+        try:
+            result = reconstruct_from_phase_sequences(
+                self._window,
+                self._reference_frames,
+                self._object_frames,
+                width=self._width,
+                height=self._height,
+            )
+        except (RuntimeError, ValueError) as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(result)
+
+
 class ViewportScanMixin:
     def reconstruct_current_object_from_viewport(
         self,
@@ -33,6 +62,35 @@ class ViewportScanMixin:
         record_path: str | Path | None = None,
         fps: float = SWEEP_RECORD_FPS,
     ) -> ScanReconstruction:
+        reference_frames, object_frames = self.capture_viewport_scan_sequences(
+            width=width,
+            height=height,
+            steps=steps,
+            record_path=record_path,
+            fps=fps,
+        )
+        return reconstruct_from_phase_sequences(
+            self,
+            reference_frames,
+            object_frames,
+            width=width,
+            height=height,
+        )
+
+    def capture_viewport_scan_sequences(
+        self,
+        *,
+        width: int = SURFACE_CAMERA_CAPTURE_WIDTH_PX,
+        height: int = SURFACE_CAMERA_CAPTURE_HEIGHT_PX,
+        steps: int = 8,
+        record_path: str | Path | None = None,
+        fps: float = SWEEP_RECORD_FPS,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Capture the reference and object phase sequences on the GUI thread.
+
+        Rendering uses the OpenGL context (GUI-thread only); the heavy
+        reconstruction is split out so it can run on a worker thread.
+        """
         if steps < 3:
             raise ValueError("At least three phase steps are required.")
         if width <= 0 or height <= 0:
@@ -91,13 +149,45 @@ class ViewportScanMixin:
                 self._controls_frame.setVisible(True)
             self.update()
 
-        return reconstruct_from_phase_sequences(
-            self,
-            reference_frames,
-            object_frames,
-            width=width,
-            height=height,
-        )
+        return reference_frames, object_frames
+
+    def launch_viewport_reconstruction(
+        self,
+        reference_frames: np.ndarray,
+        object_frames: np.ndarray,
+        *,
+        on_done,
+        on_error,
+    ) -> None:
+        """Reconstruct on a worker thread so the GUI thread stays responsive."""
+        height = int(object_frames.shape[1])
+        width = int(object_frames.shape[2])
+        thread = QThread(self)
+        worker = _ViewportReconstructionWorker(self, reference_frames, object_frames, width, height)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        # on_done / on_error belong to the window (GUI thread), so AutoConnection
+        # delivers them there even though the worker emits from its own thread.
+        worker.finished.connect(on_done)
+        worker.failed.connect(on_error)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_scan_thread)
+        self._scan_thread = thread
+        self._scan_worker = worker
+        thread.start()
+
+    def _clear_scan_thread(self) -> None:
+        self._scan_thread = None
+        self._scan_worker = None
+
+    def _abort_scan_thread(self) -> None:
+        thread = getattr(self, "_scan_thread", None)
+        if thread is not None and thread.isRunning():
+            thread.quit()
+            thread.wait()
 
     def record_viewport_sweep_video(
         self,

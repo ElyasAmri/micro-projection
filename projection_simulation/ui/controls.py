@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QComboBox, QFrame, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
 
 from ..core.constants import DEFAULT_DEVICE_SPACING_CM
 from .reconstruction_view import ReconstructionWindow
+
+if TYPE_CHECKING:
+    from ..scanning.scan_pipeline import ScanReconstruction
 
 
 class ProjectionControlsMixin:
@@ -247,20 +251,31 @@ class ProjectionControlsMixin:
 
         self._scan_in_progress = True
         self._scan_reconstruct_button.setText("Scanning...")
+        self._controls_frame.setEnabled(False)
         self._refresh_control_labels()
         record_path = Path("out") / "viewport-scan-sweep.mp4"
+
+        # Capture must stay on the GUI thread (OpenGL); reconstruction is handed
+        # off to a worker thread so the UI does not freeze while it runs.
         try:
-            reconstruction = self.reconstruct_current_object_from_viewport(
+            reference_frames, object_frames = self.capture_viewport_scan_sequences(
                 record_path=record_path,
             )
         except (RuntimeError, ValueError) as exc:
+            self._finish_scan()
             QMessageBox.critical(self, "Scan failed", str(exc))
             return
-        finally:
-            self._scan_in_progress = False
-            self._scan_reconstruct_button.setText("Scan and reconstruct")
-            self._refresh_control_labels()
 
+        self._scan_reconstruct_button.setText("Reconstructing...")
+        self.launch_viewport_reconstruction(
+            reference_frames,
+            object_frames,
+            on_done=self._on_reconstruction_ready,
+            on_error=self._on_reconstruction_failed,
+        )
+
+    def _on_reconstruction_ready(self, reconstruction: ScanReconstruction) -> None:
+        self._finish_scan()
         handler = getattr(self, "_reconstruction_handler", None)
         if handler is not None:
             handler(reconstruction)
@@ -270,6 +285,17 @@ class ProjectionControlsMixin:
         window.destroyed.connect(lambda _=None, view=window: self._forget_reconstruction_window(view))
         self._reconstruction_windows.append(window)
         window.show()
+
+    def _on_reconstruction_failed(self, message: str) -> None:
+        self._finish_scan()
+        QMessageBox.critical(self, "Scan failed", message)
+
+    def _finish_scan(self) -> None:
+        self._scan_in_progress = False
+        self._scan_reconstruct_button.setText("Scan and reconstruct")
+        if hasattr(self, "_controls_frame"):
+            self._controls_frame.setEnabled(True)
+        self._refresh_control_labels()
 
     def _forget_reconstruction_window(self, window: QWidget) -> None:
         if window in self._reconstruction_windows:
