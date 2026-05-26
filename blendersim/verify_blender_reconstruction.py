@@ -64,7 +64,7 @@ class ImprovementSettings:
 class CaptureReconstructionStage:
     capture_index: int
     total_captures: int
-    period_px: float
+    pitch_mm: float
     shift_count: int
     phase_deg: float
     projected_frame: np.ndarray
@@ -296,6 +296,7 @@ def _absolute_height_phase(
 
 def _build_pipeline_capture_stages(
     *,
+    metadata: dict[str, object],
     truth: np.ndarray,
     base_mask: np.ndarray,
     reference_frames_list: list[np.ndarray],
@@ -309,6 +310,7 @@ def _build_pipeline_capture_stages(
     phase_steps_rad = np.deg2rad(np.asarray(phase_deg, dtype=np.float64))
     order = sorted(range(len(fringe_periods_px)), key=lambda index: fringe_periods_px[index], reverse=True)
     periods = [float(fringe_periods_px[index]) for index in order]
+    pitches_mm = [_fringe_pitch_mm(metadata, period) for period in periods]
     objects = [object_frames_list[index] for index in order]
     references = [reference_frames_list[index] for index in order]
     full_counts = [sequence.shape[0] for sequence in objects]
@@ -349,7 +351,7 @@ def _build_pipeline_capture_stages(
                 CaptureReconstructionStage(
                     capture_index=capture_index,
                     total_captures=total_captures,
-                    period_px=periods[finest],
+                    pitch_mm=pitches_mm[finest],
                     shift_count=counts[finest],
                     phase_deg=float(phase_deg[phase_index]),
                     projected_frame=references[finest][phase_index],
@@ -410,7 +412,7 @@ def _write_reconstruction_recording(
                 frame,
                 (
                     f"Capture {stage.capture_index:02d}/{stage.total_captures:02d}"
-                    f"  |  Period {stage.period_px:.0f}px  shift {stage.shift_count:02d}"
+                    f"  |  Fringe pitch {stage.pitch_mm:.0f} mm  shift {stage.shift_count:02d}"
                     f"  |  phase {stage.phase_deg:.1f} deg"
                 ),
                 (margin, 80),
@@ -442,7 +444,7 @@ def _write_reconstruction_recording(
             cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + 22), (58, 66, 82), thickness=1)
             cv2.putText(
                 frame,
-                f"Final solve benchmark: R2={metrics.r2:.4f}  RMSE={metrics.rmse * 100.0:.4f} cm",
+                f"Final solve benchmark: R2={metrics.r2:.4f}  RMSE={metrics.rmse * 1000.0:.3f} mm",
                 (margin, 664),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -568,6 +570,20 @@ def _projector_x_from_world_points(points: np.ndarray, metadata: dict[str, objec
     frame_x = local[..., 0] * (frame_z / local[..., 2])
     normalized = (frame_x - min_x) / (max_x - min_x)
     return normalized * fringe_width - 0.5
+
+
+def _fringe_pitch_mm(metadata: dict[str, object], period_proj_px: float) -> float:
+    """Physical pitch of one fringe period on the reference plane, in mm.
+
+    Converts the device-native projector-pixel period to a real-world distance on
+    the measurement plane (view-independent), via the projector frustum geometry.
+    """
+    plane_center, plane_right, _, _ = _plane_geometry(metadata)
+    probe_m = 0.05
+    x0 = _project_world_to_projector_x(plane_center, metadata)
+    x1 = _project_world_to_projector_x(plane_center + plane_right * probe_m, metadata)
+    mm_per_projector_px = (probe_m * 1000.0) / abs(x1 - x0)
+    return period_proj_px * mm_per_projector_px
 
 
 def _projector_column_plane(
@@ -919,6 +935,7 @@ def main() -> int:
     if args.record_reconstruction_video:
         recording_path = Path(args.record_reconstruction_video)
         stages = _build_pipeline_capture_stages(
+            metadata=metadata,
             truth=truth,
             base_mask=valid_object_mask,
             reference_frames_list=reference_frames_list,
