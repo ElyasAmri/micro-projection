@@ -494,31 +494,33 @@ def _transform_direction(matrix_world: np.ndarray, direction: np.ndarray) -> np.
     return matrix_world[:3, :3] @ np.asarray(direction, dtype=np.float64)
 
 
-def _capture_ray_from_pixel(
+def _capture_rays_from_pixels(
     metadata: dict[str, object],
-    x: int,
-    y: int,
+    xs: np.ndarray,
+    ys: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Per-pixel ray origins plus the single shared ray direction.
+
+    The capture camera is orthographic, so every ray shares one direction and only
+    the origin varies across the sensor -- the whole pixel grid resolves in one
+    vectorized transform instead of a Python loop.
+    """
     width = int(metadata["render_width"])
     height = int(metadata["render_height"])
-    min_x, max_x, min_y, max_y, frame_z = _frame_bounds_from_metadata(
+    min_x, max_x, min_y, max_y, _ = _frame_bounds_from_metadata(
         metadata,
         "capture_camera_frame_bounds_local",
     )
     camera_matrix = _matrix_from_rows(metadata["capture_camera_matrix_world"])
-    nx = (x + 0.5) / width
-    ny = 1.0 - ((y + 0.5) / height)
-    local_point = np.array(
-        [
-            min_x + (max_x - min_x) * nx,
-            min_y + (max_y - min_y) * ny,
-            0.0,
-        ],
-        dtype=np.float64,
+    nx = (np.asarray(xs, dtype=np.float64) + 0.5) / width
+    ny = 1.0 - ((np.asarray(ys, dtype=np.float64) + 0.5) / height)
+    local = np.stack(
+        [min_x + (max_x - min_x) * nx, min_y + (max_y - min_y) * ny, np.zeros_like(nx)],
+        axis=1,
     )
-    origin = _transform_point(camera_matrix, local_point)
+    origins = local @ camera_matrix[:3, :3].T + camera_matrix[:3, 3]
     direction = _normalize(_transform_direction(camera_matrix, np.array([0.0, 0.0, -1.0], dtype=np.float64)))
-    return origin, direction
+    return origins, direction
 
 
 def _plane_geometry(metadata: dict[str, object]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -528,21 +530,6 @@ def _plane_geometry(metadata: dict[str, object]) -> tuple[np.ndarray, np.ndarray
     plane_up = _normalize(_transform_direction(plane_matrix, np.array([0.0, 1.0, 0.0], dtype=np.float64)))
     plane_normal = _normalize(_transform_direction(plane_matrix, np.array([0.0, 0.0, 1.0], dtype=np.float64)))
     return plane_center, plane_right, plane_up, plane_normal
-
-
-def _intersect_ray_with_plane(
-    origin: np.ndarray,
-    direction: np.ndarray,
-    plane_point: np.ndarray,
-    plane_normal: np.ndarray,
-) -> np.ndarray | None:
-    denominator = float(np.dot(direction, plane_normal))
-    if abs(denominator) <= 1e-12:
-        return None
-    distance = float(np.dot(plane_point - origin, plane_normal) / denominator)
-    if distance <= 1e-9:
-        return None
-    return origin + direction * distance
 
 
 def _project_world_to_projector_x(world_point: np.ndarray, metadata: dict[str, object]) -> float:
@@ -679,12 +666,18 @@ def _reference_projector_x_map(
 ) -> np.ndarray:
     plane_center, _, _, plane_normal = _plane_geometry(metadata)
     projector_x = np.full(valid_mask.shape, np.nan, dtype=np.float64)
-    for y, x in np.argwhere(valid_mask):
-        ray_origin, ray_direction = _capture_ray_from_pixel(metadata, int(x), int(y))
-        plane_hit = _intersect_ray_with_plane(ray_origin, ray_direction, plane_center, plane_normal)
-        if plane_hit is None:
-            continue
-        projector_x[y, x] = _project_world_to_projector_x(plane_hit, metadata)
+    ys, xs = np.where(valid_mask)
+    if xs.size == 0:
+        return projector_x
+    origins, direction = _capture_rays_from_pixels(metadata, xs, ys)
+    denominator = float(np.dot(direction, plane_normal))
+    if abs(denominator) <= 1e-12:
+        return projector_x
+    distance = (plane_center - origins) @ plane_normal / denominator
+    hits = origins + distance[:, None] * direction[None, :]
+    good = distance > 1e-9
+    if np.any(good):
+        projector_x[ys[good], xs[good]] = _projector_x_from_world_points(hits[good], metadata)
     return projector_x
 
 
@@ -694,14 +687,11 @@ def _prepare_camera_ray_geometry(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     plane_center, _, _, plane_normal = _plane_geometry(metadata)
     ys, xs = np.where(mask)
-    plane_hits = np.empty((len(xs), 3), dtype=np.float64)
-    ray_coefficients = np.empty((len(xs), 3), dtype=np.float64)
-    for index, (y, x) in enumerate(zip(ys, xs)):
-        origin, direction = _capture_ray_from_pixel(metadata, int(x), int(y))
-        denominator = float(np.dot(direction, plane_normal))
-        plane_t = float(np.dot(plane_center - origin, plane_normal) / denominator)
-        plane_hits[index] = origin + direction * plane_t
-        ray_coefficients[index] = direction / denominator
+    origins, direction = _capture_rays_from_pixels(metadata, xs, ys)
+    denominator = float(np.dot(direction, plane_normal))
+    plane_t = (plane_center - origins) @ plane_normal / denominator
+    plane_hits = origins + plane_t[:, None] * direction[None, :]
+    ray_coefficients = np.broadcast_to(direction / denominator, origins.shape).copy()
     return ys, xs, plane_hits, ray_coefficients
 
 
@@ -798,24 +788,21 @@ def _direct_photometric_depth_solve(
         fine_indices = np.argmin(fine_error, axis=1)
         best_depth = fine_depths[np.arange(end - start), fine_indices]
         if quadratic_subsample:
-            refined_depth = best_depth.copy()
-            best_error = fine_error[np.arange(end - start), fine_indices]
-            for local_index, best_index in enumerate(fine_indices):
-                if best_index <= 0 or best_index >= fine_error.shape[1] - 1:
-                    continue
-                left = fine_error[local_index, best_index - 1]
-                center = best_error[local_index]
-                right = fine_error[local_index, best_index + 1]
-                denominator = left - (2.0 * center) + right
-                if abs(float(denominator)) <= 1e-12:
-                    continue
-                offset = 0.5 * (left - right) / denominator
-                refined_depth[local_index] = np.clip(
-                    best_depth[local_index] + (float(np.clip(offset, -1.0, 1.0)) * fine_step_m),
-                    0.0,
-                    max_depth_m,
-                )
-            best_depth = refined_depth
+            rows = np.arange(end - start)
+            columns = fine_error.shape[1]
+            best_error = fine_error[rows, fine_indices]
+            interior = (fine_indices > 0) & (fine_indices < columns - 1)
+            left = fine_error[rows, np.clip(fine_indices - 1, 0, columns - 1)]
+            right = fine_error[rows, np.clip(fine_indices + 1, 0, columns - 1)]
+            denominator = left - (2.0 * best_error) + right
+            refine = interior & (np.abs(denominator) > 1e-12)
+            offset = np.zeros(end - start, dtype=np.float64)
+            offset[refine] = np.clip(0.5 * (left[refine] - right[refine]) / denominator[refine], -1.0, 1.0)
+            best_depth = np.where(
+                refine,
+                np.clip(best_depth + offset * fine_step_m, 0.0, max_depth_m),
+                best_depth,
+            )
         solved_depth[start:end] = best_depth
         reconstructed[ys[start:end], xs[start:end]] = best_depth
 
