@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,8 +27,18 @@ from blendersim.blender_projector_capture import (
     _create_scene_geometry,
     _look_at,
     _reset_scene,
-    _update_fringe_image,
 )
+
+
+def _set_fringe_fast(image, width: int, height: int, *, period_px: float, phase_deg: float) -> None:
+    """Vectorized fringe write (the surface only varies along x)."""
+    x = np.arange(width, dtype=np.float32)
+    row = np.clip(0.5 + 0.5 * np.sin((2.0 * np.pi / period_px) * x + np.radians(phase_deg)), 0.0, 1.0)
+    rgba = np.empty((height, width, 4), dtype=np.float32)
+    rgba[..., 0] = rgba[..., 1] = rgba[..., 2] = row[None, :]
+    rgba[..., 3] = 1.0
+    image.pixels.foreach_set(rgba.ravel())
+    image.update()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -41,8 +52,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fringe-height", type=int, default=768)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--frames", type=int, default=60)
-    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--frames", type=int, default=48, help="Phase-sweep steps over one period.")
+    parser.add_argument("--fps", type=int, default=24)
+    parser.add_argument("--hero-azimuth-deg", type=float, default=22.0, help="Static 3/4 view angle.")
     parser.add_argument("--samples", type=int, default=24)
     parser.add_argument("--mesh-columns", type=int, default=160)
     parser.add_argument("--mesh-rows", type=int, default=120)
@@ -128,8 +140,6 @@ def main() -> None:
         projector, capture_camera, args.fringe_width, args.fringe_height, fringe_image,
         surface_kind=args.surface_kind, mesh_columns=args.mesh_columns, mesh_rows=args.mesh_rows,
     )
-    _update_fringe_image(fringe_image, args.fringe_width, args.fringe_height,
-                         period_px=args.fringe_period_px, phase_deg=0.0)
 
     # Reveal and colour-code the device bodies (projector = orange, camera = blue).
     _reveal(bpy.data.objects["ProjectorBody"], _flat_material("ProjMat", (0.95, 0.55, 0.10)))
@@ -148,42 +158,37 @@ def main() -> None:
     bpy.context.collection.objects.link(sun)
     sun.rotation_euler = (math.radians(55.0), math.radians(8.0), math.radians(-50.0))
 
-    # Orbit rig: empty at the scene centre, perspective camera parented to it.
+    # Static 3/4 hero view (the rig is single-sided, so no orbit): perspective
+    # camera parented to a pivot that is rotated to a fixed viewing angle.
     centre = Vector((_cm(0.0), _cm(-3.0), _cm(8.1)))
-    empty = bpy.data.objects.new("OrbitPivot", None)
-    bpy.context.collection.objects.link(empty)
-    empty.location = centre
+    pivot = bpy.data.objects.new("CameraPivot", None)
+    bpy.context.collection.objects.link(pivot)
+    pivot.location = centre
 
-    cam_data = bpy.data.cameras.new("OrbitCamera")
+    cam_data = bpy.data.cameras.new("HeroCamera")
     cam_data.type = "PERSP"
     cam_data.angle = math.radians(50.0)
-    cam = bpy.data.objects.new("OrbitCamera", cam_data)
+    cam = bpy.data.objects.new("HeroCamera", cam_data)
     bpy.context.collection.objects.link(cam)
     cam.location = centre + Vector((0.0, _cm(-92.0), _cm(58.0)))
     _look_at(cam, centre)
-    cam.parent = empty
-    cam.matrix_parent_inverse = empty.matrix_world.inverted()
+    cam.parent = pivot
+    cam.matrix_parent_inverse = pivot.matrix_world.inverted()
+    pivot.rotation_euler = (0.0, 0.0, math.radians(args.hero_azimuth_deg))
     scene.camera = cam
 
-    # Animate a full turntable loop (frame frames+1 == frame 1 for seamless looping).
-    # Linear interpolation gives a constant orbit rate; set it as the keyframe
-    # default so we avoid the version-specific action.fcurves API.
-    bpy.context.preferences.edit.keyframe_new_interpolation_type = "LINEAR"
-    scene.frame_start = 1
-    scene.frame_end = args.frames
-    empty.rotation_euler = (0.0, 0.0, 0.0)
-    empty.keyframe_insert(data_path="rotation_euler", index=2, frame=1)
-    empty.rotation_euler = (0.0, 0.0, 2.0 * math.pi)
-    empty.keyframe_insert(data_path="rotation_euler", index=2, frame=args.frames + 1)
-
-    # This Blender build has no FFMPEG muxer, so render a PNG sequence; the mp4 is
-    # assembled afterwards with the system ffmpeg.
-    scene.render.fps = args.fps
+    # This Blender build has no FFMPEG muxer, so render a PNG sequence (assembled to
+    # mp4 by the system ffmpeg). The camera is fixed; the fringe sweeps one full
+    # period over the frames so the projection looks live and loops seamlessly.
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_mode = "RGB"
     scene.render.image_settings.color_depth = "8"
-    scene.render.filepath = str(out_dir / "frame_")
-    bpy.ops.render.render(animation=True)
+    for index in range(args.frames):
+        phase_deg = 360.0 * index / args.frames
+        _set_fringe_fast(fringe_image, args.fringe_width, args.fringe_height,
+                         period_px=args.fringe_period_px, phase_deg=phase_deg)
+        scene.render.filepath = str(out_dir / f"frame_{index + 1:04d}")
+        bpy.ops.render.render(write_still=True)
 
     produced = sorted(out_dir.glob("frame_*.png"))
     print(f"DONE rendered {len(produced)} frames to {out_dir}")
