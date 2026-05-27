@@ -280,10 +280,27 @@ def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
     bpy.ops.object.convert(target="CURVE")
-    obj.data.bevel_depth = _cm(0.2)
+    obj.data.bevel_depth = _cm(0.08)  # thin wire (was 0.2)
     obj.data.bevel_resolution = 1
     obj.select_set(False)
-    obj.data.materials.append(_flat_material(name + "Mat", color, emission=2.0))
+    # Matte, non-emissive, zero-reflection guide so the tube reads as a flat
+    # colour rather than a glowing/shiny neon edge.
+    mat = bpy.data.materials.new(name + "Mat")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value = (*color, 1.0)
+    if "Roughness" in bsdf.inputs:
+        bsdf.inputs["Roughness"].default_value = 1.0
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    for spec_name in ("Specular IOR Level", "Specular"):  # name changed across versions
+        if spec_name in bsdf.inputs:
+            bsdf.inputs[spec_name].default_value = 0.0
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    obj.data.materials.append(mat)
     obj.visible_shadow = False  # frustum guides should not cast shadows
     return obj
 
@@ -363,11 +380,30 @@ def main() -> None:
     # Projector cone: far quad = the exact projected fringe footprint (from the
     # ProjectorUV homography). Camera tube: view frustum clipped to the plane.
     footprint = _projector_footprint_corners(plane_obj)
+
+    # Size the telecentric field to the projected region (+ small margin) rather
+    # than hardcoding it: project the footprint corners into the capture camera's
+    # image frame and set ortho_scale so the parallel tube just exceeds the fringe.
+    # Derived from the actual footprint, so it stays correct if FOV/plane change.
+    capture_frame_res = (1028, 752)
+    cam_mw = capture_camera.matrix_world
+    cam_loc = cam_mw.translation
+    cam_rot = cam_mw.to_3x3()
+    cam_right = (cam_rot @ Vector((1.0, 0.0, 0.0))).normalized()
+    cam_up = (cam_rot @ Vector((0.0, 1.0, 0.0))).normalized()
+    frame_aspect = capture_frame_res[0] / capture_frame_res[1]  # ortho_scale spans width
+    half_w = max(abs((c - cam_loc).dot(cam_right)) for c in footprint)
+    half_h = max(abs((c - cam_loc).dot(cam_up)) for c in footprint)
+    field_margin = 1.12  # tube covers ~25% more area than the projected region
+    capture_camera.data.ortho_scale = field_margin * max(2.0 * half_w, 2.0 * half_h * frame_aspect)
+    print(f"capture ortho_scale set to {capture_camera.data.ortho_scale * 100:.2f} cm "
+          f"(footprint {2 * half_w * 100:.2f} x {2 * half_h * 100:.2f} cm in camera frame)")
+
     _make_frustum_curve("ProjectorFrustum", projector, scene, far_d=0.0, persp=True,
                         color=(0.95, 0.55, 0.10), far_corners=footprint)
     _make_frustum_curve("CameraFrustum", capture_camera, scene, far_d=0.0, persp=False,
                         color=(0.12, 0.55, 0.85), plane_point=plane_point, plane_normal=plane_normal,
-                        frame_res=(1028, 752))
+                        frame_res=capture_frame_res)
 
     # Ground plane to ground the rig and catch device shadows.
     bpy.ops.mesh.primitive_plane_add(size=4.0, location=(0.0, 0.0, 0.0))
