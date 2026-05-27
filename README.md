@@ -12,7 +12,10 @@ repository as separate subprojects:
 
 - **[`app/`](app/)** - the PySide6 instrument application: camera acquisition
   (FLIR/PySpin), the live processing pipeline, and parameter controls for driving
-  a real projector/camera rig.
+  a real projector/camera rig. The FLIR Spinnaker (PySpin) SDK is a vendor binary
+  kept out of git; download the wheel from the
+  [spinnaker-sdk release](https://github.com/ElyasAmri/micro-projection/releases/download/spinnaker-sdk/spinnaker_python-4.3.0.189-cp310-cp310-win_amd64.whl)
+  (`pip install spinnaker_python-4.3.0.189-cp310-cp310-win_amd64.whl`, Python 3.10 / Windows x64).
 
 ## Layout
 
