@@ -1,0 +1,14 @@
+# Git worktrees for the app/ and simulation/ branches live here (local-only).
+.worktrees/
+
+# Leftover ignored artifacts at the monorepo root (each subproject also ignores
+# its own out/ and .venv/).
+out/
+.venv/
+__pycache__/
+*.pyc
+
+# Local archives / vendor SDKs / personal files (mirrored from the app line).
+.archive/
+docs/timesheet-*.md
+spinnaker_python-*/
