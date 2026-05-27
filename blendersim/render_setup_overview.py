@@ -58,6 +58,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--projector-fov-deg", type=float, default=22.0,
                         help="Projector throw; narrower than the capture FOV so the fringe "
                              "lights only a portion of the plane.")
+    parser.add_argument("--plane-scale", type=float, default=1.8,
+                        help="Scale the projection plane width/height (the projector footprint "
+                             "stays fixed, so the fringe covers a smaller fraction).")
     parser.add_argument("--samples", type=int, default=24)
     parser.add_argument("--mesh-columns", type=int, default=160)
     parser.add_argument("--mesh-rows", type=int, default=120)
@@ -274,13 +277,18 @@ def main() -> None:
         projector, capture_camera, args.fringe_width, args.fringe_height, fringe_image,
         surface_kind=args.surface_kind, mesh_columns=args.mesh_columns, mesh_rows=args.mesh_rows,
     )
+    # Enlarge the backdrop plane (projector footprint is fixed, so the fringe ends
+    # up covering a smaller fraction of it).
+    plane_obj = bpy.data.objects["ProjectionPlane"]
+    plane_obj.scale.x *= args.plane_scale
+    plane_obj.scale.y *= args.plane_scale
+
     # Show the fringe only on the projector footprint; the rest of the plane is a
     # visible diffuse surface instead of pure (invisible) emission.
     _add_plane_base(bpy.data.materials["ProjectedFringe"], fringe_image, base_color=(0.32, 0.33, 0.36))
 
     # Represent the devices as their optical frustums (projector = orange cone,
     # telecentric camera = blue parallel tube) rather than solid bodies.
-    plane_obj = bpy.data.objects["ProjectionPlane"]
     plane_point = plane_obj.matrix_world.translation.copy()
     plane_normal = (plane_obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
     # Projector cone: far quad = the exact projected fringe footprint (from the
