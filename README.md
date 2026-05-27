@@ -13,7 +13,7 @@ so this README doubles as a living report that updates as the simulation evolves
 
 ## Projection setup
 
-https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.mp4
+![Projection setup overview](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.gif)
 
 The projector (orange cone) throws a fringe pattern onto the surface; the
 telecentric camera (blue parallel tube) images it from the opposite side. Both sit
@@ -21,8 +21,8 @@ at 41 degrees from the surface normal, forming a real triangulation rig: the obj
 deforms the fringe and casts a shadow that masks the plane behind it. The camera's
 field is sized to just exceed the projected region.
 
-(Inline player not showing? Open it directly:
-[setup_overview.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.mp4))
+Full-quality video:
+[setup_overview.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.mp4)
 
 ## How it works
 
@@ -32,7 +32,7 @@ shift; measuring that shift at every pixel yields a height map.
 
 ### 1. Project and capture
 
-https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.mp4
+![Projected fringe vs camera capture](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.gif)
 
 Left: the projected sinusoidal fringe at a given phase. Right: the telecentric
 camera's view of that fringe deformed by the surface relief, with the object's
@@ -40,8 +40,8 @@ shadow masking the plane. The sweep runs three frequencies - coarse (768 px),
 medium (192 px), and fine (48 px) on the projector - each labeled with its physical
 pitch on the measurement plane in millimetres.
 
-(Direct link:
-[fringe_vs_capture.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.mp4))
+Full-quality video:
+[fringe_vs_capture.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.mp4)
 
 ### 2. Phase extraction and unwrapping
 
@@ -57,14 +57,14 @@ pitch on the measurement plane in millimetres.
 
 ### 3. Reconstruction loop
 
-https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.mp4
+![Reconstruction acquisition loop](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.gif)
 
 The acquisition loop in motion: each capture is folded into the running height
 estimate (capture -> apply -> shift -> repeat), refining from the coarse model to
 the final fine-frequency surface.
 
-(Direct link:
-[reconstruction_loop.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.mp4))
+Full-quality video:
+[reconstruction_loop.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.mp4)
 
 ## Results
 
