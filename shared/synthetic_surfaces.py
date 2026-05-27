@@ -10,6 +10,7 @@ SURFACE_KINDS: tuple[str, ...] = (
     "ring-crater",
     "folded-sheet",
     "cross-groove",
+    "rolling-mound",
 )
 
 
@@ -76,6 +77,15 @@ def height_field_depth_m(
         )
         step_cm = 0.10 * round((broad_cm + corner_peaks_cm) / 0.10)
         depth_cm = 0.16 + step_cm + groove_x_cm + groove_y_cm
+    elif surface_kind == "rolling-mound":
+        # Deliberately gentle, single-valued and slope-bounded (max ~18 deg, well
+        # under the projector/camera ~48 deg grazing budget) so every point stays
+        # lit and visible -- no self-shadowing or self-occlusion of the projection.
+        dome_cm = 0.80 * math.exp(-1.0 * (x_norm * x_norm + y_norm * y_norm))
+        mound_cm = 0.30 * math.exp(-2.2 * ((x_norm - 0.45) ** 2 + (y_norm + 0.35) ** 2))
+        basin_cm = -0.26 * math.exp(-2.0 * ((x_norm + 0.5) ** 2 + (y_norm - 0.3) ** 2))
+        undulation_cm = 0.08 * math.sin(1.2 * math.pi * x_norm) * math.cos(1.0 * math.pi * y_norm)
+        depth_cm = 0.45 + dome_cm + mound_cm + basin_cm + undulation_cm
     else:
         raise ValueError(f"Unsupported surface kind: {surface_kind}")
     return max(0.08, depth_cm) / 100.0

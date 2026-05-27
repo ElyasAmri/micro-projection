@@ -94,9 +94,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--render-height", type=int, default=752)
     parser.add_argument(
         "--surface-kind",
-        default="dome-ridge",
+        default="rolling-mound",
         choices=SURFACE_KINDS,
-        help="Synthetic surface profile to render in Blender.",
+        help="Synthetic surface profile to render in Blender. Default is slope-bounded "
+             "so the surface never self-shadows the projection.",
     )
     parser.add_argument(
         "--fringe-periods-px",

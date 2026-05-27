@@ -46,7 +46,7 @@ def _parse_args() -> argparse.Namespace:
     argv = argv[argv.index("--") + 1 :] if "--" in argv else []
     parser = argparse.ArgumentParser(description="Render a turntable of the projection setup.")
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--surface-kind", default="ring-crater")
+    parser.add_argument("--surface-kind", default="rolling-mound")
     parser.add_argument("--fringe-period-px", type=float, default=48.0)
     parser.add_argument("--fringe-width", type=int, default=1024)
     parser.add_argument("--fringe-height", type=int, default=768)

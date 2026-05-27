@@ -28,7 +28,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fringe-height", type=int, default=768)
     parser.add_argument("--fringe-period-px", type=float, default=48.0)
     parser.add_argument("--projector-fov-deg", type=float, default=50.0)
-    parser.add_argument("--surface-kind", default="dome-ridge", choices=SURFACE_KINDS)
+    parser.add_argument("--surface-kind", default="rolling-mound", choices=SURFACE_KINDS)
     parser.add_argument("--mesh-columns", type=int, default=160)
     parser.add_argument("--mesh-rows", type=int, default=120)
     parser.add_argument("--cycles-samples", type=int, default=8)
