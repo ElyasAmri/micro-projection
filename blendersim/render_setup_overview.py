@@ -55,6 +55,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=48, help="Phase-sweep steps over one period.")
     parser.add_argument("--fps", type=int, default=24)
     parser.add_argument("--hero-azimuth-deg", type=float, default=22.0, help="Static 3/4 view angle.")
+    parser.add_argument("--projector-fov-deg", type=float, default=22.0,
+                        help="Projector throw; narrower than the capture FOV so the fringe "
+                             "lights only a portion of the plane.")
     parser.add_argument("--samples", type=int, default=24)
     parser.add_argument("--mesh-columns", type=int, default=160)
     parser.add_argument("--mesh-rows", type=int, default=120)
@@ -79,6 +82,35 @@ def _flat_material(name: str, color: tuple[float, float, float], *, emission: fl
             shader.inputs["Roughness"].default_value = 0.5
         nt.links.new(shader.outputs["BSDF"], out.inputs["Surface"])
     return mat
+
+
+def _add_plane_base(material, image, base_color: tuple[float, float, float]) -> None:
+    """Rebuild the projected-fringe material so the projector footprint shows the
+    fringe (emission) while the rest of the plane is a visible diffuse surface.
+
+    The fringe image uses CLIP extension, so its alpha is 1 inside the projected
+    footprint and 0 outside -- used here as the mix factor.
+    """
+    nt = material.node_tree
+    nt.nodes.clear()
+    uv = nt.nodes.new("ShaderNodeUVMap")
+    uv.uv_map = "ProjectorUV"
+    img = nt.nodes.new("ShaderNodeTexImage")
+    img.image = image
+    img.extension = "CLIP"
+    img.interpolation = "Linear"
+    emis = nt.nodes.new("ShaderNodeEmission")
+    emis.inputs["Strength"].default_value = 1.0
+    diff = nt.nodes.new("ShaderNodeBsdfDiffuse")
+    diff.inputs["Color"].default_value = (*base_color, 1.0)
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(uv.outputs["UV"], img.inputs["Vector"])
+    nt.links.new(img.outputs["Color"], emis.inputs["Color"])
+    nt.links.new(img.outputs["Alpha"], mix.inputs["Fac"])
+    nt.links.new(diff.outputs["BSDF"], mix.inputs[1])
+    nt.links.new(emis.outputs["Emission"], mix.inputs[2])
+    nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
 
 
 def _reveal(obj, material) -> None:
@@ -135,11 +167,14 @@ def main() -> None:
     )
     fringe_image.colorspace_settings.name = "Non-Color"
 
-    projector, capture_camera = _create_cameras(scene, projector_fov_deg=50.0)
+    projector, capture_camera = _create_cameras(scene, projector_fov_deg=args.projector_fov_deg)
     _create_scene_geometry(
         projector, capture_camera, args.fringe_width, args.fringe_height, fringe_image,
         surface_kind=args.surface_kind, mesh_columns=args.mesh_columns, mesh_rows=args.mesh_rows,
     )
+    # Show the fringe only on the projector footprint; the rest of the plane is a
+    # visible diffuse surface instead of pure (invisible) emission.
+    _add_plane_base(bpy.data.materials["ProjectedFringe"], fringe_image, base_color=(0.32, 0.33, 0.36))
 
     # Reveal and colour-code the device bodies (projector = orange, camera = blue).
     _reveal(bpy.data.objects["ProjectorBody"], _flat_material("ProjMat", (0.95, 0.55, 0.10)))
