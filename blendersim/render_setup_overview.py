@@ -113,14 +113,43 @@ def _add_plane_base(material, image, base_color: tuple[float, float, float]) -> 
     nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
 
 
-def _reveal(obj, material) -> None:
-    obj.hide_render = False
-    obj.hide_viewport = False
-    obj.display_type = "SOLID"
-    if obj.data.materials:
-        obj.data.materials[0] = material
+def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0):
+    """Build a camera/projector frustum as glowing tube edges.
+
+    Perspective -> a cone from the lens apex to the far rectangle (the footprint).
+    Orthographic -> a parallel rectangular tube (constant cross-section).
+    """
+    frame = cam_obj.data.view_frame(scene=scene)  # 4 local corners at z = -1
+    mw = cam_obj.matrix_world
+    verts: list[list[float]] = []
+    edges: list[tuple[int, int]] = []
+    if persp:
+        # view_frame() corners are not at z=-1, so rescale each so its depth is far_d.
+        verts.append(list(mw.translation))  # 0 = apex
+        for c in frame:
+            verts.append(list(mw @ (c * (far_d / -c.z))))  # 1..4 = far corners at far_d
+        edges += [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
     else:
-        obj.data.materials.append(material)
+        for c in frame:
+            verts.append(list(mw @ Vector((c.x, c.y, -near_d))))  # 0..3 near
+        for c in frame:
+            verts.append(list(mw @ Vector((c.x, c.y, -far_d))))   # 4..7 far
+        edges += [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
+                  (0, 4), (1, 5), (2, 6), (3, 7)]
+    mesh = bpy.data.meshes.new(name + "Mesh")
+    mesh.from_pydata(verts, edges, [])
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.ops.object.select_all(action="DESELECT")
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.convert(target="CURVE")
+    obj.data.bevel_depth = _cm(0.2)
+    obj.data.bevel_resolution = 1
+    obj.select_set(False)
+    obj.data.materials.append(_flat_material(name + "Mat", color, emission=2.0))
+    return obj
 
 
 def _try_enable_gpu(scene) -> str:
@@ -176,9 +205,15 @@ def main() -> None:
     # visible diffuse surface instead of pure (invisible) emission.
     _add_plane_base(bpy.data.materials["ProjectedFringe"], fringe_image, base_color=(0.32, 0.33, 0.36))
 
-    # Reveal and colour-code the device bodies (projector = orange, camera = blue).
-    _reveal(bpy.data.objects["ProjectorBody"], _flat_material("ProjMat", (0.95, 0.55, 0.10)))
-    _reveal(bpy.data.objects["TelecentricHousing"], _flat_material("CamMat", (0.12, 0.55, 0.85)))
+    # Represent the devices as their optical frustums (projector = orange cone,
+    # telecentric camera = blue parallel tube) rather than solid bodies.
+    plane_centre = Vector((_cm(0.0), _cm(10.005), _cm(8.1)))
+    proj_far = (plane_centre - projector.matrix_world.translation).length
+    cam_far = (plane_centre - capture_camera.matrix_world.translation).length
+    _make_frustum_curve("ProjectorFrustum", projector, scene,
+                        far_d=proj_far, persp=True, color=(0.95, 0.55, 0.10))
+    _make_frustum_curve("CameraFrustum", capture_camera, scene,
+                        far_d=cam_far, persp=False, color=(0.12, 0.55, 0.85))
 
     # Ground plane to ground the rig and catch device shadows.
     bpy.ops.mesh.primitive_plane_add(size=4.0, location=(0.0, 0.0, 0.0))
