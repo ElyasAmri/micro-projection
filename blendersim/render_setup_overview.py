@@ -113,8 +113,54 @@ def _add_plane_base(material, image, base_color: tuple[float, float, float]) -> 
     nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
 
 
+def _projector_footprint_corners(plane_obj):
+    """Exact projector footprint corners on the plane.
+
+    UV_PROJECT writes the projector's frame into the plane's ProjectorUV layer, so
+    the plane->UV map is the projector homography. Fit it from the plane's four
+    corners and invert it to find the world points where UV hits the unit square --
+    i.e. the edge of the projected fringe. Robust to FOV/sensor-fit/aspect details.
+    """
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = plane_obj.evaluated_get(depsgraph)
+    mesh = eval_obj.to_mesh()
+    try:
+        mw = plane_obj.matrix_world.copy()
+        center = mw.translation.copy()
+        right = (mw.to_3x3() @ Vector((1.0, 0.0, 0.0))).normalized()
+        up = (mw.to_3x3() @ Vector((0.0, 1.0, 0.0))).normalized()
+        uv_layer = mesh.uv_layers["ProjectorUV"]
+        st: list[tuple[float, float]] = []
+        uv: list[tuple[float, float]] = []
+        seen: set[int] = set()
+        for loop in mesh.loops:
+            if loop.vertex_index in seen:
+                continue
+            seen.add(loop.vertex_index)
+            d = (mw @ mesh.vertices[loop.vertex_index].co) - center
+            st.append((d.dot(right), d.dot(up)))
+            corner_uv = uv_layer.data[loop.index].uv
+            uv.append((corner_uv.x, corner_uv.y))
+            if len(seen) == 4:
+                break
+    finally:
+        eval_obj.to_mesh_clear()
+
+    rows = []
+    for (x, y), (X, Y) in zip(uv, st):  # homography uv -> st (plane coords)
+        rows.append([-x, -y, -1, 0, 0, 0, x * X, y * X, X])
+        rows.append([0, 0, 0, -x, -y, -1, x * Y, y * Y, Y])
+    homography = np.linalg.svd(np.array(rows, dtype=np.float64))[2][-1].reshape(3, 3)
+    corners = []
+    for u, v in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)):
+        p = homography @ np.array([u, v, 1.0])
+        corners.append(center + right * float(p[0] / p[2]) + up * float(p[1] / p[2]))
+    return corners
+
+
 def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0,
-                        plane_point=None, plane_normal=None, frame_res=None):
+                        plane_point=None, plane_normal=None, frame_res=None, far_corners=None):
     """Build a camera/projector frustum as glowing tube edges, clipped to a plane.
 
     Perspective -> a cone from the lens apex; each corner ray is intersected with
@@ -138,13 +184,18 @@ def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0
     if persp:
         apex = mw.translation
         verts.append(list(apex))  # 0 = apex
-        for c in frame:
-            direction = rot @ c  # world ray from the apex through this corner
-            if plane_point is not None:
-                t = (plane_point - apex).dot(plane_normal) / direction.dot(plane_normal)
-                far = apex + direction * t
-            else:
-                far = mw @ (c * (far_d / -c.z))  # view_frame() depth is not -1; rescale
+        if far_corners is not None:
+            corners = list(far_corners)
+        else:
+            corners = []
+            for c in frame:
+                direction = rot @ c  # world ray from the apex through this corner
+                if plane_point is not None:
+                    t = (plane_point - apex).dot(plane_normal) / direction.dot(plane_normal)
+                    corners.append(apex + direction * t)
+                else:
+                    corners.append(mw @ (c * (far_d / -c.z)))  # view_frame depth != -1
+        for far in corners:
             verts.append(list(far))  # 1..4 = far corners (on the plane)
         edges += [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
     else:
@@ -232,11 +283,11 @@ def main() -> None:
     plane_obj = bpy.data.objects["ProjectionPlane"]
     plane_point = plane_obj.matrix_world.translation.copy()
     plane_normal = (plane_obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-    # Both frustums stop on the plane; each uses its own frame aspect (fringe image
-    # for the projector, capture sensor for the camera) so the footprints line up.
+    # Projector cone: far quad = the exact projected fringe footprint (from the
+    # ProjectorUV homography). Camera tube: view frustum clipped to the plane.
+    footprint = _projector_footprint_corners(plane_obj)
     _make_frustum_curve("ProjectorFrustum", projector, scene, far_d=0.0, persp=True,
-                        color=(0.95, 0.55, 0.10), plane_point=plane_point, plane_normal=plane_normal,
-                        frame_res=(args.fringe_width, args.fringe_height))
+                        color=(0.95, 0.55, 0.10), far_corners=footprint)
     _make_frustum_curve("CameraFrustum", capture_camera, scene, far_d=0.0, persp=False,
                         color=(0.12, 0.55, 0.85), plane_point=plane_point, plane_normal=plane_normal,
                         frame_res=(1028, 752))
