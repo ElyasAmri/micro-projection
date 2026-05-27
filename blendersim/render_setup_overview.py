@@ -162,6 +162,65 @@ def _projector_footprint_corners(plane_obj):
     return corners
 
 
+def _diffuse_material(name, color):
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    bsdf = nt.nodes.new("ShaderNodeBsdfDiffuse")
+    bsdf.inputs["Color"].default_value = (*color, 1.0)
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    return mat
+
+
+def _add_fringe_projector_light(projector, fringe_image, *, fov_deg, aspect_w, aspect_h, energy):
+    """A real spot light that projects the fringe image (a gobo), so the object
+    casts a shadow that masks the fringe off the plane behind it.
+
+    The light direction (Texture Coordinate -> Normal, in light space) is
+    perspective-divided and scaled to the projector FOV so the image's unit square
+    maps to the projector frustum.
+    """
+    data = bpy.data.lights.new("FringeProjector", type="SPOT")
+    data.energy = energy
+    data.spot_size = math.radians(140.0)
+    data.spot_blend = 0.0
+    data.shadow_soft_size = 0.0
+    data.use_nodes = True
+    light = bpy.data.objects.new("FringeProjector", data)
+    bpy.context.collection.objects.link(light)
+    light.matrix_world = projector.matrix_world.copy()
+
+    nt = data.node_tree
+    nt.nodes.clear()
+    texco = nt.nodes.new("ShaderNodeTexCoord")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(texco.outputs["Normal"], sep.inputs[0])
+    div_x = nt.nodes.new("ShaderNodeMath"); div_x.operation = "DIVIDE"
+    div_y = nt.nodes.new("ShaderNodeMath"); div_y.operation = "DIVIDE"
+    nt.links.new(sep.outputs["X"], div_x.inputs[0]); nt.links.new(sep.outputs["Z"], div_x.inputs[1])
+    nt.links.new(sep.outputs["Y"], div_y.inputs[0]); nt.links.new(sep.outputs["Z"], div_y.inputs[1])
+    comb = nt.nodes.new("ShaderNodeCombineXYZ")
+    nt.links.new(div_x.outputs[0], comb.inputs["X"])
+    nt.links.new(div_y.outputs[0], comb.inputs["Y"])
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    half = math.tan(math.radians(fov_deg / 2.0))
+    scale_x = 1.0 / (2.0 * half)
+    mapping.inputs["Scale"].default_value = (scale_x, scale_x * (aspect_w / aspect_h), 1.0)
+    mapping.inputs["Location"].default_value = (0.5, 0.5, 0.0)
+    nt.links.new(comb.outputs["Vector"], mapping.inputs["Vector"])
+    img = nt.nodes.new("ShaderNodeTexImage")
+    img.image = fringe_image
+    img.extension = "CLIP"
+    nt.links.new(mapping.outputs["Vector"], img.inputs["Vector"])
+    emis = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(img.outputs["Color"], emis.inputs["Color"])
+    out = nt.nodes.new("ShaderNodeOutputLight")
+    nt.links.new(emis.outputs["Emission"], out.inputs["Surface"])
+    return light
+
+
 def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0,
                         plane_point=None, plane_normal=None, frame_res=None, far_corners=None):
     """Build a camera/projector frustum as glowing tube edges, clipped to a plane.
@@ -225,6 +284,7 @@ def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0
     obj.data.bevel_resolution = 1
     obj.select_set(False)
     obj.data.materials.append(_flat_material(name + "Mat", color, emission=2.0))
+    obj.visible_shadow = False  # frustum guides should not cast shadows
     return obj
 
 
@@ -283,9 +343,18 @@ def main() -> None:
     plane_obj.scale.x *= args.plane_scale
     plane_obj.scale.y *= args.plane_scale
 
-    # Show the fringe only on the projector footprint; the rest of the plane is a
-    # visible diffuse surface instead of pure (invisible) emission.
-    _add_plane_base(bpy.data.materials["ProjectedFringe"], fringe_image, base_color=(0.32, 0.33, 0.36))
+    # Plane and object are plain diffuse surfaces; the fringe comes from a real
+    # projector light (below) so the object casts a shadow that masks the plane.
+    surface_mat = _diffuse_material("SurfaceMat", (0.82, 0.82, 0.85))
+    for obj_name in ("ProjectionPlane", "ForegroundObject"):
+        mesh = bpy.data.objects[obj_name].data
+        mesh.materials.clear()
+        mesh.materials.append(surface_mat)
+
+    # Real fringe projector: spot light projecting the fringe gobo from the
+    # projector position, so the object shadows the fringe off the plane.
+    _add_fringe_projector_light(projector, fringe_image, fov_deg=args.projector_fov_deg,
+                                aspect_w=args.fringe_width, aspect_h=args.fringe_height, energy=40.0)
 
     # Represent the devices as their optical frustums (projector = orange cone,
     # telecentric camera = blue parallel tube) rather than solid bodies.
@@ -306,9 +375,10 @@ def main() -> None:
     ground.name = "Ground"
     ground.data.materials.append(_flat_material("GroundMat", (0.05, 0.05, 0.06)))
 
-    # Lighting for the device bodies (the fringe surfaces are pure emission, unaffected).
+    # Dim fill so the ground/surfaces are not pure black; kept low so the projected
+    # fringe stays the dominant light and its shadow/masking reads clearly.
     sun_data = bpy.data.lights.new("Sun", "SUN")
-    sun_data.energy = 3.0
+    sun_data.energy = 0.6
     sun = bpy.data.objects.new("Sun", sun_data)
     bpy.context.collection.objects.link(sun)
     sun.rotation_euler = (math.radians(55.0), math.radians(8.0), math.radians(-50.0))
