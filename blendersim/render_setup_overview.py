@@ -113,10 +113,13 @@ def _add_plane_base(material, image, base_color: tuple[float, float, float]) -> 
     nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
 
 
-def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0):
+def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0,
+                        plane_point=None, plane_normal=None):
     """Build a camera/projector frustum as glowing tube edges.
 
-    Perspective -> a cone from the lens apex to the far rectangle (the footprint).
+    Perspective -> a cone from the lens apex to the far rectangle. If a plane is
+    given, each corner ray is intersected with it so the cone stops on the plane
+    (the far quad = the actual footprint); otherwise it ends at far_d.
     Orthographic -> a parallel rectangular tube (constant cross-section).
     """
     frame = cam_obj.data.view_frame(scene=scene)  # 4 local corners at z = -1
@@ -124,10 +127,18 @@ def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0
     verts: list[list[float]] = []
     edges: list[tuple[int, int]] = []
     if persp:
-        # view_frame() corners are not at z=-1, so rescale each so its depth is far_d.
-        verts.append(list(mw.translation))  # 0 = apex
+        apex = mw.translation
+        rot = mw.to_3x3()
+        verts.append(list(apex))  # 0 = apex
         for c in frame:
-            verts.append(list(mw @ (c * (far_d / -c.z))))  # 1..4 = far corners at far_d
+            direction = rot @ c  # world ray from the apex through this corner
+            if plane_point is not None:
+                t = (plane_point - apex).dot(plane_normal) / direction.dot(plane_normal)
+                far = apex + direction * t
+            else:
+                # view_frame() corners are not at z=-1, so rescale to depth far_d.
+                far = mw @ (c * (far_d / -c.z))
+            verts.append(list(far))  # 1..4 = far corners (on the plane)
         edges += [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
     else:
         for c in frame:
@@ -207,11 +218,13 @@ def main() -> None:
 
     # Represent the devices as their optical frustums (projector = orange cone,
     # telecentric camera = blue parallel tube) rather than solid bodies.
-    plane_centre = Vector((_cm(0.0), _cm(10.005), _cm(8.1)))
-    proj_far = (plane_centre - projector.matrix_world.translation).length
-    cam_far = (plane_centre - capture_camera.matrix_world.translation).length
-    _make_frustum_curve("ProjectorFrustum", projector, scene,
-                        far_d=proj_far, persp=True, color=(0.95, 0.55, 0.10))
+    plane_obj = bpy.data.objects["ProjectionPlane"]
+    plane_point = plane_obj.matrix_world.translation.copy()
+    plane_normal = (plane_obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    cam_far = (plane_point - capture_camera.matrix_world.translation).length
+    # Projector cone stops on the plane (corner rays intersected with it).
+    _make_frustum_curve("ProjectorFrustum", projector, scene, far_d=0.0, persp=True,
+                        color=(0.95, 0.55, 0.10), plane_point=plane_point, plane_normal=plane_normal)
     _make_frustum_curve("CameraFrustum", capture_camera, scene,
                         far_d=cam_far, persp=False, color=(0.12, 0.55, 0.85))
 
