@@ -114,21 +114,29 @@ def _add_plane_base(material, image, base_color: tuple[float, float, float]) -> 
 
 
 def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0,
-                        plane_point=None, plane_normal=None):
-    """Build a camera/projector frustum as glowing tube edges.
+                        plane_point=None, plane_normal=None, frame_res=None):
+    """Build a camera/projector frustum as glowing tube edges, clipped to a plane.
 
-    Perspective -> a cone from the lens apex to the far rectangle. If a plane is
-    given, each corner ray is intersected with it so the cone stops on the plane
-    (the far quad = the actual footprint); otherwise it ends at far_d.
-    Orthographic -> a parallel rectangular tube (constant cross-section).
+    Perspective -> a cone from the lens apex; each corner ray is intersected with
+    the plane so the far quad is the actual footprint.
+    Orthographic -> a parallel tube from the lens; the parallel corner rays are
+    likewise intersected with the plane.
+
+    view_frame() uses the scene render aspect, so frame_res temporarily sets it to
+    the device's own frame (fringe image / capture sensor) for a matching footprint.
     """
-    frame = cam_obj.data.view_frame(scene=scene)  # 4 local corners at z = -1
+    saved_res = (scene.render.resolution_x, scene.render.resolution_y)
+    if frame_res is not None:
+        scene.render.resolution_x, scene.render.resolution_y = frame_res
+    frame = cam_obj.data.view_frame(scene=scene)
+    scene.render.resolution_x, scene.render.resolution_y = saved_res
+
     mw = cam_obj.matrix_world
+    rot = mw.to_3x3()
     verts: list[list[float]] = []
     edges: list[tuple[int, int]] = []
     if persp:
         apex = mw.translation
-        rot = mw.to_3x3()
         verts.append(list(apex))  # 0 = apex
         for c in frame:
             direction = rot @ c  # world ray from the apex through this corner
@@ -136,15 +144,18 @@ def _make_frustum_curve(name, cam_obj, scene, *, far_d, persp, color, near_d=0.0
                 t = (plane_point - apex).dot(plane_normal) / direction.dot(plane_normal)
                 far = apex + direction * t
             else:
-                # view_frame() corners are not at z=-1, so rescale to depth far_d.
-                far = mw @ (c * (far_d / -c.z))
+                far = mw @ (c * (far_d / -c.z))  # view_frame() depth is not -1; rescale
             verts.append(list(far))  # 1..4 = far corners (on the plane)
         edges += [(0, 1), (0, 2), (0, 3), (0, 4), (1, 2), (2, 3), (3, 4), (4, 1)]
     else:
-        for c in frame:
-            verts.append(list(mw @ Vector((c.x, c.y, -near_d))))  # 0..3 near
-        for c in frame:
-            verts.append(list(mw @ Vector((c.x, c.y, -far_d))))   # 4..7 far
+        forward = (rot @ Vector((0.0, 0.0, -1.0))).normalized()
+        near = [mw @ Vector((c.x, c.y, -near_d)) for c in frame]
+        if plane_point is not None:
+            far = [p + forward * ((plane_point - p).dot(plane_normal) / forward.dot(plane_normal))
+                   for p in near]
+        else:
+            far = [mw @ Vector((c.x, c.y, -far_d)) for c in frame]
+        verts = [list(p) for p in near] + [list(p) for p in far]
         edges += [(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
                   (0, 4), (1, 5), (2, 6), (3, 7)]
     mesh = bpy.data.meshes.new(name + "Mesh")
@@ -221,12 +232,14 @@ def main() -> None:
     plane_obj = bpy.data.objects["ProjectionPlane"]
     plane_point = plane_obj.matrix_world.translation.copy()
     plane_normal = (plane_obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-    cam_far = (plane_point - capture_camera.matrix_world.translation).length
-    # Projector cone stops on the plane (corner rays intersected with it).
+    # Both frustums stop on the plane; each uses its own frame aspect (fringe image
+    # for the projector, capture sensor for the camera) so the footprints line up.
     _make_frustum_curve("ProjectorFrustum", projector, scene, far_d=0.0, persp=True,
-                        color=(0.95, 0.55, 0.10), plane_point=plane_point, plane_normal=plane_normal)
-    _make_frustum_curve("CameraFrustum", capture_camera, scene,
-                        far_d=cam_far, persp=False, color=(0.12, 0.55, 0.85))
+                        color=(0.95, 0.55, 0.10), plane_point=plane_point, plane_normal=plane_normal,
+                        frame_res=(args.fringe_width, args.fringe_height))
+    _make_frustum_curve("CameraFrustum", capture_camera, scene, far_d=0.0, persp=False,
+                        color=(0.12, 0.55, 0.85), plane_point=plane_point, plane_normal=plane_normal,
+                        frame_res=(1028, 752))
 
     # Ground plane to ground the rig and catch device shadows.
     bpy.ops.mesh.primitive_plane_add(size=4.0, location=(0.0, 0.0, 0.0))
