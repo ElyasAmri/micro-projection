@@ -218,7 +218,9 @@ class MainWindow(QMainWindow):
         step = params.get("current_step", 0)
         shift = 2 * np.pi * step / n_steps
         x = np.arange(w, dtype=np.float64)
-        pattern = 127.5 + 127.5 * np.cos(2 * np.pi * x / period + shift)
+        # sin-based fringe to match the simulation's convention; the PSA in
+        # processing/steps.py returns +phi for sin fringes.
+        pattern = 127.5 + 127.5 * np.sin(2 * np.pi * x / period + shift)
         pattern_2d = np.tile(pattern.astype(np.uint8), (h, 1))
         return pattern_2d
 
