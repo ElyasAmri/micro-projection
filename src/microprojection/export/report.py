@@ -68,13 +68,35 @@ def save_report(
         "notes": notes,
     }
     results_path = out / "results.json"
-    results_path.write_text(json.dumps(document, indent=2, default=_json_default))
+    # allow_nan=False + a recursive sanitiser so non-finite floats become null
+    # (RFC 8259 forbids bare NaN/Infinity literals; emit valid JSON).
+    sanitised = _sanitise_for_json(document)
+    results_path.write_text(
+        json.dumps(sanitised, indent=2, allow_nan=False, default=_json_default),
+        encoding="utf-8",
+    )
     return results_path
+
+
+def _sanitise_for_json(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(k): _sanitise_for_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitise_for_json(v) for v in value]
+    if isinstance(value, (np.floating, float)):
+        f = float(value)
+        return f if np.isfinite(f) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.ndarray):
+        return _sanitise_for_json(value.tolist())
+    return value
 
 
 def _json_default(value: object) -> object:
     if isinstance(value, np.floating):
-        return float(value)
+        f = float(value)
+        return f if np.isfinite(f) else None
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.ndarray):
