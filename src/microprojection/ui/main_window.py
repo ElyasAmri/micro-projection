@@ -15,7 +15,9 @@ from microprojection.acquisition.camera import (
     PySpinCameraThread,
     enumerate_cameras,
 )
+from microprojection.export import save_report
 from microprojection.processing.pipeline import PipelineThread
+from microprojection.ui.calibration_tab import CalibrationTab
 from microprojection.ui.camera_view import CameraView
 from microprojection.ui.parameter_panel import ParameterPanel
 from microprojection.ui.projection_view import ProjectionView
@@ -31,15 +33,19 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         # -- Widgets --
+        self._calibration_tab = CalibrationTab()
         self._projection_view = ProjectionView()
         self._camera_view = CameraView()
         self._result_view = ResultView()
         self._parameter_panel = ParameterPanel()
         self._results_panel = ResultsPanel()
+        self._latest_result = None  # last PipelineResult, used by Export Report
 
         # -- Layout --
-        # Left: top-level workflow tabs
+        # Left: top-level workflow tabs (in execution order: calibrate, project,
+        # capture, reconstruct).
         self._tabs = QTabWidget()
+        self._tabs.addTab(self._calibration_tab, "Calibration")
         self._tabs.addTab(self._projection_view, "Projected Fringe")
         self._tabs.addTab(self._camera_view, "Received Fringe")
         self._tabs.addTab(self._result_view, "Reconstruction")
@@ -83,6 +89,7 @@ class MainWindow(QMainWindow):
             self._pipeline_thread.update_params
         )
         self._parameter_panel.parameters_changed.connect(self._update_fringe_pattern)
+        self._calibration_tab.calibration_changed.connect(self._on_calibration_changed)
 
         # -- Menu bar --
         self._build_menus()
@@ -94,6 +101,8 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         file_menu = menu_bar.addMenu("&File")
+        file_menu.addAction("&Export Report...", self._on_export_report)
+        file_menu.addSeparator()
         file_menu.addAction("&Quit", self.close)
 
         camera_menu = menu_bar.addMenu("&Camera")
@@ -247,6 +256,44 @@ class MainWindow(QMainWindow):
     def _on_pipeline_result(self, result):
         ms = result.processing_time * 1000
         self._pipeline_label.setText(f"Pipeline: {ms:.1f} ms")
+        self._latest_result = result
+
+    def _on_calibration_changed(self, params: dict):
+        # Forward the calibrated lambda_eq / pixel pitch into the pipeline so
+        # the height conversion + Gaussian S-filter use real-rig parameters.
+        forwarded = {
+            "lambda_eq": float(params.get("lambda_eq_mm", 0.32)),
+            "filter_cutoff": float(15.0),  # default cutoff lambda_c in mm
+            "pixel_pitch_mm": float(params.get("pixel_pitch_mm", 0.214)),
+        }
+        self._pipeline_thread.update_params(
+            {**self._parameter_panel.get_params(), **forwarded}
+        )
+        self.statusBar().showMessage(
+            f"Calibration applied: lambda_eq = {forwarded['lambda_eq']:.4f} mm", 5000
+        )
+
+    def _on_export_report(self):
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        if self._latest_result is None:
+            QMessageBox.information(self, "Export Report",
+                                    "No measurement to export yet. Run an acquisition first.")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Choose report output directory")
+        if not directory:
+            return
+        try:
+            results_path = save_report(
+                directory,
+                self._latest_result,
+                calibration=self._calibration_tab._calibrated or None,
+                parameters=self._parameter_panel.get_params(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Export Report", f"Failed to write report:\n{exc}")
+            return
+        QMessageBox.information(self, "Export Report",
+                                f"Report saved to:\n{results_path}")
 
     def closeEvent(self, event):
         if self._projector_window is not None:
