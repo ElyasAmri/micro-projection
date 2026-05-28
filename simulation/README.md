@@ -95,6 +95,45 @@ hides the surface from the projector. Max-abs error there reaches 12 mm. This is
 the failure mode predicted by the slope-budget analysis below, and the reason
 `rolling-mound` is the well-conditioned default.
 
+## Roughness measurement (Sa, Sz)
+
+The pipeline goes one step further than height: it separates form (low-frequency
+shape) from roughness (high-frequency residual) with a Gaussian S-filter
+(ISO 16610-21) and computes the areal roughness parameters Sa and Sz (ISO 25178)
+on the residual.
+
+For validation, a `rolling-mound-rough` test surface is defined as `rolling-mound`
+plus a deterministic high-frequency component (three superposed sinusoids with
+known amplitudes). Its analytic Sa is computable exactly by dense numerical
+sampling of the formula.
+
+![Form/roughness separation and Sa/Sz validation on rolling-mound-rough](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/roughness_rolling-mound-rough.png)
+
+From left to right: the reconstructed height (form + roughness combined), the
+form recovered by the Gaussian S-filter, the **reconstructed roughness residual**,
+and the same filter applied to the rendered ground-truth height. The roughness
+panels show clearly matching sinusoidal interference patterns - same dominant
+orientations and wavelengths in both.
+
+Three Sa values, comparable on the same eroded mask:
+
+| Sa source                 | Sa     | Sz     |
+| ------------------------- | ------ | ------ |
+| analytic (formula, truth) |  93 um |  710 um |
+| Gaussian filter on truth  | 116 um |  924 um |
+| Gaussian filter on **reconstruction** | **128 um** | 1423 um |
+
+**Recon Sa / truth-filter Sa = 1.11** - the reconstruction recovers Sa within
+11 % of what the same filter would extract from ideal ground-truth data, on a
+surface whose true Sa is ~90 um. Sz is more outlier-sensitive (it is a single
+peak-valley statistic, not an average), so the reconstructed Sz over-reads more
+than Sa; for an averaged figure of merit Sa is the meaningful metric.
+
+The cutoff wavelength is lambda_c = 15 mm, chosen between the form scale
+(~30 mm features) and the roughness scale (~5 mm wavelengths). The filter is
+applied with normalized convolution so masked-out pixels do not bias the form
+near boundaries.
+
 ## Surface conditioning (no self-occlusion)
 
 A surface scanned by an angled projector must not shadow itself: any face steeper

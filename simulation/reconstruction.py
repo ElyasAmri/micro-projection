@@ -211,3 +211,61 @@ def normalize_to_uint8(values: np.ndarray, mask: np.ndarray | None = None) -> np
     normalized = np.clip((data - lo) / (hi - lo), 0.0, 1.0)
     output[valid] = np.round(normalized[valid] * 255.0).astype(np.uint8)
     return output
+
+
+# ---------------------------------------------------------------------------
+# Form / roughness separation and ISO 25178 areal roughness parameters
+# ---------------------------------------------------------------------------
+
+def gaussian_form_filter(
+    height: np.ndarray,
+    mask: np.ndarray,
+    sigma_pixels: float,
+) -> np.ndarray:
+    """Normalized Gaussian low-pass filter, ignoring masked-out pixels.
+
+    Returns the smoothed *form* component. The roughness residual is
+    `height - gaussian_form_filter(height, mask, sigma)` on the same mask.
+
+    Uses the standard ISO 16610-21 Gaussian S-filter idea: convolve both the
+    masked height and the mask, then normalize. This prevents masked-out edges
+    from biasing the smoothing toward zero.
+    """
+    if cv2 is None:
+        raise RuntimeError("cv2 is required for gaussian_form_filter.")
+    z = np.where(mask, np.asarray(height, dtype=np.float64), 0.0)
+    w = mask.astype(np.float64)
+    z_blur = cv2.GaussianBlur(z, ksize=(0, 0), sigmaX=float(sigma_pixels), sigmaY=float(sigma_pixels))
+    w_blur = cv2.GaussianBlur(w, ksize=(0, 0), sigmaX=float(sigma_pixels), sigmaY=float(sigma_pixels))
+    return np.where(w_blur > 1e-6, z_blur / w_blur, 0.0)
+
+
+def sigma_pixels_for_cutoff(cutoff_wavelength: float, pixel_pitch: float) -> float:
+    """Standard-deviation sigma (in pixels) for a Gaussian low-pass that has 50%
+    transmission at the cutoff wavelength `lambda_c` (ISO 16610-21 convention).
+
+    The ISO impulse response is s(x) = (1/(alpha*lambda_c)) * exp(-pi (x/(alpha*lambda_c))^2)
+    with alpha = sqrt(ln(2)/pi). Matching that to the standard Gaussian
+    g(x) = (1/(sigma*sqrt(2*pi))) * exp(-x^2/(2 sigma^2)) gives
+    sigma = alpha * lambda_c / sqrt(2*pi) = sqrt(ln(2) / (2*pi^2)) * lambda_c ~= 0.1874 * lambda_c.
+    cv2.GaussianBlur takes this same sigma, so divide by the pixel pitch.
+    """
+    sigma_phys = float(np.sqrt(np.log(2.0) / (2.0 * np.pi ** 2))) * float(cutoff_wavelength)
+    return sigma_phys / float(pixel_pitch)
+
+
+def sa_roughness(residual: np.ndarray, mask: np.ndarray) -> float:
+    """Sa (ISO 25178) on the roughness residual: arithmetic mean absolute height."""
+    valid = mask & np.isfinite(residual)
+    if not np.any(valid):
+        return float("nan")
+    return float(np.mean(np.abs(residual[valid])))
+
+
+def sz_roughness(residual: np.ndarray, mask: np.ndarray) -> float:
+    """Sz (ISO 25178) on the roughness residual: max-peak minus max-valley."""
+    valid = mask & np.isfinite(residual)
+    if not np.any(valid):
+        return float("nan")
+    values = residual[valid]
+    return float(values.max() - values.min())
