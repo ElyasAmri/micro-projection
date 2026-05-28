@@ -1,10 +1,11 @@
 import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
 from microprojection.ui.main_window import MainWindow
+from microprojection.ui.styles import STYLESHEET
 
 
 def _dark_palette() -> QPalette:
@@ -40,6 +41,13 @@ def main():
     app.setStyle("Fusion")
     app.setPalette(_dark_palette())
     app.setApplicationName("MicroProjection")
+
+    # Use Segoe UI on Windows, a touch larger than the system default.
+    font = QFont("Segoe UI", 10)
+    app.setFont(font)
+
+    # Layered widget styling on top of the Fusion palette.
+    app.setStyleSheet(STYLESHEET)
 
     window = MainWindow()
     window.show()

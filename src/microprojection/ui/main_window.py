@@ -29,7 +29,7 @@ from microprojection.ui.results_panel import ResultsPanel
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MicroProjection — Fringe Projection Profilometry")
+        self.setWindowTitle("MicroProjection - Fringe Projection Profilometry")
         self.resize(1280, 800)
 
         # -- Widgets --
@@ -52,8 +52,10 @@ class MainWindow(QMainWindow):
 
         # Right: parameters (top) + roughness (bottom)
         right_widget = QWidget()
+        right_widget.setMinimumWidth(360)
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
         right_layout.addWidget(self._parameter_panel, stretch=3)
         right_layout.addWidget(self._results_panel, stretch=1)
 
@@ -230,7 +232,7 @@ class MainWindow(QMainWindow):
 
     def _start_camera(self):
         if self._camera_thread is None:
-            self.statusBar().showMessage("No camera selected — use Camera > Select Device", 5000)
+            self.statusBar().showMessage("No camera selected - use Camera > Select Device", 5000)
             return
         self._update_fringe_pattern()
         if not self._camera_thread.isRunning():
