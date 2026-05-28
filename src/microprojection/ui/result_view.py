@@ -8,7 +8,8 @@ from microprojection.core.datatypes import PipelineResult
 
 def _ndarray_to_pixmap(arr: np.ndarray) -> QPixmap:
     """Convert a HxW float64 array to a grayscale QPixmap."""
-    ptp = arr.ptp()
+    # ndarray.ptp() was removed in NumPy 2.0; use np.ptp instead.
+    ptp = float(np.ptp(arr))
     if ptp > 0:
         norm = ((arr - arr.min()) / ptp * 255).astype(np.uint8)
     else:
