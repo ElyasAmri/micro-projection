@@ -18,7 +18,10 @@ from PIL import Image, ImageDraw, ImageFont
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # verify module lives at simulation/ after the PySide6 cleanup flatten.
 sys.path.insert(0, str(REPO_ROOT / "simulation"))
-import verify_blender_reconstruction as V
+from outputs import load_ground_truth, load_sequence, period_label
+from geometry import fringe_pitch_mm
+from solver import direct_photometric_depth_solve
+from reconstruction import phase_shift_sequence, robust_modulation_mask, similarity_metrics
 
 BASE = REPO_ROOT / "out" / "blender_reconstruction_rolling-mound-rough"
 PERIODS = [("period_768p0", "coarse"), ("period_192p0", "medium"), ("period_48p0", "fine")]
@@ -71,10 +74,10 @@ def main() -> None:
         pdir = BASE / period_dir
         md = json.loads((pdir / "metadata.json").read_text())
         period_px = float(md["fringe_period_px"])
-        pitch_mm = V._fringe_pitch_mm(md, period_px)
+        pitch_mm = fringe_pitch_mm(md, period_px)
         phases = list(md.get("phases_deg", []))
-        fringes = V._load_sequence(pdir / "fringes", "fringe")
-        objects = V._load_sequence(pdir / "object", "object")
+        fringes = load_sequence(pdir / "fringes", "fringe")
+        objects = load_sequence(pdir / "object", "object")
         steps = min(len(fringes), len(objects))
         for i in range(steps):
             phase = phases[i] if i < len(phases) else i * 360.0 / steps

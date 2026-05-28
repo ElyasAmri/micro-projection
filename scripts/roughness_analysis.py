@@ -32,7 +32,10 @@ import matplotlib.pyplot as plt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "simulation"))
-import verify_blender_reconstruction as V
+from outputs import load_ground_truth, load_sequence, period_label
+from geometry import fringe_pitch_mm
+from solver import direct_photometric_depth_solve
+from reconstruction import phase_shift_sequence, robust_modulation_mask, similarity_metrics
 from reconstruction import (
     gaussian_form_filter,
     sa_roughness,
@@ -60,20 +63,20 @@ def _rough_component_mm(x_norm: np.ndarray, y_norm: np.ndarray) -> np.ndarray:
 
 
 def _recompute(base: Path):
-    period_dirs = [base / f"period_{V._period_label(p)}" for p in PERIODS]
+    period_dirs = [base / f"period_{period_label(p)}" for p in PERIODS]
     metadata = json.loads((period_dirs[0] / "metadata.json").read_text())
-    truth, valid_mask, object_mask = V._load_ground_truth(period_dirs[0])
+    truth, valid_mask, object_mask = load_ground_truth(period_dirs[0])
     phases_deg = np.asarray(metadata["phases_deg"], dtype=np.float64)
-    object_frames_list = [V._load_sequence(d / "object", "object") for d in period_dirs]
-    reference_frames_list = [V._load_sequence(d / "reference", "reference") for d in period_dirs]
-    object_seqs = [V.phase_shift_sequence(f) for f in object_frames_list]
-    reference_seqs = [V.phase_shift_sequence(f) for f in reference_frames_list]
-    modulation_mask = V.robust_modulation_mask(
+    object_frames_list = [load_sequence(d / "object", "object") for d in period_dirs]
+    reference_frames_list = [load_sequence(d / "reference", "reference") for d in period_dirs]
+    object_seqs = [phase_shift_sequence(f) for f in object_frames_list]
+    reference_seqs = [phase_shift_sequence(f) for f in reference_frames_list]
+    modulation_mask = robust_modulation_mask(
         *[s.modulation for s in object_seqs],
         *[s.modulation for s in reference_seqs],
     )
     valid_object_mask = object_mask & valid_mask & modulation_mask
-    reconstructed, _ = V._direct_photometric_depth_solve(
+    reconstructed, _ = direct_photometric_depth_solve(
         metadata,
         valid_object_mask,
         object_frames_list,

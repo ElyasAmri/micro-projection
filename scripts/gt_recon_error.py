@@ -29,7 +29,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # verify_blender_reconstruction now lives at simulation/ root (after the PySide6
 # removal flattened blendersim/ into simulation/).
 sys.path.insert(0, str(REPO_ROOT / "simulation"))
-import verify_blender_reconstruction as V
+from outputs import load_ground_truth, load_sequence, period_label
+from geometry import fringe_pitch_mm
+from solver import direct_photometric_depth_solve
+from reconstruction import phase_shift_sequence, robust_modulation_mask, similarity_metrics
 
 PERIODS = [48.0, 192.0, 768.0]  # solve order (matches reconstruction_metrics.json)
 COARSE_CANDIDATES = 3
@@ -37,22 +40,22 @@ QUADRATIC_SUBSAMPLE = 1
 
 
 def _recompute(base: Path):
-    period_dirs = [base / f"period_{V._period_label(p)}" for p in PERIODS]
+    period_dirs = [base / f"period_{period_label(p)}" for p in PERIODS]
     metadata = json.loads((period_dirs[0] / "metadata.json").read_text())
-    truth, valid_mask, object_mask = V._load_ground_truth(period_dirs[0])
+    truth, valid_mask, object_mask = load_ground_truth(period_dirs[0])
     phases_deg = np.asarray(metadata["phases_deg"], dtype=np.float64)
 
-    object_frames_list = [V._load_sequence(d / "object", "object") for d in period_dirs]
-    reference_frames_list = [V._load_sequence(d / "reference", "reference") for d in period_dirs]
-    object_sequences = [V.phase_shift_sequence(f) for f in object_frames_list]
-    reference_sequences = [V.phase_shift_sequence(f) for f in reference_frames_list]
-    modulation_mask = V.robust_modulation_mask(
+    object_frames_list = [load_sequence(d / "object", "object") for d in period_dirs]
+    reference_frames_list = [load_sequence(d / "reference", "reference") for d in period_dirs]
+    object_sequences = [phase_shift_sequence(f) for f in object_frames_list]
+    reference_sequences = [phase_shift_sequence(f) for f in reference_frames_list]
+    modulation_mask = robust_modulation_mask(
         *[s.modulation for s in object_sequences],
         *[s.modulation for s in reference_sequences],
     )
     valid_object_mask = object_mask & valid_mask & modulation_mask
 
-    reconstructed, _ = V._direct_photometric_depth_solve(
+    reconstructed, _ = direct_photometric_depth_solve(
         metadata,
         valid_object_mask,
         object_frames_list,
@@ -64,7 +67,7 @@ def _recompute(base: Path):
         quadratic_subsample=QUADRATIC_SUBSAMPLE,
     )
     solved_mask = valid_object_mask & np.isfinite(reconstructed)
-    metrics = V.similarity_metrics(reconstructed, truth, solved_mask)
+    metrics = similarity_metrics(reconstructed, truth, solved_mask)
     return truth, reconstructed, solved_mask, metrics, metadata
 
 
@@ -100,7 +103,7 @@ def main() -> None:
     if args.erode_px > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * args.erode_px + 1, 2 * args.erode_px + 1))
         mask = cv2.erode(mask.astype(np.uint8), kernel).astype(bool)
-        metrics = V.similarity_metrics(recon, truth, mask)
+        metrics = similarity_metrics(recon, truth, mask)
         print(f"metrics (eroded {args.erode_px}px): rmse={metrics.rmse:.6f} mae={metrics.mae:.6f} "
               f"max_abs={metrics.max_abs:.6f} r2={metrics.r2:.4f}")
     else:
