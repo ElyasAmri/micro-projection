@@ -6,9 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SIMULATION_DIR = Path(__file__).resolve().parent.parent   # simulation/
+REPO_ROOT = SIMULATION_DIR.parent                          # repo root (for default out/ paths)
+if str(SIMULATION_DIR) not in sys.path:
+    sys.path.insert(0, str(SIMULATION_DIR))
 
 from shared.synthetic_surfaces import SURFACE_KINDS
 
@@ -34,7 +35,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark Blender reconstruction improvements separately and cumulatively.")
     parser.add_argument(
         "--verify-script",
-        default=str(Path(__file__).with_name("verify_blender_reconstruction.py")),
+        default=str(SIMULATION_DIR / "verify_blender_reconstruction.py"),
         help="Path to the Blender verification script.",
     )
     parser.add_argument(

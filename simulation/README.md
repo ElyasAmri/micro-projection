@@ -198,18 +198,22 @@ relief.
 
 ## Repository layout
 
-Scripts at the simulation root drive the full pipeline:
-
-- `blender_projector_capture.py` - builds the projector/telecentric scene in
-  Blender and renders the fringe captures.
-- `verify_blender_reconstruction.py` - orchestrates rendering, runs the solver,
-  and writes metrics and the comparison outputs.
-- `render_setup_overview.py` - renders the projection-setup overview video.
-- `benchmark_blender_reconstruction_improvements.py` - sweeps surfaces and
-  settings to benchmark reconstruction quality.
-- `reconstruction.py` - the reconstruction core: PSA, unwrapping, calibration,
-  and similarity metrics.
-- `shared/synthetic_surfaces.py` - analytic ground-truth test surfaces.
+```
+simulation/
+  verify_blender_reconstruction.py    orchestrates rendering + runs the solver
+  reconstruction.py                   reconstruction core: PSA, unwrap, filter, Sa/Sz, metrics
+  blender/                            scripts that run inside Blender (`import bpy`)
+    blender_projector_capture.py        builds the scene + renders the fringe captures
+    render_setup_overview.py            renders the projection-setup overview video
+    benchmark.py                        sweeps surfaces and settings for ablation benchmarks
+  scripts/                            CPU-only validation + figure-generation scripts
+    verify_surface_occlusion.py         reproduces the surface-conditioning table
+    gt_recon_error.py                   reproduces the GT-vs-reconstruction figures
+    roughness_analysis.py               reproduces the Sa/Sz roughness figure
+    fringe_capture_video.py             rebuilds the fringe-vs-capture video
+  shared/synthetic_surfaces.py        analytic ground-truth test surfaces
+  requirements.txt
+```
 
 ## Running
 
@@ -227,13 +231,12 @@ python verify_blender_reconstruction.py --optimized
 ```
 
 `verify_blender_reconstruction.py` is a regular Python entry point that shells
-out to `blender.exe` for the actual rendering. `render_setup_overview.py` runs
-*inside* Blender (it imports `bpy`), so invoke it via `blender -b -P` with the
-`--` separator before the script's own args:
+out to `blender.exe` for the actual rendering. Scripts under `blender/` run
+*inside* Blender (they import `bpy`), so invoke them via `blender -b -P` with
+the `--` separator before the script's own args:
 
 ```
-cd simulation/
-blender -b -P render_setup_overview.py -- --output-dir ../out/setup_overview
+blender -b -P simulation/blender/render_setup_overview.py -- --output-dir out/setup_overview
 ```
 
 Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio). The Blender

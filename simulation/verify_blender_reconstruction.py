@@ -82,7 +82,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scene-script",
-        default=str(Path(__file__).with_name("blender_projector_capture.py")),
+        default=str(Path(__file__).resolve().parent / "blender" / "blender_projector_capture.py"),
         help="Path to the Blender scene generation script.",
     )
     parser.add_argument(
