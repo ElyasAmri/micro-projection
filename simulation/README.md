@@ -95,6 +95,35 @@ hides the surface from the projector. Max-abs error there reaches 12 mm. This is
 the failure mode predicted by the slope-budget analysis below, and the reason
 `rolling-mound` is the well-conditioned default.
 
+## Examples on different surfaces
+
+A gallery of the same rig scanning a variety of test surfaces. Each clip is one
+period of the projected fringe sweeping over the part; the deformation pattern
+encodes the surface shape that the multi-frequency reconstruction recovers.
+
+### rolling-mound  -  smooth gentle dome, the slope-safe default
+
+![rolling-mound setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound.gif)
+
+### rolling-mound-rough  -  same form plus controlled high-frequency texture (the Sa/Sz validation surface)
+
+![rolling-mound-rough setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.gif)
+
+### dome-ridge  -  broad central dome with a horizontal ridge
+
+![dome-ridge setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.gif)
+
+### twin-hills  -  two off-axis mounds with a saddle valley
+
+![twin-hills setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.gif)
+
+### ring-crater  -  steep ring + central pit (deliberate stress test of the slope budget)
+
+![ring-crater setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.gif)
+
+Full-quality MP4s of every gallery clip are alongside the GIFs in the
+[media-v1 release](https://github.com/ElyasAmri/micro-projection/releases/tag/media-v1).
+
 ## Roughness measurement (Sa, Sz)
 
 The pipeline goes one step further than height: it separates form (low-frequency
