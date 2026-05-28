@@ -1,10 +1,4 @@
-"""Paper-spec-derived prior calibration parameters.
-
-Used as:
-  - the calibration solver's initial guess (warm start, faster convergence),
-  - the demo population of the Calibration tab while the solver is not yet
-    connected to physical hardware.
-"""
+"""Paper-spec-derived prior calibration parameters (solver warm-start + UI demo)."""
 from __future__ import annotations
 
 import math

@@ -1,13 +1,4 @@
-"""Calibration tab.
-
-Calibration step in the measurement workflow. Refines the rig geometry
-(camera intrinsics, projector-camera baseline, equivalent wavelength) against
-the manufacturer-paper specs, which serve as priors and as expected-vs-measured
-references on this tab.
-
-The actual fitting routine (acquiring a calibration target and solving) is in
-`microprojection.calibration.solve`; this widget orchestrates and reports it.
-"""
+"""Calibration tab: shows paper-spec priors, runs the (TODO) solver, displays results."""
 from __future__ import annotations
 
 import json

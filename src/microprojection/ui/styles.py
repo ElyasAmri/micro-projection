@@ -1,14 +1,4 @@
-"""Application-wide visual styling for the MicroProjection app.
-
-Exports:
-- `dark_palette()`  -  Fusion-compatible QPalette tuned for the dark theme.
-- `STYLESHEET`      -  Qt stylesheet (QSS) layered on top of the palette: tab,
-                       group, button, progress-bar, log, menu, status-bar,
-                       splitter, scrollbar, tooltip rules.
-- `BASE_FONT`       -  application-wide font (Segoe UI 10pt).
-
-All three are applied to `QApplication` in `microprojection.app.main`.
-"""
+"""Visual styling: `dark_palette()` + `STYLESHEET` (QSS) + `BASE_FONT` (Segoe UI 10pt)."""
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QFont, QPalette
