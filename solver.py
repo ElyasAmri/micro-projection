@@ -1,10 +1,4 @@
-"""Multi-frequency photometric depth solver.
-
-Carrier-removed height phase per frequency (`psa_height_delta`), temporal
-unwrap of the coarse->fine ladder (`absolute_height_phase`), and the
-chunk-vectorised photometric solver that turns those phases into a metric
-height map (`direct_photometric_depth_solve`).
-"""
+"""Multi-frequency photometric depth solver: PSA per period, temporal unwrap, direct depth."""
 from __future__ import annotations
 
 import math

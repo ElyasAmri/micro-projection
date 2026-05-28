@@ -1,16 +1,4 @@
-"""Ground truth vs reconstruction comparison figure.
-
-Recomputes the reconstruction from the EXISTING captures (no Blender re-render) by
-reusing the verify pipeline's own solver, validates against the saved metrics, then
-renders: ground truth | reconstruction | signed error (gt - reconstruct) | |error|
-heatmap. Heights shown in millimetres.
-
-Usage:
-  python out/_gt_recon_error.py [--recording DIR] [--out PATH]
-
-DIR defaults to out/blender_reconstruction_rolling-mound (the per-capture parent
-that contains period_768p0/, period_192p0/, period_48p0/ subdirs).
-"""
+"""GT vs reconstruction figure: 3D height pair + signed and abs error heatmaps."""
 from __future__ import annotations
 
 import argparse

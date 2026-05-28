@@ -1,10 +1,4 @@
-"""File I/O and visualisation helpers shared by the verify pipeline.
-
-Loaders for the captures + ground truth produced by
-`blender/blender_projector_capture.py`, plus small image-writing /
-colormap utilities used by the result outputs and the per-capture
-reconstruction recording.
-"""
+"""Capture / ground-truth loaders, percentile-normalised PNG writer, turbo colormap."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,11 +1,4 @@
-"""Per-capture reconstruction recording.
-
-Builds and writes the four-panel MP4 that shows the acquisition loop:
-projected fringe | camera capture | model so far | ground truth. Each
-capture is folded into the model via additive phase-shift accumulation,
-periods introduced coarse->fine so the model appears early and sharpens
-in place.
-"""
+"""Four-panel acquisition-loop video: projected fringe | capture | model so far | truth."""
 from __future__ import annotations
 
 from dataclasses import dataclass
