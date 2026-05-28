@@ -200,8 +200,12 @@ relief.
 
 ```
 simulation/
-  verify_blender_reconstruction.py    orchestrates rendering + runs the solver
-  reconstruction.py                   reconstruction core: PSA, unwrap, filter, Sa/Sz, metrics
+  verify_blender_reconstruction.py    CLI + orchestration: invoke Blender, solve, write metrics
+  reconstruction.py                   PSA, unwrap, Gaussian S-filter, Sa/Sq/Sz/Ssk/Sku, similarity
+  geometry.py                         rig geometry: world <-> projector/camera transforms
+  solver.py                           multi-frequency photometric depth solver
+  outputs.py                          capture/ground-truth loaders, write_uint8, colormap helper
+  recording.py                        four-panel acquisition recording (CaptureReconstructionStage)
   blender/                            scripts that run inside Blender (`import bpy`)
     blender_projector_capture.py        builds the scene + renders the fringe captures
     render_setup_overview.py            renders the projection-setup overview video
