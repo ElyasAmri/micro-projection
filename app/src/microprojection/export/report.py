@@ -1,13 +1,4 @@
-"""Measurement report writer.
-
-Layout:
-    <out_dir>/
-        results.json   - roughness parameters + processing time + provenance
-        height.png     - 8-bit grayscale render of the height map (percentile-norm)
-        roughness.png  - 8-bit grayscale render of the roughness residual
-
-The PNGs are intended for at-a-glance review; the canonical data is `results.json`.
-"""
+"""Write `results.json` (canonical), `height.png`, `roughness.png` for a measurement."""
 from __future__ import annotations
 
 import json

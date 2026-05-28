@@ -1,11 +1,4 @@
-"""Hardware paper specifications for the fringe-projection profilometer.
-
-These are the manufacturer-provided / on-paper specs that the calibration step
-should refine against. They double as priors for the calibration solver and as
-expected-vs-measured references in the analysis display.
-
-Units: lengths in centimetres or millimetres as noted; pixel pitches in micrometres.
-"""
+"""Hardware paper specs. Lengths in cm/mm (per constant); pixel pitch in um."""
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------

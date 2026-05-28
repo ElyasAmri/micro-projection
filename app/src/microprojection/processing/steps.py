@@ -1,19 +1,4 @@
-"""Surface-metrology processing steps.
-
-Real implementations of the fringe-projection pipeline algorithms used by the
-app, ported from the simulation line (`simulation/reconstruction.py`):
-
-    extract_phase    N-step PSA (works on a phase-shifted sequence; on a single
-                     frame it returns a zero placeholder for the live preview)
-    unwrap_phase     2D phase unwrap (separable np.unwrap baseline)
-    compute_height   phase -> height for a triangulation rig (calibration-dependent)
-    filter_surface   Gaussian S-filter (ISO 16610-21): roughness / form split
-    compute_roughness  ISO 25178 areal parameters: Sa, Sq, Sz, Ssk, Sku
-    temporal_unwrap_ladder  multi-frequency coarse-to-fine temporal unwrap
-
-The capture-acquisition step that feeds these (projector phase-shift sweep +
-camera triggering) is handled by `acquisition/sequence_capture.py`.
-"""
+"""PSA, unwrap, phase->height, Gaussian S-filter, ISO 25178 Sa/Sq/Sz/Ssk/Sku."""
 from __future__ import annotations
 
 from typing import Sequence

@@ -1,9 +1,4 @@
-"""Rig geometry: world <-> projector/camera transforms.
-
-Pure-math helpers that consume the metadata.json produced by
-`blender/blender_projector_capture.py`. Used by the solver and the recording
-pipeline.
-"""
+"""Rig geometry: world <-> projector/camera transforms. Consumes metadata.json."""
 from __future__ import annotations
 
 import numpy as np

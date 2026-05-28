@@ -1,10 +1,4 @@
-"""Verify a scanning surface is single-valued, slope-bounded, and self-shadow free.
-
-Tests against the projector/camera grazing budget (~48.6 deg): computes the max
-surface slope and runs a directional horizon shadow test along the projector
-azimuth (the left-right u-axis), in both directions, to confirm no point occludes
-another from the projection.
-"""
+"""Per-surface max slope + directional horizon shadow test vs the 48.6° grazing budget."""
 from __future__ import annotations
 
 import sys

@@ -1,9 +1,4 @@
-"""Side-by-side video: projected fringe phase (left) vs camera capture (right).
-
-For each frequency (coarse -> fine) sweeps the phase-shift sequence, showing the
-ideal projected fringe alongside what the telecentric camera captures of that
-fringe deformed onto (and shadow-masked by) the surface.
-"""
+"""Side-by-side video: projected fringe (left) vs camera capture (right), per frequency."""
 from __future__ import annotations
 
 import json

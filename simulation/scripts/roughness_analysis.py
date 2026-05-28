@@ -1,19 +1,9 @@
-"""Areal surface-roughness validation on the rolling-mound-rough surface.
+"""Sa/Sz validation on rolling-mound-rough.
 
-Reuses the verify pipeline's reconstruction, then applies a Gaussian S-filter
-(ISO 16610-21) to separate form from roughness, computes Sa, Sz (ISO 25178) on
-the roughness residual, and validates against the analytic ground truth:
-
-  A. analytic Sa, Sz   - from the surface formula's roughness component, sampled
-                         densely over the patch (the true roughness of the part).
-  B. filter-on-truth   - apply the Gaussian filter to the rendered ground-truth
-                         height; Sa, Sz on its residual. Isolates filter accuracy
-                         from reconstruction noise.
-  C. filter-on-recon   - the measured value: apply the same filter to the
-                         reconstructed height; Sa, Sz on its residual.
-
-If C is close to B, the system reproduces what the filter would extract from
-ideal data. If B is close to A, the filter cutoff is well-chosen.
+Reports three Sa/Sz pairs on the same eroded mask: analytic (formula), filter
+applied to the rendered ground-truth height, and filter applied to the
+reconstruction. Filter is the ISO 16610-21 Gaussian S-filter, residual via
+ISO 25178.
 """
 from __future__ import annotations
 
