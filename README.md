@@ -1,47 +1,10 @@
-# Micro-Projection (monorepo)
+# Micro-Projection
 
-Two related lines of work on optical surface metrology, consolidated into one
-repository as separate subprojects:
+Monorepo for an optical surface-metrology project.
 
-- **[`simulation/`](simulation/)** - a physically-based Blender (Cycles) simulation
-  of fringe-projection profilometry: a projector casts sinusoidal fringes, a
-  telecentric camera images the deformed pattern, and a multi-frequency
-  phase-shifting pipeline reconstructs the surface height map. See
-  [`simulation/README.md`](simulation/README.md) for the full report, including
-  rendered setup, fringe-vs-capture, reconstruction, and accuracy media.
+- **[`simulation/`](simulation/)** — Blender (Cycles) fringe-projection profilometry simulation. See [`simulation/README.md`](simulation/README.md) for the report.
+- **[`app/`](app/)** — PySide6 instrument GUI (camera, projector, processing, calibration). The FLIR Spinnaker (PySpin) SDK wheel is hosted as a [release asset](https://github.com/ElyasAmri/micro-projection/releases/tag/spinnaker-sdk).
 
-- **[`app/`](app/)** - the PySide6 instrument application: camera acquisition
-  (FLIR/PySpin), the live processing pipeline, and parameter controls for driving
-  a real projector/camera rig. The FLIR Spinnaker (PySpin) SDK is a vendor binary
-  kept out of git; download the wheel from the
-  [spinnaker-sdk release](https://github.com/ElyasAmri/micro-projection/releases/download/spinnaker-sdk/spinnaker_python-4.3.0.189-cp310-cp310-win_amd64.whl)
-  (`pip install spinnaker_python-4.3.0.189-cp310-cp310-win_amd64.whl`, Python 3.10 / Windows x64).
+## Branches
 
-## Layout
-
-```
-app/         instrument GUI (acquisition + processing on real hardware)
-simulation/  Blender simulation + reconstruction pipeline (the report lives here)
-```
-
-Each subproject keeps its own `.gitignore`, dependencies, and entry points.
-
-## Branches and worktrees
-
-`main` is the integrated view (this branch, with both subprojects). The two lines
-are also maintained as standalone branches, each developed in its own subfolder of
-the repo (files at the branch root rather than under a subdirectory):
-
-- `app` - the instrument application line.
-- `simulation` - the simulation line.
-
-These are checked out as git worktrees under `.worktrees/` (git-ignored), so both
-can be worked on at once:
-
-```
-.worktrees/app/         <- the `app` branch
-.worktrees/simulation/  <- the `simulation` branch
-```
-
-`main` was formed by merging both branches (preserving each line's full history),
-so `git log main` shows the complete history of both subprojects.
+`main` is the integrated view; `app` and `simulation` are also maintained as standalone branches, checked out as git worktrees under `.worktrees/` for parallel development. `git log main` reaches both histories.
