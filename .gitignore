@@ -8,7 +8,10 @@ out/
 __pycache__/
 *.pyc
 
-# Local archives / vendor SDKs / personal files (mirrored from the app line).
+# Local archives / vendor SDKs.
 .archive/
-docs/timesheet-*.md
 spinnaker_python-*/
+
+# Local-only files and folders: anything whose name contains ".local"
+# (e.g. docs/.local/, notes.local.md). Keeps personal/draft material out of git.
+*.local*
