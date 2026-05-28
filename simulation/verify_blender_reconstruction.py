@@ -820,7 +820,9 @@ def _direct_photometric_depth_solve(
 def main() -> int:
     args = _parse_args()
     settings = _resolve_improvement_settings(args)
-    output_dir = Path(args.output_dir)
+    # Resolve to absolute: Blender resolves bare relative render paths against the
+    # drive root (C:\out\...), not the cwd. Make every downstream path absolute.
+    output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     period_outputs: list[Path] = []
