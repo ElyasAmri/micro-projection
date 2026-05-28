@@ -237,7 +237,11 @@ def gaussian_form_filter(
     w = mask.astype(np.float64)
     z_blur = cv2.GaussianBlur(z, ksize=(0, 0), sigmaX=float(sigma_pixels), sigmaY=float(sigma_pixels))
     w_blur = cv2.GaussianBlur(w, ksize=(0, 0), sigmaX=float(sigma_pixels), sigmaY=float(sigma_pixels))
-    return np.where(w_blur > 1e-6, z_blur / w_blur, 0.0)
+    # Guard the division with `where=` so divide-by-zero is never executed
+    # outside the support of the kernel - avoids the RuntimeWarning and any
+    # NaN/inf that would leak into the result.
+    valid = w_blur > 1e-6
+    return np.divide(z_blur, w_blur, out=np.zeros_like(z_blur), where=valid)
 
 
 def sigma_pixels_for_cutoff(cutoff_wavelength: float, pixel_pitch: float) -> float:
