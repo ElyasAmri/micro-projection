@@ -24,8 +24,9 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 import matplotlib
+import numpy as np
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -35,8 +36,8 @@ import verify_blender_reconstruction as V
 from reconstruction import (
     gaussian_form_filter,
     sa_roughness,
-    sz_roughness,
     sigma_pixels_for_cutoff,
+    sz_roughness,
 )
 
 PERIODS = [48.0, 192.0, 768.0]
