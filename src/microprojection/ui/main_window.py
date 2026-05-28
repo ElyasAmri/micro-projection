@@ -17,13 +17,13 @@ from microprojection.acquisition.camera import (
 )
 from microprojection.export import save_report
 from microprojection.processing.pipeline import PipelineThread
-from microprojection.ui.calibration_tab import CalibrationTab
-from microprojection.ui.camera_view import CameraView
-from microprojection.ui.parameter_panel import ParameterPanel
-from microprojection.ui.projection_view import ProjectionView
+from microprojection.ui.panels.parameter_panel import ParameterPanel
+from microprojection.ui.panels.results_panel import ResultsPanel
 from microprojection.ui.projector_window import ProjectorWindow
-from microprojection.ui.result_view import ResultView
-from microprojection.ui.results_panel import ResultsPanel
+from microprojection.ui.tabs.calibration_tab import CalibrationTab
+from microprojection.ui.views.camera_view import CameraView
+from microprojection.ui.views.projection_view import ProjectionView
+from microprojection.ui.views.result_view import ResultView
 
 
 class MainWindow(QMainWindow):
