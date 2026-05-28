@@ -11,6 +11,7 @@ SURFACE_KINDS: tuple[str, ...] = (
     "folded-sheet",
     "cross-groove",
     "rolling-mound",
+    "rolling-mound-rough",
 )
 
 
@@ -86,6 +87,23 @@ def height_field_depth_m(
         basin_cm = -0.26 * math.exp(-2.0 * ((x_norm + 0.5) ** 2 + (y_norm - 0.3) ** 2))
         undulation_cm = 0.08 * math.sin(1.2 * math.pi * x_norm) * math.cos(1.0 * math.pi * y_norm)
         depth_cm = 0.45 + dome_cm + mound_cm + basin_cm + undulation_cm
+    elif surface_kind == "rolling-mound-rough":
+        # rolling-mound (form) plus a deterministic high-frequency roughness component
+        # for surface-roughness validation. Roughness amplitude is intentionally well
+        # above the reconstruction noise floor (~80 um) but well below the form
+        # amplitude (~10 mm), and frequencies stay within slope budget. Analytic Sa,Sz
+        # are computable by dense numerical sampling of this function.
+        dome_cm = 0.80 * math.exp(-1.0 * (x_norm * x_norm + y_norm * y_norm))
+        mound_cm = 0.30 * math.exp(-2.2 * ((x_norm - 0.45) ** 2 + (y_norm + 0.35) ** 2))
+        basin_cm = -0.26 * math.exp(-2.0 * ((x_norm + 0.5) ** 2 + (y_norm - 0.3) ** 2))
+        undulation_cm = 0.08 * math.sin(1.2 * math.pi * x_norm) * math.cos(1.0 * math.pi * y_norm)
+        form_cm = 0.45 + dome_cm + mound_cm + basin_cm + undulation_cm
+        rough_cm = (
+            0.018 * math.sin(7.0 * math.pi * x_norm) * math.sin(5.0 * math.pi * y_norm)
+            + 0.012 * math.sin(11.0 * math.pi * (x_norm + 0.13)) * math.cos(9.0 * math.pi * y_norm)
+            + 0.008 * math.cos(13.0 * math.pi * x_norm - 0.4) * math.sin(7.5 * math.pi * (y_norm - 0.2))
+        )
+        depth_cm = form_cm + rough_cm
     else:
         raise ValueError(f"Unsupported surface kind: {surface_kind}")
     return max(0.08, depth_cm) / 100.0
