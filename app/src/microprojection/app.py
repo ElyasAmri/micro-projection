@@ -50,5 +50,5 @@ def main():
     app.setStyleSheet(STYLESHEET)
 
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
