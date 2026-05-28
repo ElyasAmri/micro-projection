@@ -13,11 +13,11 @@ import cv2
 import imageio.v2 as imageio
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from projection_simulation.scanning.reconstruction import (
+from reconstruction import (
     apply_height_calibration,
     fit_height_calibration,
     normalize_to_uint8,
@@ -87,7 +87,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parents[1] / "out" / "blender_reconstruction_verify"),
+        default=str(Path(__file__).resolve().parent / "out" / "blender_reconstruction_verify"),
         help="Directory for Blender renders and verification outputs.",
     )
     parser.add_argument("--render-width", type=int, default=1028)

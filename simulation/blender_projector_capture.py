@@ -10,9 +10,9 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from shared.synthetic_surfaces import SURFACE_KINDS, height_field_depth_m
 

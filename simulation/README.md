@@ -103,15 +103,17 @@ relief.
 
 ## Repository layout
 
-- `blendersim/` - Blender (Cycles) capture and reconstruction-verification pipeline.
-  - `blender_projector_capture.py` - builds the projector/telecentric scene and
-    renders the fringe captures.
-  - `verify_blender_reconstruction.py` - orchestrates rendering, runs the solver,
-    and writes metrics and the comparison outputs.
-  - `render_setup_overview.py` - renders the projection-setup overview video.
-- `projection_simulation/` - the interactive PySide6/OpenGL application and the
-  reconstruction core (`scanning/reconstruction.py`: PSA, unwrapping, calibration,
-  metrics).
+Scripts at the simulation root drive the full pipeline:
+
+- `blender_projector_capture.py` - builds the projector/telecentric scene in
+  Blender and renders the fringe captures.
+- `verify_blender_reconstruction.py` - orchestrates rendering, runs the solver,
+  and writes metrics and the comparison outputs.
+- `render_setup_overview.py` - renders the projection-setup overview video.
+- `benchmark_blender_reconstruction_improvements.py` - sweeps surfaces and
+  settings to benchmark reconstruction quality.
+- `reconstruction.py` - the reconstruction core: PSA, unwrapping, calibration,
+  and similarity metrics.
 - `shared/synthetic_surfaces.py` - analytic ground-truth test surfaces.
 
 ## Running
@@ -120,27 +122,15 @@ Render and reconstruct with Blender (defaults to the slope-safe `rolling-mound`
 surface):
 
 ```
-python -m blendersim.verify_blender_reconstruction --optimized
+python verify_blender_reconstruction.py --optimized
 ```
 
 Render the projection-setup overview video:
 
 ```
-python -m blendersim.render_setup_overview --output-dir out/setup_overview
+python render_setup_overview.py --output-dir out/setup_overview
 ```
 
-Launch the interactive application:
-
-```
-python -m projection_simulation
-```
-
-Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio, PySide6). The
-Blender scripts target Blender 5.1 (Cycles, GPU). Reconstruction outputs are
-written under `out/` (git-ignored).
-
-## Direction
-
-The optical simulation is being moved from the in-house PySide6/OpenGL renderer to
-Blender Cycles, to get accurate light transport (true projection, shadowing, and
-shading) that the rasterized renderer could not reproduce reliably.
+Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio). The Blender
+scripts target Blender 5.1 (Cycles, GPU); the verify script invokes `blender.exe`
+as a subprocess. Reconstruction outputs are written under `out/` (git-ignored).

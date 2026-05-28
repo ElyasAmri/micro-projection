@@ -4,7 +4,7 @@ Reuses the capture scene builder (projector + fringe-lit surface + telecentric
 camera), reveals and colour-codes the device bodies, adds lighting, and orbits a
 perspective camera around the rig, rendering an mp4.
 
-Run:  blender -b -P blendersim/render_setup_overview.py -- --output-dir out/setup_overview
+Run:  blender -b -P render_setup_overview.py -- --output-dir out/setup_overview
 """
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-from blendersim.blender_projector_capture import (
+from blender_projector_capture import (
     _cm,
     _create_cameras,
     _create_scene_geometry,
