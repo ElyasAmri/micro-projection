@@ -13,11 +13,11 @@ import cv2
 import imageio.v2 as imageio
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from projection_simulation.scanning.reconstruction import (
+from reconstruction import (
     apply_height_calibration,
     fit_height_calibration,
     normalize_to_uint8,
@@ -87,7 +87,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(Path(__file__).resolve().parents[1] / "out" / "blender_reconstruction_verify"),
+        default=str(Path(__file__).resolve().parent / "out" / "blender_reconstruction_verify"),
         help="Directory for Blender renders and verification outputs.",
     )
     parser.add_argument("--render-width", type=int, default=1028)
@@ -820,7 +820,9 @@ def _direct_photometric_depth_solve(
 def main() -> int:
     args = _parse_args()
     settings = _resolve_improvement_settings(args)
-    output_dir = Path(args.output_dir)
+    # Resolve to absolute: Blender resolves bare relative render paths against the
+    # drive root (C:\out\...), not the cwd. Make every downstream path absolute.
+    output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     period_outputs: list[Path] = []

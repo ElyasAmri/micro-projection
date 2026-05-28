@@ -68,14 +68,32 @@ Full-quality video:
 
 ## Results
 
-![Ground truth vs reconstruction with signed and absolute error](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction.png)
+Each panel set: ground truth and reconstruction (3D, viewed top-front and grounded
+on the base plane) alongside the signed error (GT - reconstruction) and an
+absolute-error heatmap. Heights are in millimetres. Metrics are reported on the
+solved mask eroded by 20 pixels to exclude low-modulation field-boundary artifacts
+(standard practice in optical metrology).
 
-Ground truth and reconstruction (3D, viewed top-front and grounded on the base
-plane) alongside the signed error (GT - reconstruction) and an absolute-error
-heatmap. For the demanding `ring-crater` test surface the reconstruction reaches
-RMSE 0.83 mm, MAE 0.08 mm and R2 0.95 over ~100k samples. The residual is near zero
-everywhere except a thin arc on the steep crater rim - which is exactly where the
-geometry self-shadows (see below).
+### Well-conditioned case: `rolling-mound` (default)
+
+![Rolling-mound reconstruction](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction_rolling-mound.png)
+
+On the slope-safe default surface the reconstruction reaches RMSE **0.67 mm**,
+MAE **0.084 mm**, R2 **0.90**. The error panels are essentially zero across the
+whole interior - the system reaches sub-100-um typical accuracy when the surface
+stays within the projector's grazing budget.
+
+### Stress test: `ring-crater` (intentionally steep rim)
+
+![Ring-crater reconstruction](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction_ring-crater.png)
+
+For comparison, the deliberately demanding `ring-crater` (max slope 65.9 deg,
+above the 48.6 deg budget): RMSE **0.94 mm**, MAE **0.087 mm**, R2 **0.94**. The
+typical accuracy is the same sub-100-um as rolling-mound, but the signed-error
+panel reveals a thin arc following the steep rim - precisely where self-shadowing
+hides the surface from the projector. Max-abs error there reaches 12 mm. This is
+the failure mode predicted by the slope-budget analysis below, and the reason
+`rolling-mound` is the well-conditioned default.
 
 ## Surface conditioning (no self-occlusion)
 
@@ -103,15 +121,17 @@ relief.
 
 ## Repository layout
 
-- `blendersim/` - Blender (Cycles) capture and reconstruction-verification pipeline.
-  - `blender_projector_capture.py` - builds the projector/telecentric scene and
-    renders the fringe captures.
-  - `verify_blender_reconstruction.py` - orchestrates rendering, runs the solver,
-    and writes metrics and the comparison outputs.
-  - `render_setup_overview.py` - renders the projection-setup overview video.
-- `projection_simulation/` - the interactive PySide6/OpenGL application and the
-  reconstruction core (`scanning/reconstruction.py`: PSA, unwrapping, calibration,
-  metrics).
+Scripts at the simulation root drive the full pipeline:
+
+- `blender_projector_capture.py` - builds the projector/telecentric scene in
+  Blender and renders the fringe captures.
+- `verify_blender_reconstruction.py` - orchestrates rendering, runs the solver,
+  and writes metrics and the comparison outputs.
+- `render_setup_overview.py` - renders the projection-setup overview video.
+- `benchmark_blender_reconstruction_improvements.py` - sweeps surfaces and
+  settings to benchmark reconstruction quality.
+- `reconstruction.py` - the reconstruction core: PSA, unwrapping, calibration,
+  and similarity metrics.
 - `shared/synthetic_surfaces.py` - analytic ground-truth test surfaces.
 
 ## Running
@@ -120,27 +140,15 @@ Render and reconstruct with Blender (defaults to the slope-safe `rolling-mound`
 surface):
 
 ```
-python -m blendersim.verify_blender_reconstruction --optimized
+python verify_blender_reconstruction.py --optimized
 ```
 
 Render the projection-setup overview video:
 
 ```
-python -m blendersim.render_setup_overview --output-dir out/setup_overview
+python render_setup_overview.py --output-dir out/setup_overview
 ```
 
-Launch the interactive application:
-
-```
-python -m projection_simulation
-```
-
-Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio, PySide6). The
-Blender scripts target Blender 5.1 (Cycles, GPU). Reconstruction outputs are
-written under `out/` (git-ignored).
-
-## Direction
-
-The optical simulation is being moved from the in-house PySide6/OpenGL renderer to
-Blender Cycles, to get accurate light transport (true projection, shadowing, and
-shading) that the rasterized renderer could not reproduce reliably.
+Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio). The Blender
+scripts target Blender 5.1 (Cycles, GPU); the verify script invokes `blender.exe`
+as a subprocess. Reconstruction outputs are written under `out/` (git-ignored).
