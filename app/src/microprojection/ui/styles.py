@@ -1,12 +1,17 @@
-"""Application-wide Qt stylesheet (QSS) for the MicroProjection app.
+"""Application-wide visual styling for the MicroProjection app.
 
-Layered on top of the Fusion style + dark QPalette in `app.py`. Provides:
-- consistent tab / group / button styling,
-- accented progress bars and group titles (#4a9eff),
-- monospace log panels,
-- subtle separators and rounded corners.
+Exports:
+- `dark_palette()`  -  Fusion-compatible QPalette tuned for the dark theme.
+- `STYLESHEET`      -  Qt stylesheet (QSS) layered on top of the palette: tab,
+                       group, button, progress-bar, log, menu, status-bar,
+                       splitter, scrollbar, tooltip rules.
+- `BASE_FONT`       -  application-wide font (Segoe UI 10pt).
+
+All three are applied to `QApplication` in `microprojection.app.main`.
 """
 from __future__ import annotations
+
+from PySide6.QtGui import QColor, QFont, QPalette
 
 # Design tokens
 _BG_BASE = "#0f1216"
@@ -246,3 +251,35 @@ QToolTip {{
     padding: 4px 8px;
 }}
 """
+
+
+# ---------------------------------------------------------------------------
+# Palette + font
+# ---------------------------------------------------------------------------
+
+BASE_FONT = QFont("Segoe UI", 10)
+
+
+def dark_palette() -> QPalette:
+    """Fusion-compatible dark QPalette underlying the QSS above."""
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(208, 208, 208))
+    palette.setColor(QPalette.ColorRole.Base, QColor(22, 22, 22))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(35, 35, 35))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(40, 40, 40))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(208, 208, 208))
+    palette.setColor(QPalette.ColorRole.Text, QColor(208, 208, 208))
+    palette.setColor(QPalette.ColorRole.Button, QColor(40, 40, 40))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(208, 208, 208))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 255, 255))
+    palette.setColor(QPalette.ColorRole.Link, QColor(86, 156, 214))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(46, 100, 160))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(230, 230, 230))
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(100, 100, 100)
+    )
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(100, 100, 100)
+    )
+    return palette
