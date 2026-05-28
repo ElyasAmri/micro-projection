@@ -93,13 +93,13 @@ def compute_modulation(image: np.ndarray) -> np.ndarray:
 # 2D phase unwrap
 # ---------------------------------------------------------------------------
 
-def unwrap_phase(wrapped: np.ndarray, method: str = "temporal") -> np.ndarray:
-    """Continuous phase from a wrapped phase map.
+def unwrap_phase(wrapped: np.ndarray, method: str = "spatial") -> np.ndarray:
+    """Continuous phase from a single wrapped phase map (spatial unwrap).
 
-    `method == "temporal"` is the default but for a single-frequency wrapped
-    map we fall back to the separable spatial unwrap (np.unwrap on both axes).
-    True temporal unwrap requires a multi-frequency ladder - see
-    `temporal_unwrap_ladder`.
+    Separable axis-by-axis np.unwrap. The `method` parameter is accepted for
+    forward compatibility but only "spatial" is implemented at present:
+    "temporal" and "auto" both alias to spatial here (true temporal unwrap
+    requires multiple frequencies - see `temporal_unwrap_ladder`).
     """
     if method not in ("temporal", "spatial", "auto"):
         raise NotImplementedError(f"Unsupported unwrap method: {method!r}")
