@@ -101,28 +101,36 @@ A gallery of the same rig scanning a variety of test surfaces. Each clip is one
 period of the projected fringe sweeping over the part; the deformation pattern
 encodes the surface shape that the multi-frequency reconstruction recovers.
 
-### rolling-mound  -  smooth gentle dome, the slope-safe default
-
-![rolling-mound setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound.gif)
+(The headline "Projection setup" video above already shows `rolling-mound` -
+the slope-safe default - so it isn't repeated here.)
 
 ### rolling-mound-rough  -  same form plus controlled high-frequency texture (the Sa/Sz validation surface)
 
 ![rolling-mound-rough setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.gif)
 
+Full-quality video:
+[setup_rolling-mound-rough.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.mp4)
+
 ### dome-ridge  -  broad central dome with a horizontal ridge
 
 ![dome-ridge setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.gif)
+
+Full-quality video:
+[setup_dome-ridge.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.mp4)
 
 ### twin-hills  -  two off-axis mounds with a saddle valley
 
 ![twin-hills setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.gif)
 
+Full-quality video:
+[setup_twin-hills.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.mp4)
+
 ### ring-crater  -  steep ring + central pit (deliberate stress test of the slope budget)
 
 ![ring-crater setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.gif)
 
-Full-quality MP4s of every gallery clip are alongside the GIFs in the
-[media-v1 release](https://github.com/ElyasAmri/micro-projection/releases/tag/media-v1).
+Full-quality video:
+[setup_ring-crater.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.mp4)
 
 ## Roughness measurement (Sa, Sz)
 
@@ -171,16 +179,17 @@ data there. With both devices at 41.4 degrees from the normal the slope budget i
 about 48.6 degrees. Test surfaces are checked against this budget with a directional
 horizon test:
 
-| Surface       | Max slope | Self-shadowed | Continuous |
-| ------------- | --------- | ------------- | ---------- |
-| rolling-mound | 18.4 deg  | 0.00 %        | yes        |
-| saddle-ripple | 16.3 deg  | 0.00 %        | yes        |
-| twin-hills    | 41.1 deg  | 0.00 %        | yes        |
-| dome-ridge    | 52.0 deg  | 0.00 %        | yes        |
-| folded-sheet  | 58.0 deg  | 5.4 %         | yes        |
-| ring-crater   | 65.9 deg  | 13.4 %        | yes        |
-| cross-groove  | 80.9 deg  | 9.9 %         | no (steps) |
-| terrace       | 84.9 deg  | 14.2 %        | no (steps) |
+| Surface             | Max slope | Self-shadowed | Continuous |
+| ------------------- | --------- | ------------- | ---------- |
+| saddle-ripple       | 16.3 deg  | 0.00 %        | yes        |
+| rolling-mound       | 18.4 deg  | 0.00 %        | yes        |
+| rolling-mound-rough | 26.0 deg  | 0.00 %        | yes        |
+| twin-hills          | 41.1 deg  | 0.00 %        | yes        |
+| dome-ridge          | 52.0 deg  | 0.00 %        | yes        |
+| folded-sheet        | 58.0 deg  | 1.7 %         | yes        |
+| ring-crater         | 65.9 deg  | 6.6 %         | yes        |
+| cross-groove        | 80.9 deg  | 5.0 %         | no (steps) |
+| terrace             | 84.9 deg  | 7.1 %         | no (steps) |
 
 `rolling-mound` is the default scanned surface: a smooth sum of broad Gaussians and
 a low-frequency undulation, single-valued, continuous in every cross-section, and
@@ -204,17 +213,27 @@ Scripts at the simulation root drive the full pipeline:
 
 ## Running
 
+Run from the `simulation/` directory (or supply the full script path). The
+`--optimized` preset enables the documented three-frequency / 16-phase pipeline
+(48, 192, 768 px). Without it, the script defaults to a two-frequency / 8-phase
+sweep, which is faster but matches the description in this README less closely.
+
 Render and reconstruct with Blender (defaults to the slope-safe `rolling-mound`
 surface):
 
 ```
+cd simulation/
 python verify_blender_reconstruction.py --optimized
 ```
 
-Render the projection-setup overview video:
+`verify_blender_reconstruction.py` is a regular Python entry point that shells
+out to `blender.exe` for the actual rendering. `render_setup_overview.py` runs
+*inside* Blender (it imports `bpy`), so invoke it via `blender -b -P` with the
+`--` separator before the script's own args:
 
 ```
-python render_setup_overview.py --output-dir out/setup_overview
+cd simulation/
+blender -b -P render_setup_overview.py -- --output-dir ../out/setup_overview
 ```
 
 Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio). The Blender
