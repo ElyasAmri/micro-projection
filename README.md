@@ -1,248 +1,146 @@
-# Micro-Projection: Fringe-Projection Profilometry Simulation
+# Fringe-projection profilometry simulation
 
-A physically-based simulation of structured-light surface metrology. A projector
-casts sinusoidal fringe patterns onto a surface, a telecentric camera images the
-deformed fringes, and a multi-frequency phase-shifting pipeline reconstructs the
-surface height map. The optical capture is rendered in Blender (Cycles) so that the
-light transport - projection, shading, shadowing, foreshortening - is simulated
-rather than approximated.
+A projector casts sinusoidal fringes onto a surface; a telecentric camera images the deformed pattern; a multi-frequency phase-shifting pipeline recovers the height map. Captures are rendered in Blender (Cycles) so light transport is simulated rather than approximated. All media is hosted as [`media-v1`][rel] release assets.
 
-All media below is rendered straight from the pipeline and hosted as
-[release assets](https://github.com/ElyasAmri/micro-projection/releases/tag/media-v1),
-so this README doubles as a living report that updates as the simulation evolves.
+[rel]: https://github.com/ElyasAmri/micro-projection/releases/tag/media-v1
 
 ## Projection setup
 
-![Projection setup overview](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.gif)
+![Projection setup overview][setup-gif]
 
-The projector (orange cone) throws a fringe pattern onto the surface; the
-telecentric camera (blue parallel tube) images it from the opposite side. Both sit
-at 41 degrees from the surface normal, forming a real triangulation rig: the object
-deforms the fringe and casts a shadow that masks the plane behind it. The camera's
-field is sized to just exceed the projected region.
+Projector (orange cone) and telecentric camera (blue tube) at 41° from the plane normal. The camera field just exceeds the projected region. [`setup_overview.mp4`][setup-mp4]
 
-Full-quality video:
-[setup_overview.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.mp4)
+## Pipeline
 
-## How it works
+**Project + capture** — three frequencies (768 / 192 / 48 projector px), 16 phase shifts each.
 
-Fringe-projection profilometry recovers depth from how a known pattern bends when
-it lands on a 3D surface. Where the surface is closer to the projector the fringes
-shift; measuring that shift at every pixel yields a height map.
+![Projected fringe vs camera capture][fvc-gif]
 
-### 1. Project and capture
+[`fringe_vs_capture.mp4`][fvc-mp4]
 
-![Projected fringe vs camera capture](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.gif)
+**Phase + unwrap** — N-step PSA per frequency → carrier removal → temporal unwrap (coarse disambiguates fine on a 4× ladder) → unambiguous projector coordinate.
 
-Left: the projected sinusoidal fringe at a given phase. Right: the telecentric
-camera's view of that fringe deformed by the surface relief, with the object's
-shadow masking the plane. The sweep runs three frequencies - coarse (768 px),
-medium (192 px), and fine (48 px) on the projector - each labeled with its physical
-pitch on the measurement plane in millimetres.
+**Triangulate** — photometric depth solve against the known projector/camera geometry → metric height.
 
-Full-quality video:
-[fringe_vs_capture.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.mp4)
+**Acquisition loop**
 
-### 2. Phase extraction and unwrapping
+![Reconstruction acquisition loop][rec-gif]
 
-- N-step phase-shifting algorithm (PSA): 16 equally spaced phase shifts per
-  frequency are combined with sin/cos accumulators into a wrapped phase via
-  `atan2`.
-- Carrier removal then temporal unwrapping: the coarse frequency gives an
-  unambiguous (but noisy) phase that disambiguates the next finer frequency, down a
-  geometric 4x ladder (768 -> 192 -> 48), so the fine frequency keeps its
-  sensitivity without 2-pi ambiguity.
-- The unwrapped phase maps to projector coordinate, and triangulation against the
-  known projector/camera geometry yields height.
-
-### 3. Reconstruction loop
-
-![Reconstruction acquisition loop](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.gif)
-
-The acquisition loop in motion: each capture is folded into the running height
-estimate (capture -> apply -> shift -> repeat), refining from the coarse model to
-the final fine-frequency surface.
-
-Full-quality video:
-[reconstruction_loop.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.mp4)
+[`reconstruction_loop.mp4`][rec-mp4]
 
 ## Results
 
-Each panel set: ground truth and reconstruction (3D, viewed top-front and grounded
-on the base plane) alongside the signed error (GT - reconstruction) and an
-absolute-error heatmap. Heights are in millimetres. Metrics are reported on the
-solved mask eroded by 20 pixels to exclude low-modulation field-boundary artifacts
-(standard practice in optical metrology).
+Metrics on the solved mask eroded by 20 px (standard low-modulation field-boundary exclusion).
 
-### Well-conditioned case: `rolling-mound` (default)
+| Surface | RMSE | MAE | R² | Max-abs |
+| --- | --- | --- | --- | --- |
+| `rolling-mound` (default, slope-safe) | 0.67 mm | 0.084 mm | 0.90 | 6.2 mm |
+| `ring-crater` (stress test, steep rim) | 0.94 mm | 0.087 mm | 0.94 | 12 mm |
 
-![Rolling-mound reconstruction](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction_rolling-mound.png)
+![Rolling-mound reconstruction][gt-rm]
 
-On the slope-safe default surface the reconstruction reaches RMSE **0.67 mm**,
-MAE **0.084 mm**, R2 **0.90**. The error panels are essentially zero across the
-whole interior - the system reaches sub-100-um typical accuracy when the surface
-stays within the projector's grazing budget.
+![Ring-crater reconstruction][gt-rc]
 
-### Stress test: `ring-crater` (intentionally steep rim)
+`ring-crater`'s max-abs concentrates on a thin arc along the rim — the self-shadow region predicted by the slope budget below. Typical accuracy is otherwise sub-100 µm.
 
-![Ring-crater reconstruction](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction_ring-crater.png)
+## Roughness (Sa, Sz)
 
-For comparison, the deliberately demanding `ring-crater` (max slope 65.9 deg,
-above the 48.6 deg budget): RMSE **0.94 mm**, MAE **0.087 mm**, R2 **0.94**. The
-typical accuracy is the same sub-100-um as rolling-mound, but the signed-error
-panel reveals a thin arc following the steep rim - precisely where self-shadowing
-hides the surface from the projector. Max-abs error there reaches 12 mm. This is
-the failure mode predicted by the slope-budget analysis below, and the reason
-`rolling-mound` is the well-conditioned default.
+Form/roughness separation with a Gaussian S-filter (ISO 16610-21, λc = 15 mm), ISO 25178 Sa / Sz on the residual. Validated on `rolling-mound-rough` = `rolling-mound` + three superposed sinusoids with computable analytic Sa.
 
-## Examples on different surfaces
+![Form/roughness separation and Sa/Sz validation][roughness]
 
-A gallery of the same rig scanning a variety of test surfaces. Each clip is one
-period of the projected fringe sweeping over the part; the deformation pattern
-encodes the surface shape that the multi-frequency reconstruction recovers.
+| Sa source | Sa | Sz |
+| --- | --- | --- |
+| analytic (formula) | 93 µm | 710 µm |
+| filter on truth height | 116 µm | 924 µm |
+| **filter on reconstruction** | **128 µm** | 1423 µm |
 
-(The headline "Projection setup" video above already shows `rolling-mound` -
-the slope-safe default - so it isn't repeated here.)
+Reconstruction Sa is within **11 %** of what the same filter extracts from ideal data. Sz is outlier-sensitive (max − min, not an average), so it over-reads more than Sa.
 
-### rolling-mound-rough  -  same form plus controlled high-frequency texture (the Sa/Sz validation surface)
+## Surface conditioning
 
-![rolling-mound-rough setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.gif)
-
-Full-quality video:
-[setup_rolling-mound-rough.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.mp4)
-
-### dome-ridge  -  broad central dome with a horizontal ridge
-
-![dome-ridge setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.gif)
-
-Full-quality video:
-[setup_dome-ridge.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.mp4)
-
-### twin-hills  -  two off-axis mounds with a saddle valley
-
-![twin-hills setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.gif)
-
-Full-quality video:
-[setup_twin-hills.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.mp4)
-
-### ring-crater  -  steep ring + central pit (deliberate stress test of the slope budget)
-
-![ring-crater setup](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.gif)
-
-Full-quality video:
-[setup_ring-crater.mp4](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.mp4)
-
-## Roughness measurement (Sa, Sz)
-
-The pipeline goes one step further than height: it separates form (low-frequency
-shape) from roughness (high-frequency residual) with a Gaussian S-filter
-(ISO 16610-21) and computes the areal roughness parameters Sa and Sz (ISO 25178)
-on the residual.
-
-For validation, a `rolling-mound-rough` test surface is defined as `rolling-mound`
-plus a deterministic high-frequency component (three superposed sinusoids with
-known amplitudes). Its analytic Sa is computable exactly by dense numerical
-sampling of the formula.
-
-![Form/roughness separation and Sa/Sz validation on rolling-mound-rough](https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/roughness_rolling-mound-rough.png)
-
-From left to right: the reconstructed height (form + roughness combined), the
-form recovered by the Gaussian S-filter, the **reconstructed roughness residual**,
-and the same filter applied to the rendered ground-truth height. The roughness
-panels show clearly matching sinusoidal interference patterns - same dominant
-orientations and wavelengths in both.
-
-Three Sa values, comparable on the same eroded mask:
-
-| Sa source                 | Sa     | Sz     |
-| ------------------------- | ------ | ------ |
-| analytic (formula, truth) |  93 um |  710 um |
-| Gaussian filter on truth  | 116 um |  924 um |
-| Gaussian filter on **reconstruction** | **128 um** | 1423 um |
-
-**Recon Sa / truth-filter Sa = 1.11** - the reconstruction recovers Sa within
-11 % of what the same filter would extract from ideal ground-truth data, on a
-surface whose true Sa is ~90 um. Sz is more outlier-sensitive (it is a single
-peak-valley statistic, not an average), so the reconstructed Sz over-reads more
-than Sa; for an averaged figure of merit Sa is the meaningful metric.
-
-The cutoff wavelength is lambda_c = 15 mm, chosen between the form scale
-(~30 mm features) and the roughness scale (~5 mm wavelengths). The filter is
-applied with normalized convolution so masked-out pixels do not bias the form
-near boundaries.
-
-## Surface conditioning (no self-occlusion)
-
-A surface scanned by an angled projector must not shadow itself: any face steeper
-than the projector's grazing angle hides the region behind it, leaving no fringe
-data there. With both devices at 41.4 degrees from the normal the slope budget is
-about 48.6 degrees. Test surfaces are checked against this budget with a directional
-horizon test:
+Projector and camera both at 41.4° from the plane normal → **slope budget 48.6°**. A face steeper than that hides the region behind it. Per-surface horizon test:
 
 | Surface             | Max slope | Self-shadowed | Continuous |
 | ------------------- | --------- | ------------- | ---------- |
-| saddle-ripple       | 16.3 deg  | 0.00 %        | yes        |
-| rolling-mound       | 18.4 deg  | 0.00 %        | yes        |
-| rolling-mound-rough | 26.0 deg  | 0.00 %        | yes        |
-| twin-hills          | 41.1 deg  | 0.00 %        | yes        |
-| dome-ridge          | 52.0 deg  | 0.00 %        | yes        |
-| folded-sheet        | 58.0 deg  | 1.7 %         | yes        |
-| ring-crater         | 65.9 deg  | 6.6 %         | yes        |
-| cross-groove        | 80.9 deg  | 5.0 %         | no (steps) |
-| terrace             | 84.9 deg  | 7.1 %         | no (steps) |
+| saddle-ripple       | 16.3°     | 0.00 %        | yes        |
+| rolling-mound       | 18.4°     | 0.00 %        | yes        |
+| rolling-mound-rough | 26.0°     | 0.00 %        | yes        |
+| twin-hills          | 41.1°     | 0.00 %        | yes        |
+| dome-ridge          | 52.0°     | 0.00 %        | yes        |
+| folded-sheet        | 58.0°     | 1.7 %         | yes        |
+| ring-crater         | 65.9°     | 6.6 %         | yes        |
+| cross-groove        | 80.9°     | 5.0 %         | no (steps) |
+| terrace             | 84.9°     | 7.1 %         | no (steps) |
 
-`rolling-mound` is the default scanned surface: a smooth sum of broad Gaussians and
-a low-frequency undulation, single-valued, continuous in every cross-section, and
-slope-bounded so it never self-occludes the projection while keeping ~10 mm of
-relief.
+`rolling-mound` is the default: smooth, slope-bounded to ~18°, ~10 mm relief.
 
-## Repository layout
+## Gallery
+
+Same rig, different surfaces. `rolling-mound` is in the headline video above.
+
+**`rolling-mound-rough`** — same form + controlled high-frequency texture (Sa/Sz validation surface)
+![][rmr-gif]
+[`.mp4`][rmr-mp4]
+
+**`dome-ridge`** — broad central dome with horizontal ridge
+![][dr-gif]
+[`.mp4`][dr-mp4]
+
+**`twin-hills`** — two off-axis mounds with a saddle
+![][th-gif]
+[`.mp4`][th-mp4]
+
+**`ring-crater`** — steep ring + central pit (stress test)
+![][rc-gif]
+[`.mp4`][rc-mp4]
+
+## Layout
 
 ```
 simulation/
-  verify_blender_reconstruction.py    CLI + orchestration: invoke Blender, solve, write metrics
-  reconstruction.py                   PSA, unwrap, Gaussian S-filter, Sa/Sq/Sz/Ssk/Sku, similarity
-  geometry.py                         rig geometry: world <-> projector/camera transforms
+  verify_blender_reconstruction.py    CLI + orchestration
+  reconstruction.py                   PSA, unwrap, S-filter, Sa/Sq/Sz/Ssk/Sku, similarity
+  geometry.py                         world <-> projector/camera transforms
   solver.py                           multi-frequency photometric depth solver
-  outputs.py                          capture/ground-truth loaders, write_uint8, colormap helper
-  recording.py                        four-panel acquisition recording (CaptureReconstructionStage)
-  blender/                            scripts that run inside Blender (`import bpy`)
-    blender_projector_capture.py        builds the scene + renders the fringe captures
-    render_setup_overview.py            renders the projection-setup overview video
-    benchmark.py                        sweeps surfaces and settings for ablation benchmarks
-  scripts/                            CPU-only validation + figure-generation scripts
-    verify_surface_occlusion.py         reproduces the surface-conditioning table
-    gt_recon_error.py                   reproduces the GT-vs-reconstruction figures
-    roughness_analysis.py               reproduces the Sa/Sz roughness figure
-    fringe_capture_video.py             rebuilds the fringe-vs-capture video
-  shared/synthetic_surfaces.py        analytic ground-truth test surfaces
-  requirements.txt
+  outputs.py                          capture loaders, write_uint8, colormap
+  recording.py                        four-panel acquisition recording
+  blender/                            scripts that run inside Blender (import bpy)
+  scripts/                            CPU-only figure-generation scripts
+  shared/synthetic_surfaces.py        analytic test surfaces
 ```
 
 ## Running
-
-Run from the `simulation/` directory (or supply the full script path). The
-`--optimized` preset enables the documented three-frequency / 16-phase pipeline
-(48, 192, 768 px). Without it, the script defaults to a two-frequency / 8-phase
-sweep, which is faster but matches the description in this README less closely.
-
-Render and reconstruct with Blender (defaults to the slope-safe `rolling-mound`
-surface):
 
 ```
 cd simulation/
 python verify_blender_reconstruction.py --optimized
 ```
 
-`verify_blender_reconstruction.py` is a regular Python entry point that shells
-out to `blender.exe` for the actual rendering. Scripts under `blender/` run
-*inside* Blender (they import `bpy`), so invoke them via `blender -b -P` with
-the `--` separator before the script's own args:
+`--optimized` enables the three-frequency / 16-phase preset the numbers above reflect. Without it the default is two-frequency / 8-phase. Reconstruction outputs go to `out/` (git-ignored).
+
+Scripts under `blender/` import `bpy` and must be launched through Blender:
 
 ```
 blender -b -P simulation/blender/render_setup_overview.py -- --output-dir out/setup_overview
 ```
 
-Dependencies are in `requirements.txt` (NumPy, OpenCV, imageio). The Blender
-scripts target Blender 5.1 (Cycles, GPU); the verify script invokes `blender.exe`
-as a subprocess. Reconstruction outputs are written under `out/` (git-ignored).
+Targets Blender 5.1 (Cycles, GPU).
+
+[setup-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.gif
+[setup-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_overview.mp4
+[fvc-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.gif
+[fvc-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/fringe_vs_capture.mp4
+[rec-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.gif
+[rec-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/reconstruction_loop.mp4
+[gt-rm]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction_rolling-mound.png
+[gt-rc]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/gt_vs_reconstruction_ring-crater.png
+[roughness]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/roughness_rolling-mound-rough.png
+[rmr-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.gif
+[rmr-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_rolling-mound-rough.mp4
+[dr-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.gif
+[dr-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_dome-ridge.mp4
+[th-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.gif
+[th-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_twin-hills.mp4
+[rc-gif]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.gif
+[rc-mp4]: https://github.com/ElyasAmri/micro-projection/releases/download/media-v1/setup_ring-crater.mp4
