@@ -61,6 +61,7 @@ from typing import Optional
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -71,6 +72,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QSlider,
     QSplitter,
@@ -332,13 +334,45 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_display_mode_group(self) -> QGroupBox:
-        """`Show error overlay` checkbox. Default unchecked."""
+        """Lab-view surface selector (STL-mode XOR) + error-overlay checkbox.
+
+        Stage 5 sub-task 2: the lab view (3D Scene tab) can show either
+        the ground-truth FOV slice or the recovered surface — never both,
+        never neither. A two-button exclusive radio group makes the XOR
+        explicit. The selector is an STL-mode feature: in Flat/Gaussian
+        the radios are disabled (greyed, visible — layout stays stable)
+        and rest on Recovered, matching today's behavior. Enable-state and
+        the mode-dependent default are managed by `_sync_labview_for_mode`.
+        """
         box = QGroupBox("Display Mode")
-        layout = QHBoxLayout(box)
+        layout = QVBoxLayout(box)
+
+        # Lab-view surface selector (the XOR toggle).
+        self.labview_group = QButtonGroup(box)
+        self.labview_ground_truth_radio = QRadioButton("Ground truth (FOV slice)")
+        self.labview_recovered_radio = QRadioButton("Recovered surface")
+        self.labview_group.addButton(self.labview_ground_truth_radio)
+        self.labview_group.addButton(self.labview_recovered_radio)
+        # Default resting state: Recovered (the default surface is Gaussian,
+        # a non-STL mode). _sync_labview_for_mode flips this to ground truth
+        # on entry to STL mode.
+        self.labview_recovered_radio.setChecked(True)
+        radio_row = QHBoxLayout()
+        radio_row.addWidget(self.labview_ground_truth_radio)
+        radio_row.addWidget(self.labview_recovered_radio)
+        radio_row.addStretch(1)
+        layout.addLayout(radio_row)
+
+        # Error overlay — applies only when Recovered is shown.
+        overlay_row = QHBoxLayout()
         self.show_error_overlay = QCheckBox("Show error overlay")
         self.show_error_overlay.setChecked(False)
-        layout.addWidget(self.show_error_overlay)
-        layout.addStretch(1)
+        overlay_row.addWidget(self.show_error_overlay)
+        overlay_row.addStretch(1)
+        layout.addLayout(overlay_row)
+
+        # Disabled until the user enters STL mode.
+        self._set_labview_enabled(False)
         return box
 
     def _build_error_stats_group(self) -> QGroupBox:
@@ -707,6 +741,11 @@ class MainWindow(QMainWindow):
         # Stage 4a task 4b addition: error overlay toggle.
         self.show_error_overlay.toggled.connect(self._on_overlay_toggled)
 
+        # Stage 5 sub-task 2: lab-view ground-truth / recovered selector.
+        # `buttonClicked` fires once per user interaction (not on the
+        # programmatic setChecked in _sync_labview_for_mode).
+        self.labview_group.buttonClicked.connect(self._on_labview_toggled)
+
         # Refresh on tab switch so a newly-visible tab gets fresh data
         # if sliders moved while it was hidden. `currentChanged(int)`
         # connects directly because `_refresh_surface_preview` accepts
@@ -799,20 +838,87 @@ class MainWindow(QMainWindow):
             self.error_colorbar.setVisible(False)
             return
 
-        # 3D scene tab is current.
-        if self.show_error_overlay.isChecked():
+        # 3D scene tab is current. Three render paths; this branch is
+        # authoritative for the colorbar + error-stats-group visibility.
+        if self._labview_shows_ground_truth():
+            # Lab-view toggle = ground truth (STL mode). Render the
+            # physical-truth FOV slice (off-part = 0) with viridis-on-height.
+            # The error overlay is render-SUPPRESSED here, not mutated: the
+            # checkbox keeps its state and takes effect again automatically
+            # when the user flips back to Recovered. Stats + colorbar are
+            # hidden because "recovered - truth" has no meaning when the
+            # truth itself is what's shown.
+            self.view_3d.update_heightmap(heightmap)
+            self.error_colorbar.setVisible(False)
+            self.error_stats_group.setVisible(False)
+        elif self.show_error_overlay.isChecked():
             error = recovered - heightmap
             self.view_3d.update_heightmap(recovered, error_mm=error)
             abs_max = self._update_error_stats(error)
             self.error_colorbar.set_range(abs_max)
             self.error_colorbar.setVisible(True)
+            self.error_stats_group.setVisible(True)
         else:
             self.view_3d.update_heightmap(recovered)
             self.error_colorbar.setVisible(False)
+            self.error_stats_group.setVisible(False)
 
     def _on_overlay_toggled(self, checked: bool) -> None:
         """Show/hide the stats panel and re-render."""
         self.error_stats_group.setVisible(checked)
+        self._refresh_surface_preview()
+
+    # ------------------------------------------------------------------
+    # Stage 5 sub-task 2 — lab-view ground-truth / recovered XOR toggle.
+    # ------------------------------------------------------------------
+    def _set_labview_enabled(self, enabled: bool) -> None:
+        """Enable/disable both lab-view radio buttons together."""
+        self.labview_ground_truth_radio.setEnabled(enabled)
+        self.labview_recovered_radio.setEnabled(enabled)
+
+    def _labview_shows_ground_truth(self) -> bool:
+        """True iff the lab view should render the ground-truth FOV slice
+        rather than the recovered surface.
+
+        Only STL mode offers the choice; Flat/Gaussian always rest on
+        recovered (the radios are disabled there). Gating on STL mode as
+        well as the radio state keeps this correct even if a future path
+        leaves the ground-truth radio checked while the mode is non-STL.
+        """
+        return (
+            self.surface_combo.currentText() == STL_LABEL
+            and self.labview_ground_truth_radio.isChecked()
+        )
+
+    def _sync_labview_for_mode(self) -> None:
+        """Align the lab-view toggle with the current surface mode.
+
+        STL mode: enable the radios and default the selection to ground
+        truth (parking-lot #1's "honest by default" — show what the camera
+        sees first; recovered is opt-in). Flat/Gaussian: rest on recovered
+        and disable.
+
+        The programmatic selection change is signal-blocked on the button
+        group so it doesn't trigger a render here; the caller is
+        responsible for the subsequent refresh (the combo-change chain
+        runs `_refresh_surface_preview` right after this).
+        """
+        is_stl = self.surface_combo.currentText() == STL_LABEL
+        self.labview_group.blockSignals(True)
+        if is_stl:
+            self.labview_ground_truth_radio.setChecked(True)
+        else:
+            self.labview_recovered_radio.setChecked(True)
+        self.labview_group.blockSignals(False)
+        self._set_labview_enabled(is_stl)
+
+    def _on_labview_toggled(self, *_args: object) -> None:
+        """Re-render when the user flips the lab-view surface selector.
+
+        Wired to the button group's `buttonClicked`, which fires once per
+        user interaction (not on programmatic `setChecked`, and not the
+        double-fire of `buttonToggled`).
+        """
         self._refresh_surface_preview()
 
     def _on_pose_changed(self, *_args: object) -> None:
@@ -941,6 +1047,11 @@ class MainWindow(QMainWindow):
         proceeds to refresh.
         """
         name = self.surface_combo.currentText()
+        # Stage 5 sub-task 2: align the lab-view toggle with the new mode
+        # (enable + default-to-ground-truth in STL, disable + recovered
+        # elsewhere). Done before the early-return branches so it applies
+        # on every mode change, including the STL-without-cache dialog path.
+        self._sync_labview_for_mode()
         if name == STL_LABEL:
             # Keep the STL page's inner state in sync with cache state
             # (placeholder vs filename row).
@@ -1334,3 +1445,8 @@ class MainWindow(QMainWindow):
         self.surface_combo.setCurrentIndex(prev)
         self.surface_pages.setCurrentIndex(prev)
         self.surface_combo.blockSignals(False)
+        # The blocked-signal revert above skips _on_surface_combo_changed,
+        # so re-sync the lab-view toggle to the reverted (non-STL) mode
+        # explicitly — otherwise it would stay enabled/ground-truth from
+        # the cancelled STL selection.
+        self._sync_labview_for_mode()

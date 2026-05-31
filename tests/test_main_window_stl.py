@@ -925,6 +925,9 @@ def test_browser_commit_masks_offpart_preserves_onpart(main_window):
     main_window._stl_fov_origin_mm = (0.0, 0.0)
     main_window._stl_heightmap = on_slice
     main_window.surface_combo.setCurrentText(STL_LABEL)   # cache set -> no dialog
+    # Stage 5 sub-task 2: STL mode now defaults the lab view to ground
+    # truth; this test inspects the RECOVERED output, so select recovered.
+    main_window.labview_recovered_radio.setChecked(True)
     main_window._refresh_surface_preview()
     fixed = main_window.view_3d._last_heightmap.copy()
     raw = run_pipeline(
@@ -942,3 +945,157 @@ def test_browser_commit_masks_offpart_preserves_onpart(main_window):
     recovered = main_window.view_3d._last_heightmap
     np.testing.assert_array_equal(recovered[off_mask], 0.0)
     assert np.ptp(recovered[~off_mask]) > 1.0             # on-part keeps relief
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 sub-task 2 — lab-view ground-truth / recovered XOR toggle.
+# ---------------------------------------------------------------------------
+def _load_browser_stl(main_window, tmp_path, monkeypatch, name="big.stl"):
+    """Load an oversized (Browser-mode) STL. Leaves the window in STL mode
+    with the lab-view toggle defaulted to ground truth."""
+    big = _make_box_stl(tmp_path / name, sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+
+def test_labview_toggle_disabled_and_recovered_in_gaussian(main_window):
+    """Default surface (Gaussian) is non-STL: radios disabled, resting on
+    recovered."""
+    assert main_window.surface_combo.currentText() == "Gaussian"
+    assert main_window.labview_recovered_radio.isChecked() is True
+    assert main_window.labview_ground_truth_radio.isChecked() is False
+    assert main_window.labview_recovered_radio.isEnabled() is False
+    assert main_window.labview_ground_truth_radio.isEnabled() is False
+
+
+def test_labview_toggle_disabled_and_recovered_in_flat(main_window):
+    """Flat mode: toggle stays disabled + recovered (moot — ground truth
+    equals recovered for a flat surface)."""
+    main_window.surface_combo.setCurrentText("Flat")
+    assert main_window.labview_recovered_radio.isChecked() is True
+    assert main_window.labview_ground_truth_radio.isEnabled() is False
+    assert main_window.labview_recovered_radio.isEnabled() is False
+
+
+def test_labview_toggle_enabled_and_defaults_ground_truth_in_stl(
+    main_window, tmp_path, monkeypatch,
+):
+    """Entering STL mode enables the toggle and defaults the selection to
+    ground truth (parking-lot #1's honest-by-default)."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    assert main_window.labview_ground_truth_radio.isEnabled() is True
+    assert main_window.labview_recovered_radio.isEnabled() is True
+    assert main_window.labview_ground_truth_radio.isChecked() is True
+    assert main_window.labview_recovered_radio.isChecked() is False
+
+
+def test_stl_ground_truth_renders_truth_exactly(
+    main_window, tmp_path, monkeypatch,
+):
+    """With ground truth selected (the STL default), the lab view renders
+    the exact cached ground-truth FOV slice object — not a recovered
+    surface. `_compute_current_heightmap` returns `_stl_heightmap`, and
+    `update_heightmap` caches it without copying, so identity holds."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene tab
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+
+    assert main_window.view_3d._last_heightmap is main_window._stl_heightmap
+
+
+def test_flip_to_recovered_renders_recovered(
+    main_window, tmp_path, monkeypatch,
+):
+    """Clicking the recovered radio re-renders the lab view with the
+    recovered surface — a fresh pipeline-output array, distinct from the
+    cached ground-truth slice."""
+    main_window.right_pane_tabs.setCurrentIndex(0)
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+
+    main_window.labview_recovered_radio.click()
+
+    shown = main_window.view_3d._last_heightmap
+    assert shown is not main_window._stl_heightmap
+    assert shown.shape == SURFACE_SHAPE
+
+
+def test_ground_truth_suppresses_error_overlay_without_mutating_state(
+    main_window, tmp_path, monkeypatch,
+):
+    """Render-suppression, not state mutation: with ground truth showing,
+    enabling the error overlay leaves its colorbar + stats hidden while the
+    checkbox stays checked; flipping to recovered makes the overlay take
+    effect automatically.
+
+    Visibility is checked via `isHidden()` (reflects the last
+    setVisible call) rather than `isVisible()`, which is always False when
+    the top-level window has not been shown."""
+    main_window.right_pane_tabs.setCurrentIndex(0)
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+
+    # User enables the error overlay while ground truth is showing.
+    main_window.show_error_overlay.setChecked(True)  # toggled -> refresh
+
+    assert main_window.labview_ground_truth_radio.isChecked() is True
+    assert main_window.show_error_overlay.isChecked() is True  # state untouched
+    assert main_window.error_colorbar.isHidden() is True
+    assert main_window.error_stats_group.isHidden() is True
+
+    # Flip to recovered -> the overlay now takes effect automatically.
+    main_window.labview_recovered_radio.click()
+
+    assert main_window.show_error_overlay.isChecked() is True
+    assert main_window.error_colorbar.isHidden() is False
+    assert main_window.error_stats_group.isHidden() is False
+
+
+def test_cancel_stl_dialog_resyncs_toggle_to_recovered_disabled(
+    main_window, monkeypatch,
+):
+    """Cancelling the STL dialog reverts to the previous (non-STL) mode;
+    the toggle must re-sync to disabled + recovered. The blocked-signal
+    revert in `_revert_stl_dropdown` skips `_on_surface_combo_changed`, so
+    the re-sync is an explicit call there."""
+    _patch_file_dialog(monkeypatch, return_path="")  # user cancels
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    assert main_window.surface_combo.currentText() == "Gaussian"
+    assert main_window.labview_recovered_radio.isChecked() is True
+    assert main_window.labview_ground_truth_radio.isEnabled() is False
+    assert main_window.labview_recovered_radio.isEnabled() is False
+
+
+def test_recovered_persists_across_slider_and_drag_refresh_in_stl(
+    main_window, tmp_path, monkeypatch,
+):
+    """In STL mode, flipping to Recovered then moving a slider or dragging
+    the FOV rectangle must NOT silently re-default to ground truth.
+
+    `_sync_labview_for_mode` (the only writer of the radio selection) fires
+    only on surface-mode change / dialog revert; the slider refresh path
+    (`_refresh_surface_preview`) only READS the radio, and a FOV drag
+    updates Panel 3 without refreshing the lab view at all."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene tab
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+
+    # Flip to recovered (the STL default was ground truth).
+    main_window.labview_recovered_radio.click()
+    assert main_window.labview_recovered_radio.isChecked() is True
+
+    # Move a geometry slider -> triggers a real _refresh_surface_preview.
+    main_window.theta_projector.set_value(
+        main_window.theta_projector.value() + 5.0
+    )
+    assert main_window.labview_recovered_radio.isChecked() is True
+    assert main_window.labview_ground_truth_radio.isChecked() is False
+    # Still showing recovered (a fresh pipeline array, not the cached slice).
+    assert main_window.view_3d._last_heightmap is not main_window._stl_heightmap
+
+    # Drag the FOV rectangle -> Panel 3 only, no lab-view refresh, radio
+    # untouched.
+    origin = main_window._stl_fov_origin_mm
+    main_window.stl_browser._minimap_roi.setPos((origin[0] - 10.0, origin[1]))
+    assert main_window.labview_recovered_radio.isChecked() is True
+    assert main_window.labview_ground_truth_radio.isChecked() is False
