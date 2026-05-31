@@ -32,6 +32,52 @@ from __future__ import annotations
 from typing import Tuple
 
 import numpy as np
+import pyqtgraph as pg
+
+
+def _build_diverging_colormap() -> pg.ColorMap:
+    """Return a blue-white-red diverging colormap for signed errors.
+
+    Primary: pyqtgraph's bundled CET-D1 (perceptually balanced).
+    Fallback: hand-rolled blue->white->red ramp if CET-D1 fails to load
+    (e.g., a pyqtgraph install missing its color-map data).
+    """
+    try:
+        return pg.colormap.get("CET-D1")
+    except Exception:
+        return pg.ColorMap(
+            pos=[0.0, 0.5, 1.0],
+            color=[(20, 60, 200, 255), (255, 255, 255, 255), (200, 30, 30, 255)],
+        )
+
+
+# Module-level diverging colormap, the single source of truth shared by the
+# error-coloring helper below, SurfacePreview's overlay, the comparison view,
+# and the ErrorColorbar legend — so surface colors and the legend match.
+ERROR_COLORMAP: pg.ColorMap = _build_diverging_colormap()
+
+
+def error_colors(error: np.ndarray) -> np.ndarray:
+    """Map a signed-error (H, W) array to (H, W, 4) float32 RGBA.
+
+    Diverging colormap, symmetric about zero: error in [-|max|, +|max|] maps
+    to colormap lookup [0, 1] (0.5 = zero error = the colormap center). An
+    all-zero (or near-zero) field fills with the mid color. NaNs map to the
+    center. Shared by SurfacePreview and the comparison view.
+    """
+    abs_max = float(np.nanmax(np.abs(error)))
+    if abs_max < 1e-15:
+        mid = ERROR_COLORMAP.map(
+            np.array([0.5], dtype=np.float64), mode="float"
+        )[0]
+        colors = np.broadcast_to(mid, error.shape + (4,)).astype(np.float32)
+        return np.ascontiguousarray(colors)
+    normalized = np.where(
+        np.isnan(error),
+        0.5,
+        (error / abs_max + 1.0) / 2.0,
+    )
+    return ERROR_COLORMAP.map(normalized, mode="float").astype(np.float32)
 
 
 def centered_coords(

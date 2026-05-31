@@ -9,11 +9,17 @@ Run ONE mode per process invocation (one-process-per-render rule):
     python scripts/stage5_comparison_smoke.py both    # recovered + ground truth
     python scripts/stage5_comparison_smoke.py recovered  # GT toggled off
     python scripts/stage5_comparison_smoke.py ground_truth  # recovered toggled off
+    python scripts/stage5_comparison_smoke.py error_off  # blocky pair, stack
+    python scripts/stage5_comparison_smoke.py error_on   # blocky pair, error map + GT suppressed
 
 `both` is the headline (must read as two distinguishable surfaces).
 `recovered` / `ground_truth` exercise the toggle paths visually;
 `ground_truth` alone verifies the translucent surface renders with nothing
 opaque behind it (a real depth-sort edge case).
+`error_off` / `error_on` (Stage 5 sub-task 6) show the blocky-part case the
+user flagged: a flat-topped plateau where the stacked solids read poorly
+(error_off) but the signed-error colormap (error_on, GT render-suppressed)
+reads the systematic drift clearly.
 """
 from __future__ import annotations
 
@@ -58,19 +64,42 @@ def _divergent_surfaces():
     return recovered, ground_truth
 
 
+def _blocky_surfaces():
+    """Flat-topped plateau (blocky part) where the stack reads poorly. Ground
+    truth = the plateau; recovered = plateau + a systematic X-drift error, so
+    the signed-error map shows a clean gradient the stack can't convey."""
+    H, W = SHAPE
+    x = (np.arange(W) - (W - 1) / 2.0) * PS
+    y = (np.arange(H) - (H - 1) / 2.0) * PS
+    xx, yy = np.meshgrid(x, y)
+    plateau = np.where(
+        (np.abs(xx) <= 20.0) & (np.abs(yy) <= 16.0), 10.0, 0.0
+    )
+    ground_truth = plateau
+    ramp = (xx - xx.min()) / (xx.max() - xx.min())  # 0..1 across X
+    recovered = plateau + ramp * 3.0                # up to +3 mm drift
+    return recovered, ground_truth
+
+
 def run(mode: str) -> int:
     app = QApplication(sys.argv)
     view = RecoveredComparisonView(shape=SHAPE, pixel_size_mm=PS)
     view.resize(900, 700)
     view.show()
 
-    recovered, ground_truth = _divergent_surfaces()
+    if mode in ("error_off", "error_on"):
+        recovered, ground_truth = _blocky_surfaces()
+    else:
+        recovered, ground_truth = _divergent_surfaces()
     view.set_data(recovered, ground_truth)
 
     if mode == "recovered":
         view.set_ground_truth_visible(False)
     elif mode == "ground_truth":
         view.set_recovered_visible(False)
+    elif mode == "error_on":
+        view.set_error_coloring(recovered - ground_truth)
+    # error_off / both: default solid stack (set_error_coloring(None) implicit).
 
     _pump(app)
 
@@ -82,9 +111,9 @@ def run(mode: str) -> int:
 
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) == 2 else "both"
-    if mode not in ("both", "recovered", "ground_truth"):
+    if mode not in ("both", "recovered", "ground_truth", "error_off", "error_on"):
         print("usage: python scripts/stage5_comparison_smoke.py "
-              "{both|recovered|ground_truth}")
+              "{both|recovered|ground_truth|error_off|error_on}")
         return 2
     return run(mode)
 

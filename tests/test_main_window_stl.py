@@ -1020,34 +1020,56 @@ def test_flip_to_recovered_renders_recovered(
     assert shown.shape == SURFACE_SHAPE
 
 
-def test_ground_truth_suppresses_error_overlay_without_mutating_state(
-    main_window, tmp_path, monkeypatch,
-):
-    """Render-suppression, not state mutation: with ground truth showing,
-    enabling the error overlay leaves its colorbar + stats hidden while the
-    checkbox stays checked; flipping to recovered makes the overlay take
-    effect automatically.
+def test_color_by_error_suppresses_gt_without_mutating_checkbox(main_window):
+    """Stage 5 sub-task 6 (rewrite): Color-by-error render-suppresses the
+    amber ground-truth surface WITHOUT mutating the GT checkbox; turning it
+    off restores the GT to the checkbox state. Same render-suppression
+    discipline as 4d.2's lab-view GT/error interaction."""
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)  # populate
+    view = main_window.recovered_comparison_view
+    assert view._ground_truth_item.visible() is True  # default on
 
-    Visibility is checked via `isHidden()` (reflects the last
-    setVisible call) rather than `isVisible()`, which is always False when
-    the top-level window has not been shown."""
-    main_window.right_pane_tabs.setCurrentIndex(0)
-    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.color_by_error_checkbox.setChecked(True)  # toggled -> refresh
 
-    # User enables the error overlay while ground truth is showing.
-    main_window.show_error_overlay.setChecked(True)  # toggled -> refresh
+    # GT render-suppressed, but its checkbox is untouched.
+    assert main_window.show_ground_truth_checkbox.isChecked() is True
+    assert view._ground_truth_item.visible() is False
 
-    assert main_window.labview_ground_truth_radio.isChecked() is True
-    assert main_window.show_error_overlay.isChecked() is True  # state untouched
-    assert main_window.error_colorbar.isHidden() is True
-    assert main_window.error_stats_group.isHidden() is True
+    # Turn Color-by-error off -> GT restored.
+    main_window.color_by_error_checkbox.setChecked(False)
+    assert view._ground_truth_item.visible() is True
 
-    # Flip to recovered -> the overlay now takes effect automatically.
-    main_window.labview_recovered_radio.click()
 
-    assert main_window.show_error_overlay.isChecked() is True
-    assert main_window.error_colorbar.isHidden() is False
-    assert main_window.error_stats_group.isHidden() is False
+def test_color_by_error_checkbox_present_default_off(main_window):
+    cb = main_window.color_by_error_checkbox
+    assert cb.text() == "Color by error"
+    assert cb.isChecked() is False
+
+
+def test_3d_scene_error_overlay_removed(main_window):
+    """The old 3D-Scene error-overlay checkbox is gone (error UI moved to
+    the Recovered Surface tab)."""
+    assert not hasattr(main_window, "show_error_overlay")
+
+
+def test_color_by_error_recolors_recovered_surface(main_window):
+    """Enabling Color-by-error changes the recovered surface's per-vertex
+    colors from uniform steel-blue to the (varied) error colormap."""
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    view = main_window.recovered_comparison_view
+    solid = view._recovered_item._meshdata._vertexColors.copy()
+
+    main_window.color_by_error_checkbox.setChecked(True)
+
+    err_colored = view._recovered_item._meshdata._vertexColors
+    assert not np.array_equal(solid, err_colored)
+
+
+def test_recovered_tab_populates_error_stats(main_window):
+    """Landing on the tab updates the error-stats labels (always-on)."""
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    assert main_window.stat_mean.text() != "—"
+    assert "mm" in main_window.stat_rms.text()
 
 
 def test_cancel_stl_dialog_resyncs_toggle_to_recovered_disabled(
@@ -1193,14 +1215,18 @@ def test_ground_truth_checkbox_toggles_visibility(main_window):
     assert view._recovered_item.visible() is True
 
 
-def test_recovered_tab_hides_colorbar_and_stats(main_window):
-    """On the Recovered Surface tab, the 3D-Scene colorbar + error-stats
-    group are hidden (stale-state hygiene). Visibility checked via
-    isHidden() since the window is not shown."""
-    main_window.error_colorbar.setVisible(True)
-    main_window.error_stats_group.setVisible(True)
-
+def test_recovered_tab_stats_always_colorbar_per_mode(main_window):
+    """Stage 5 sub-task 6 contract: on the Recovered Surface tab the error
+    STATS panel is always visible; the COLORBAR appears only in Color-by-error
+    mode. (isHidden() since the window is not shown.)"""
     main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
 
+    # Color-by-error OFF: stats shown, colorbar hidden.
+    assert main_window.color_by_error_checkbox.isChecked() is False
+    assert main_window.error_stats_group.isHidden() is False
     assert main_window.error_colorbar.isHidden() is True
-    assert main_window.error_stats_group.isHidden() is True
+
+    # Color-by-error ON: stats still shown, colorbar now shown.
+    main_window.color_by_error_checkbox.setChecked(True)
+    assert main_window.error_stats_group.isHidden() is False
+    assert main_window.error_colorbar.isHidden() is False

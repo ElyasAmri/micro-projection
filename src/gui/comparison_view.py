@@ -27,7 +27,7 @@ import pyqtgraph.opengl as gl
 from PyQt6.QtWidgets import QWidget
 
 from src.gui.coordinate_grid import CoordinateGrid
-from src.gui.surface_render import apply_heightmap
+from src.gui.surface_render import apply_heightmap, error_colors
 
 # Default math grid (matches main_window.SURFACE_SHAPE / SURFACE_PIXEL_SIZE_MM;
 # passed explicitly by the tab wiring in sub-task 5 to avoid importing
@@ -83,10 +83,14 @@ class RecoveredComparisonView(gl.GLViewWidget):
         self._ground_truth_item.setDepthValue(1)
         self.addItem(self._ground_truth_item)
 
-        # Both surfaces visible by default (GLGraphicsItem defaults to
-        # visible; set explicitly for clarity).
-        self._recovered_item.setVisible(True)
-        self._ground_truth_item.setVisible(True)
+        # Display state. `_error_mm` None = solid-blue recovered + amber GT
+        # (default); an array = recolor recovered by signed error AND
+        # render-suppress the GT (sub-task 6). User visibility intent is
+        # tracked separately so suppression never mutates the checkboxes.
+        self._recovered_mm: Optional[np.ndarray] = None
+        self._error_mm: Optional[np.ndarray] = None
+        self._recovered_user_visible = True
+        self._gt_user_visible = True
 
         # Seed both items with flat zero data so the view paints cleanly if
         # it's shown before the first real set_data (an empty GLSurfacePlotItem
@@ -104,33 +108,75 @@ class RecoveredComparisonView(gl.GLViewWidget):
         ground_truth_mm: np.ndarray,
     ) -> None:
         """Render both surfaces and fit the grid's Z axis to their combined
-        height range. Both arrays are (H, W) float64 mm on the same grid."""
+        height range. Both arrays are (H, W) float64 mm on the same grid.
+
+        The recovered surface is colored per the current error-coloring mode
+        (solid blue, or by signed error if `set_error_coloring` is active);
+        the ground truth is amber, render-suppressed in error mode.
+        """
         recovered_mm = np.asarray(recovered_mm, dtype=np.float64)
         ground_truth_mm = np.asarray(ground_truth_mm, dtype=np.float64)
+        self._recovered_mm = recovered_mm
 
-        apply_heightmap(
-            self._recovered_item,
-            recovered_mm,
-            self._solid_colors(recovered_mm.shape, _RECOVERED_COLOR),
-            self._pixel_size_mm,
-        )
+        self._render_recovered()
         apply_heightmap(
             self._ground_truth_item,
             ground_truth_mm,
             self._solid_colors(ground_truth_mm.shape, _GROUND_TRUTH_COLOR),
             self._pixel_size_mm,
         )
+        self._apply_gt_visibility()
 
         # Z axis spans whatever either surface reaches.
         z_min = min(float(recovered_mm.min()), float(ground_truth_mm.min()))
         z_max = max(float(recovered_mm.max()), float(ground_truth_mm.max()))
         self._grid.set_z_extent(z_min, z_max)
 
+    def set_error_coloring(self, error_mm: Optional[np.ndarray]) -> None:
+        """Switch the recovered surface between solid blue and error coloring.
+
+        `None` -> solid steel-blue recovered + amber GT restored to the user's
+        visibility choice. An (H, W) signed-error array -> recolor recovered by
+        `error_colors(error)` AND render-suppress the GT (showing both the
+        error map and the geometric overlay double-encodes divergence). The GT
+        checkbox state is NOT mutated — suppression is purely render-time.
+        """
+        self._error_mm = (
+            None if error_mm is None
+            else np.asarray(error_mm, dtype=np.float64)
+        )
+        self._render_recovered()
+        self._apply_gt_visibility()
+
     def set_recovered_visible(self, visible: bool) -> None:
+        self._recovered_user_visible = bool(visible)
         self._recovered_item.setVisible(bool(visible))
 
     def set_ground_truth_visible(self, visible: bool) -> None:
-        self._ground_truth_item.setVisible(bool(visible))
+        self._gt_user_visible = bool(visible)
+        self._apply_gt_visibility()
+
+    # -- internal render ------------------------------------------------------
+    def _render_recovered(self) -> None:
+        """(Re)color the recovered surface for the current mode."""
+        if self._recovered_mm is None:
+            return
+        if self._error_mm is None:
+            colors = self._solid_colors(self._recovered_mm.shape, _RECOVERED_COLOR)
+        else:
+            colors = error_colors(self._error_mm)
+        apply_heightmap(
+            self._recovered_item,
+            self._recovered_mm,
+            colors,
+            self._pixel_size_mm,
+        )
+
+    def _apply_gt_visibility(self) -> None:
+        """GT is visible iff the user wants it AND we're not in error mode."""
+        self._ground_truth_item.setVisible(
+            self._gt_user_visible and self._error_mm is None
+        )
 
     # -- helpers -------------------------------------------------------------
     @staticmethod

@@ -330,16 +330,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_surface_group())
         layout.addWidget(self._build_geometry_group())
         layout.addWidget(self._build_psi_group())
-        # Task 4b additions: display-mode toggle + error stats panel.
+        # Display-mode group (lab-view XOR radios). The error stats panel +
+        # colorbar moved to the Recovered Surface tab in Stage 5 sub-task 6.
         layout.addWidget(self._build_display_mode_group())
-        layout.addWidget(self._build_error_stats_group())
         layout.addWidget(self._build_info_panel())
         layout.addStretch(1)
 
         return panel
 
     def _build_display_mode_group(self) -> QGroupBox:
-        """Lab-view surface selector (STL-mode XOR) + error-overlay checkbox.
+        """Lab-view surface selector (STL-mode XOR) for the 3D Scene tab.
 
         Stage 5 sub-task 2: the lab view (3D Scene tab) can show either
         the ground-truth FOV slice or the recovered surface — never both,
@@ -348,6 +348,9 @@ class MainWindow(QMainWindow):
         the radios are disabled (greyed, visible — layout stays stable)
         and rest on Recovered, matching today's behavior. Enable-state and
         the mode-dependent default are managed by `_sync_labview_for_mode`.
+
+        Stage 5 sub-task 6: the error-overlay checkbox was removed — error
+        coloring/stats now live entirely on the Recovered Surface tab.
         """
         box = QGroupBox("Display Mode")
         layout = QVBoxLayout(box)
@@ -368,20 +371,17 @@ class MainWindow(QMainWindow):
         radio_row.addStretch(1)
         layout.addLayout(radio_row)
 
-        # Error overlay — applies only when Recovered is shown.
-        overlay_row = QHBoxLayout()
-        self.show_error_overlay = QCheckBox("Show error overlay")
-        self.show_error_overlay.setChecked(False)
-        overlay_row.addWidget(self.show_error_overlay)
-        overlay_row.addStretch(1)
-        layout.addLayout(overlay_row)
-
         # Disabled until the user enters STL mode.
         self._set_labview_enabled(False)
         return box
 
     def _build_error_stats_group(self) -> QGroupBox:
-        """Error statistics readout. Hidden until overlay is enabled."""
+        """Error statistics readout (mean / std / max-abs / RMS).
+
+        Stage 5 sub-task 6: lives on the Recovered Surface tab and is always
+        visible there (Qt only shows it when that tab is current), so it is no
+        longer default-hidden.
+        """
         box = QGroupBox("Error Statistics")
         grid = QGridLayout(box)
         grid.setColumnStretch(0, 0)
@@ -410,7 +410,6 @@ class MainWindow(QMainWindow):
             grid.addWidget(name_label, row_idx, 0)
             grid.addWidget(value_label, row_idx, 1)
 
-        box.setVisible(False)
         self.error_stats_group = box
         return box
 
@@ -629,23 +628,30 @@ class MainWindow(QMainWindow):
         self.view_3d = SurfacePreview()
         layout.addWidget(self.view_3d, 1)
 
-        self.error_colorbar = ErrorColorbar()
-        self.error_colorbar.setVisible(False)
-        layout.addWidget(self.error_colorbar)
+        # Stage 5 sub-task 6: the error colorbar moved to the Recovered
+        # Surface tab; the 3D Scene tab no longer carries error UI.
 
         return container
 
     def _build_recovered_surface_page(self) -> QWidget:
-        """Stage 5 sub-task 5: the "Recovered Surface" tab (index 3).
+        """Stage 5 sub-tasks 5 + 6: the "Recovered Surface" tab (index 3).
 
-        A thin tab-local control strip (two independent visibility
-        checkboxes, both on by default) above the RecoveredComparisonView,
-        which stacks the solid recovered + translucent ground-truth surfaces
-        over the labeled grid. The checkboxes drive the view's visibility
-        setters directly — toggling visibility must NOT re-run the pipeline,
-        and landing on the tab always fires set_data first (via the
-        currentChanged refresh) so the view has fresh data before any
-        checkbox is reachable.
+        Tab-local control strip (three checkboxes) above the
+        RecoveredComparisonView, then the error colorbar and the
+        always-visible error-statistics panel (mean / std / max-abs / RMS).
+        This tab is the quantitative recovered-vs-truth home.
+
+        - "Recovered surface" / "Ground truth": independent visibility,
+          both on by default. Drive the view's setters directly (no pipeline
+          rerun); landing on the tab always fires set_data first (via the
+          currentChanged refresh) so the view has fresh data first.
+        - "Color by error" (default off): recolor the recovered surface by
+          signed error and render-suppress the amber GT. It re-runs the
+          refresh (the error array is computed there), so it routes through
+          `_refresh_surface_preview`.
+
+        The colorbar + stats are CHILDREN of this page, so Qt only shows them
+        when this tab is current — no cross-tab visibility juggling.
         """
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -659,8 +665,11 @@ class MainWindow(QMainWindow):
         self.show_recovered_checkbox.setChecked(True)
         self.show_ground_truth_checkbox = QCheckBox("Ground truth")
         self.show_ground_truth_checkbox.setChecked(True)
+        self.color_by_error_checkbox = QCheckBox("Color by error")
+        self.color_by_error_checkbox.setChecked(False)
         toggle_row.addWidget(self.show_recovered_checkbox)
         toggle_row.addWidget(self.show_ground_truth_checkbox)
+        toggle_row.addWidget(self.color_by_error_checkbox)
         toggle_row.addStretch(1)
         layout.addLayout(toggle_row)
 
@@ -669,12 +678,22 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.recovered_comparison_view, 1)
 
+        # Error colorbar (visible only in error-color mode) + always-on stats.
+        self.error_colorbar = ErrorColorbar()
+        self.error_colorbar.setVisible(False)
+        layout.addWidget(self.error_colorbar)
+        layout.addWidget(self._build_error_stats_group())
+
         # Visibility toggles: bool signal -> bool setter, no pipeline rerun.
         self.show_recovered_checkbox.toggled.connect(
             self.recovered_comparison_view.set_recovered_visible
         )
         self.show_ground_truth_checkbox.toggled.connect(
             self.recovered_comparison_view.set_ground_truth_visible
+        )
+        # Color-by-error needs the error array (computed in the refresh).
+        self.color_by_error_checkbox.toggled.connect(
+            self._refresh_surface_preview
         )
 
         return container
@@ -790,8 +809,9 @@ class MainWindow(QMainWindow):
         self.projector_distance.valueChanged.connect(self._on_pose_changed)
         self.camera_distance.valueChanged.connect(self._on_pose_changed)
 
-        # Stage 4a task 4b addition: error overlay toggle.
-        self.show_error_overlay.toggled.connect(self._on_overlay_toggled)
+        # (Stage 4a's error-overlay toggle wiring removed in sub-task 6 —
+        # error coloring now lives on the Recovered Surface tab and is wired
+        # in _build_recovered_surface_page.)
 
         # Stage 5 sub-task 2: lab-view ground-truth / recovered selector.
         # `buttonClicked` fires once per user interaction (not on the
@@ -825,16 +845,14 @@ class MainWindow(QMainWindow):
         updates (both keep their last good frame).
 
         Otherwise:
-        - In stages view (task 4d): push all five intermediate arrays
-          into StagesView panels. The 3D scene's view_3d + colorbar
-          stay frozen on their last good state; colorbar is hidden
-          since it's not visible anyway.
-        - In 3D scene view: branches on `self.show_error_overlay`:
-          * OFF: render recovered surface with viridis-on-height
-            (task 3 default). Colorbar hidden.
-          * ON:  render recovered surface colored by signed error
-            (recovered - heightmap) with the diverging colormap,
-            update the error-statistics labels, and show the colorbar.
+        Per-tab dispatch (each branch owns only its own tab's widgets):
+        - Pipeline Stages: push the five intermediate arrays into StagesView.
+        - Recovered Surface (sub-task 6): always update the error stats; feed
+          the comparison view the honest arrays; in "Color by error" mode
+          recolor recovered by signed error + suppress GT + show the colorbar.
+        - 3D Scene: render the recovered surface (viridis-on-height), or the
+          ground-truth FOV slice when the lab-view GT radio is selected. No
+          error UI here (moved to the Recovered Surface tab in sub-task 6).
         """
         heightmap = self._compute_current_heightmap()
         geometry = self._build_geometry()
@@ -874,8 +892,7 @@ class MainWindow(QMainWindow):
             recovered[self._browser_offpart_mask()] = 0.0
 
         if self.right_pane_tabs.currentIndex() == 1:
-            # Pipeline Stages tab is current — push to it. Hide colorbar
-            # (it belongs to the 3D scene tab anyway).
+            # Pipeline Stages tab is current — push to it.
             self.stages_view.update_stages(
                 # Show the original heightmap (off-part = 0 in Browser mode),
                 # not the edge-extended pipeline input — physical truth in
@@ -887,49 +904,35 @@ class MainWindow(QMainWindow):
                 unwrapped_phase=stages["unwrapped_phase"],
                 recovered=recovered,
             )
-            self.error_colorbar.setVisible(False)
             return
 
         if self.right_pane_tabs.currentIndex() == RECOVERED_TAB_INDEX:
-            # Recovered Surface tab (sub-task 5): feed the comparison view the
-            # SAME physically-honest arrays the other views use — `recovered`
-            # post off-part mask and `heightmap` (off-part = 0), NOT the
-            # edge-extended pipeline_input. Colorbar + error stats belong to
-            # the 3D Scene tab; hide them here (stale-state hygiene).
+            # Recovered Surface tab. Feed the comparison view the SAME
+            # physically-honest arrays the other views use — `recovered` post
+            # off-part mask and `heightmap` (off-part = 0), NOT the
+            # edge-extended pipeline_input. Error stats are ALWAYS shown here
+            # (the stats group is a child of this page, so Qt only shows it on
+            # this tab). "Color by error" recolors the recovered surface by
+            # signed error and render-suppresses the GT; the colorbar shows
+            # only in that mode.
+            error = recovered - heightmap
+            abs_max = self._update_error_stats(error)
             self.recovered_comparison_view.set_data(recovered, heightmap)
-            self.error_colorbar.setVisible(False)
-            self.error_stats_group.setVisible(False)
+            color_by_error = self.color_by_error_checkbox.isChecked()
+            self.recovered_comparison_view.set_error_coloring(
+                error if color_by_error else None
+            )
+            self.error_colorbar.set_range(abs_max)
+            self.error_colorbar.setVisible(color_by_error)
             return
 
-        # 3D scene tab is current. Three render paths; this branch is
-        # authoritative for the colorbar + error-stats-group visibility.
+        # 3D scene tab is current — spatial view only, no error UI.
         if self._labview_shows_ground_truth():
-            # Lab-view toggle = ground truth (STL mode). Render the
+            # Lab-view toggle = ground truth (STL mode): render the
             # physical-truth FOV slice (off-part = 0) with viridis-on-height.
-            # The error overlay is render-SUPPRESSED here, not mutated: the
-            # checkbox keeps its state and takes effect again automatically
-            # when the user flips back to Recovered. Stats + colorbar are
-            # hidden because "recovered - truth" has no meaning when the
-            # truth itself is what's shown.
             self.view_3d.update_heightmap(heightmap)
-            self.error_colorbar.setVisible(False)
-            self.error_stats_group.setVisible(False)
-        elif self.show_error_overlay.isChecked():
-            error = recovered - heightmap
-            self.view_3d.update_heightmap(recovered, error_mm=error)
-            abs_max = self._update_error_stats(error)
-            self.error_colorbar.set_range(abs_max)
-            self.error_colorbar.setVisible(True)
-            self.error_stats_group.setVisible(True)
         else:
             self.view_3d.update_heightmap(recovered)
-            self.error_colorbar.setVisible(False)
-            self.error_stats_group.setVisible(False)
-
-    def _on_overlay_toggled(self, checked: bool) -> None:
-        """Show/hide the stats panel and re-render."""
-        self.error_stats_group.setVisible(checked)
-        self._refresh_surface_preview()
 
     # ------------------------------------------------------------------
     # Stage 5 sub-task 2 — lab-view ground-truth / recovered XOR toggle.

@@ -53,7 +53,7 @@ from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QWidget
 
 from src.gui.hardware_scene import HardwareScene
-from src.gui.surface_render import apply_heightmap
+from src.gui.surface_render import ERROR_COLORMAP, apply_heightmap, error_colors
 
 
 # Locked at the launch-default Stage 4a grid. Revisit when the info
@@ -77,26 +77,10 @@ DEFAULT_PIXEL_SIZE_MM = 0.1
 Z_EXAGGERATION: float = 1.0
 
 
-def _build_diverging_colormap() -> pg.ColorMap:
-    """Return a blue-white-red diverging colormap for signed errors.
-
-    Primary: pyqtgraph's bundled CET-D1 (perceptually balanced).
-    Fallback: hand-rolled blue->white->red ramp if CET-D1 fails to
-    load (e.g., a pyqtgraph install missing its color-map data).
-    """
-    try:
-        return pg.colormap.get("CET-D1")
-    except Exception:
-        return pg.ColorMap(
-            pos=[0.0, 0.5, 1.0],
-            color=[(20, 60, 200, 255), (255, 255, 255, 255), (200, 30, 30, 255)],
-        )
-
-
-# Module-level diverging colormap shared between SurfacePreview's error
-# overlay and main_window's colorbar widget. Single source of truth so
-# the legend matches the surface colors exactly.
-ERROR_COLORMAP: pg.ColorMap = _build_diverging_colormap()
+# ERROR_COLORMAP + error_colors moved to surface_render.py (Stage 5 sub-task 6)
+# so the comparison view can share the error-coloring render core without
+# importing surface_preview. Re-exported here for `from surface_preview import
+# ERROR_COLORMAP` callers (e.g. main_window's ErrorColorbar default).
 
 
 class ErrorColorbar(QWidget):
@@ -195,9 +179,8 @@ class SurfacePreview(gl.GLViewWidget):
         self._last_heightmap: Optional[np.ndarray] = None
 
         self._cmap_height = pg.colormap.get("viridis")
-        # Use the module-level diverging cmap so the colorbar legend
-        # in main_window draws from the same source.
-        self._cmap_error = ERROR_COLORMAP
+        # Signed-error coloring now lives in surface_render.error_colors
+        # (shared with the comparison view); no per-instance error cmap.
 
         self._add_reference_grid()
         self._surface_item = gl.GLSurfacePlotItem(
@@ -329,23 +312,9 @@ class SurfacePreview(gl.GLViewWidget):
         return self._cmap_height.map(z_norm, mode="float").astype(np.float32)
 
     def _compute_error_colors(self, error: np.ndarray) -> np.ndarray:
-        """Diverging colormap on signed error, symmetric about zero."""
-        abs_max = float(np.nanmax(np.abs(error)))
-        if abs_max < 1e-15:
-            # All-zero (or near-zero) error: fill with the mid-colormap
-            # color (0.5 lookup, the diverging center).
-            mid = self._cmap_error.map(
-                np.array([0.5], dtype=np.float64), mode="float"
-            )[0]
-            colors = np.broadcast_to(mid, error.shape + (4,)).astype(np.float32)
-            return np.ascontiguousarray(colors)
-        # Map error in [-abs_max, +abs_max] to lookup in [0, 1].
-        # Replace NaN (mixed NaN within otherwise-finite array — shouldn't
-        # happen under the all-NaN fall-through guard in _compute_colors,
-        # but defensive) with 0.5 so it lands on the colormap center.
-        normalized = np.where(
-            np.isnan(error),
-            0.5,
-            (error / abs_max + 1.0) / 2.0,
-        )
-        return self._cmap_error.map(normalized, mode="float").astype(np.float32)
+        """Diverging colormap on signed error, symmetric about zero.
+
+        Thin wrapper over the shared `surface_render.error_colors` so the
+        comparison view and SurfacePreview produce identical error coloring.
+        """
+        return error_colors(error)

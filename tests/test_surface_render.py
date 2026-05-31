@@ -15,7 +15,11 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from gui.surface_render import apply_heightmap, centered_coords  # noqa: E402
+from gui.surface_render import (  # noqa: E402
+    apply_heightmap,
+    centered_coords,
+    error_colors,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +49,30 @@ def test_centered_coords_pixel_scaling():
     x, y = centered_coords((3, 3), 0.5)
     np.testing.assert_array_equal(x, [-0.5, 0.0, 0.5])
     np.testing.assert_array_equal(y, [-0.5, 0.0, 0.5])
+
+
+# ---------------------------------------------------------------------------
+# error_colors — pure (diverging colormap on signed error).
+# ---------------------------------------------------------------------------
+def test_error_colors_shape_and_dtype():
+    c = error_colors(np.zeros((4, 6), dtype=np.float64))
+    assert c.shape == (4, 6, 4)
+    assert c.dtype == np.float32
+
+
+def test_error_colors_all_zero_is_uniform_mid():
+    # Near-zero field -> every pixel the same (mid-colormap) color.
+    c = error_colors(np.zeros((3, 3), dtype=np.float64))
+    assert np.allclose(c, c[0, 0])
+
+
+def test_error_colors_symmetric_about_zero():
+    err = np.array([[-2.0, 0.0, 2.0]], dtype=np.float64)
+    c = error_colors(err)
+    mid = error_colors(np.zeros((1, 1), dtype=np.float64))[0, 0]
+    # Zero error lands on the colormap center; +2 and -2 differ (mirror sides).
+    np.testing.assert_allclose(c[0, 1], mid, atol=1e-6)
+    assert not np.allclose(c[0, 0], c[0, 2])
 
 
 # ---------------------------------------------------------------------------
