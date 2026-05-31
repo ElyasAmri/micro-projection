@@ -1230,3 +1230,30 @@ def test_recovered_tab_stats_always_colorbar_per_mode(main_window):
     main_window.color_by_error_checkbox.setChecked(True)
     assert main_window.error_stats_group.isHidden() is False
     assert main_window.error_colorbar.isHidden() is False
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 sub-task 4d.7 — STL Browser panel swap.
+# ---------------------------------------------------------------------------
+def test_browser_panel_swap_positions(main_window):
+    """Whole-STL (+ cyan highlight) occupies the big RIGHT slot; the windowed
+    slice occupies the small BOTTOM-LEFT slot under the minimap. Asserts the
+    splitter STRUCTURE (which widget is in which slot) — queryable without
+    rendering — guarding against a silent revert of the panel mapping.
+
+    QSplitter reparents its children, so `widget.parent()` is the splitter;
+    no splitter attributes need to be exposed."""
+    from PyQt6.QtCore import Qt
+
+    browser = main_window.stl_browser
+
+    # Whole-STL view: index 1 (right) of the horizontal (outer) splitter.
+    ws_parent = browser._whole_stl_view.parent()
+    assert ws_parent.orientation() == Qt.Orientation.Horizontal
+    assert ws_parent.indexOf(browser._whole_stl_view) == 1
+
+    # Windowed slice: index 1 (bottom) of the vertical (inner) splitter,
+    # below the minimap wrapper (index 0).
+    win_parent = browser._windowed_view.parent()
+    assert win_parent.orientation() == Qt.Orientation.Vertical
+    assert win_parent.indexOf(browser._windowed_view) == 1

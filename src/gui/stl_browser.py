@@ -139,11 +139,13 @@ def _new_3d_view(distance: float, elevation: float, azimuth: float) -> gl.GLView
 class STLBrowser(QWidget):
     """Stage 4d Browser tab: FOV-by-FOV navigation of full-scale STLs.
 
-    Three-panel layout when Browser-mode is active:
+    Three-panel layout when Browser-mode is active (sub-task 4d.7 positions):
       - Top-left:    minimap (2D top-down with draggable FOV rectangle)
-      - Bottom-left: whole-STL 3D preview (orientation only)
-      - Right:       windowed 3D preview (what the math measures)
-    Placeholder shown otherwise.
+      - Bottom-left: windowed 3D preview (what the math measures), small
+      - Right:       whole-STL 3D preview + cyan FOV highlight, big
+    Placeholder shown otherwise. (The "Panel 1/2/3" labels below track
+    CONTENT, not position: Panel 1 = whole-STL, Panel 2 = minimap,
+    Panel 3 = windowed slice.)
 
     Whole-STL and windowed views are driven by `update_whole_stl` and
     `update_windowed_slice` respectively. The two methods stay separate
@@ -199,7 +201,7 @@ class STLBrowser(QWidget):
         self._minimap_image_item: Optional[pg.ImageItem] = None
         self._minimap_roi: Optional[pg.RectROI] = None
 
-        # Panel 1 (bottom-left): whole-STL 3D preview.
+        # Panel 1 (big right, sub-task 4d.7): whole-STL 3D preview.
         self._whole_stl_view = _new_3d_view(
             distance=300,  # placeholder; updated per part in update_whole_stl
             elevation=_WHOLE_STL_ELEVATION,
@@ -213,7 +215,7 @@ class STLBrowser(QWidget):
         # scene-insertion order.
         self._whole_stl_highlight_item: Optional[gl.GLSurfacePlotItem] = None
 
-        # Panel 3 (right): windowed 3D preview.
+        # Panel 3 (small bottom-left, sub-task 4d.7): windowed 3D preview.
         self._windowed_view = _new_3d_view(**_WINDOWED_CAMERA)
         self._windowed_item: Optional[gl.GLSurfacePlotItem] = None
 
@@ -237,12 +239,17 @@ class STLBrowser(QWidget):
         panel2_layout.addWidget(self._minimap, 1)
         panel2_layout.addWidget(self.commit_fov_button, 0)
 
+        # Sub-task 4d.7 panel swap: the whole-STL context view (with the cyan
+        # FOV highlight — "where does my FOV sit on the whole part") takes the
+        # big right panel; the windowed slice drops to the small bottom-left
+        # under the minimap. Layout-only — each view keeps its own update
+        # method + items, and the highlight stays bound to _whole_stl_view.
         inner.addWidget(panel2_wrapper)
-        inner.addWidget(self._whole_stl_view)
+        inner.addWidget(self._windowed_view)   # small bottom-left
         inner.setSizes([440, 360])  # ~55/45 within the left half
 
         outer.addWidget(inner)
-        outer.addWidget(self._windowed_view)
+        outer.addWidget(self._whole_stl_view)  # big right (with cyan highlight)
         outer.setSizes([400, 600])  # ~40/60 of available width
 
         self._stack.addWidget(outer)
