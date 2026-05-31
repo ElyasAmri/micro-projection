@@ -15,7 +15,7 @@ The user's deliverables:
 2. The **math/processing core** behind the UI.
 3. Eventually: **integration with real hardware** in the lab.
 
-The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 4b have been completed (see Section 12). The notebook is the starting point for refactoring, not a thing to start over.
+The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 4d (plus five follow-up commits, see Section 12) have been completed. The notebook is the starting point for refactoring, not a thing to start over.
 
 ---
 
@@ -222,11 +222,11 @@ Fringe_Projection_Project_Phase1/
 │   ├── test_scene.py              # Stage 4b — mesh/wireframe builders
 │   ├── test_scene_compose.py      # Stage 4b — pose composition
 │   ├── test_hardware_scene.py     # Stage 4b — arm transforms integration
-│   ├── test_clip_detection.py     # Stage 4b — 10 cases (3 collision + 4 coverage advisories)
+│   ├── test_clip_detection.py     # Stage 4b — 10 cases (3 collision + 4 coverage advisories) + Stage 4d follow-up SAT + cone-tolerance regression tests
 │   ├── test_stl_loader.py         # Stage 4c — 14 cases (synthetic in-memory meshes via tmp_path)
 │   ├── test_stl_loader_full_scale.py # Stage 4d — full-scale loader (oversized STL → (heightmap, origin))
 │   ├── test_main_window.py        # Stage 4d sub-task 1.5 — module-level invariants (no GUI construction)
-│   ├── test_main_window_stl.py    # Stage 4c+4d — GUI-level tests (small-path + Browser flow + commit)
+│   ├── test_main_window_stl.py    # Stage 4c+4d — GUI-level tests (small-path + Browser flow + commit + off-part-mask regression)
 │   ├── regression_data.npz
 │   └── conftest.py
 ├── scripts/                       # standalone runnable scripts
@@ -255,6 +255,7 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | **4b** | **Unified hardware-bodies scene: camera + projector bodies + cones added to the same 3D view; live pose sliders; clip-detection (collisions + coverage advisories)** | No | ✅ Done |
 | **4c** | **STL import for arbitrary specimens: surface dropdown reduced to (Flat, Gaussian, STL file...); pure-NumPy STL→heightmap loader; QFileDialog flow; hard-reject for STLs exceeding the (68, 55, 55) mm working volume** | No | ✅ Done |
 | **4d** | **STL Browser for full-scale specimens: windowed FOV selection on oversized parts via minimap + draggable cyan FOV rectangle; live windowed-slice preview; surface-following highlight overlay on whole-STL view; Commit FOV button promotes dragged slice to lab view + math pipeline; QTabWidget refactor for view modes (3D Scene / Pipeline Stages / STL Browser)** | No | ✅ Done |
+| **4d follow-ups** | **GUI review pass: STL lift convention reset to visible-envelope, off-part edge-extend with masked output, SAT body-overlap (OBB intersection), 2 mm cone-coverage tolerance, ABSURDLY_LARGE_MM raised to (500, 500, 120). Five focused commits driven by hands-on visual review of the Stage 4d GUI.** | No | ✅ Done |
 | 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
 | 6 | Real hardware integration with mounting + new projector | Yes | — |
 
@@ -312,6 +313,30 @@ The Stage 4b clip-detection system distinguishes two failure modes:
 - **Banner only, no gray** = measurement incompleteness (surface extends outside camera FOV or projector cone). Pose is buildable, but reconstruction values in the uncovered region are simulation artifacts, not real measurements.
 
 The math pipeline keeps running in both cases. The user sees the warning but the simulation produces a heightmap regardless. This is by design — the digital twin should let users explore "silly" rigs and see what the math does in those poses.
+
+### 7.6 — Lift convention: visible envelope, not global mesh (Stage 4d follow-up)
+
+`stl_loader.load_stl_heightmap()` and `load_stl_heightmap_full_scale()` lift the rasterized heightmap so the **lowest camera-VISIBLE point** sits at z=0, not the global mesh minimum. The visible point is the minimum of the per-pixel max-z upper envelope — the lowest surface a fringe-projection camera would actually see from above.
+
+Rationale: FPP only measures the visible top surface. A closed solid's bottom shell is discarded by the max-z envelope (camera can't see it), so using the global mesh minimum to define z=0 puts the visible surface artificially above the stage. The visible-envelope convention places the part's visible base flush with z=0, matching what a real measurement would produce.
+
+Consequence: a flat-topped box collapses to a single z=0 plane (zero relief), which is honest — the only thing the camera could measure on such a part is its top surface, and that surface has no internal variation. A closed sphere recovers as a half-dome with the equator at z=0 and apex at radius R (not diameter 2R as the earlier convention produced).
+
+The earlier convention (lift by global mesh-Z minimum, including discarded bottom shell) was set in Stage 4c sub-task 2 and reset to visible-envelope minimum in the Stage 4d follow-up GUI review (see Section 12). The reset closed three visible symptoms: floating-part appearance in lab view, 15 mm step at FOV-bbox boundary, angle-dependent recovered shape from straddling-FOV-induced phase-unwrap branch differences.
+
+### 7.7 — Browser-mode off-part padding contract (Stage 4d follow-up)
+
+In Browser mode, the FOV slice (`_extract_fov_slice`) fills cells outside the part's XY footprint with 0.0 (bare stage). For the math pipeline, this creates a discontinuity at the part edge that contaminates the self-cal tilt fit, producing recovered off-part values that ramp away from zero.
+
+The fix (commit `fb19e0c`): **feed the pipeline an edge-extended heightmap, then mask the recovered output's off-part cells back to 0.0 before display.** Off-part is a rectangular band / L / corner by construction (from `_extract_fov_slice`'s clamped-window arithmetic), so a column-then-row edge copy fills it correctly — corners inherit the corner value via the row pass after the column pass.
+
+The user sees physical truth (off-part = flat stage at 0) while the math sees a smooth input (no on-part / off-part discontinuity). This applies ONLY in Browser mode; small-part direct STL, Flat, and Gaussian surface modes are unaffected.
+
+### 7.8 — Clip-detection tolerance philosophy (Stage 4d follow-up)
+
+- **Projector-cone coverage check:** 2 mm advisory tolerance (`_CONE_COVERAGE_TOLERANCE_MM`). The cone math models an idealized projection volume with a sharp boundary; real projectors have gradual edge falloff at the cone's geometric bounds. Sub-mm and minor (< 2 mm) corner spills don't represent real illumination loss.
+- **Camera viewing-prism check:** stays exact (no tolerance). A parallel-sided telecentric prism doesn't soften at its bounds — the camera either sees a point or it doesn't.
+- **Body-overlap check:** exact OBB intersection via SAT (no tolerance). Strict separation, no epsilon — touching counts as collision. Adding positive tolerance would re-inflate exactly what the SAT upgrade was designed to remove.
 
 ---
 
@@ -547,7 +572,7 @@ Simulation validation can only catch bugs where the test path uses *different* l
 | No surface-vs-lens contact checks | Unreachable in practice with slider ranges. Removing dead code keeps the module clean. |
 | FOV/cone coverage as banner-only, not gray | Coverage failure = measurement incompleteness, not physical collision. Gray would imply unbuildable rig. |
 | 3D point-in-volume coverage tests, not 2D footprint | The 2D footprint check missed tall peaks penetrating the prism's "ceiling" at tilt. 3D is geometrically correct. |
-| Strict-correctness FOV check (no tolerance) | Hairline triggers happen only at extreme synthetic surfaces (amp=100mm) that won't exist in real fringe projection use. Tolerance would hide real coverage failures and require a magic threshold. |
+| Strict-correctness FOV check (no tolerance) | Hairline triggers happen only at extreme synthetic surfaces (amp=100mm) that won't exist in real fringe projection use. Tolerance would hide real coverage failures and require a magic threshold. **Stage 4d follow-up note:** the projector-cone check (5) gained a 2 mm tolerance because real projectors have gradual edge falloff vs. the math's sharp boundary; the camera-prism check (4) stays exact (telecentric parallel-sided prism doesn't soften at its bounds). |
 | Cone test: `s ≥ 0` only, no upper bound | `throw` is DLP focus distance, not a hard light cutoff — the beam keeps diverging past it. Bounding at throw plane false-flagged flat surfaces. |
 | 11×11 grid sampling | Catches both lateral and vertical spill at constant ~250µs/tick cost. |
 | No Co-Authored-By trailers | User drives design decisions; Claude Code writes implementation. Established as project convention. |
@@ -582,6 +607,7 @@ Constants in `src/gui/clip_detection.py`:
 - Lens front radii: `_LENS_FRONT_RADIUS = {camera: 55.0, projector: 10.0}` mm
 - Prism half-extents: `_PRISM_HALF_U_MM = 34.0`, `_PRISM_HALF_V_MM = 27.5` mm (= 68/2, 55/2 — derived from `make_viewing_cone_wireframe`)
 - Cone divergence: `_CONE_HALF_U_PER_L = 1.0/2.4`, `_CONE_HALF_V_PER_L = (1.0/2.4) * 9/16` (1.2:1 throw, 16:9 aspect — derived from `make_projection_cone_wireframe`)
+- **Stage 4d follow-up:** `_CONE_COVERAGE_TOLERANCE_MM = 2.0` advisory tolerance widening cone lateral half-extents for the coverage point-in-volume test. Real projector edge falloff vs. the math's sharp cone boundary. Camera prism check stays exact (no tolerance).
 
 All clip-detection geometry constants are derived from the cone builders themselves at module load, so the math tracks `scene.py` rather than duplicating spec numbers.
 
@@ -594,7 +620,7 @@ All clip-detection geometry constants are derived from the cone builders themsel
 | # | Commit | What landed |
 |---|---|---|
 | 1 | `eecaeac` | Dropdown reduction (Flat, Gaussian) + Gaussian amplitude cap 100→55 mm. `make_tilt`, `make_step`, `make_sphere` generators, their tests, their slider widgets, page builders, and dispatch branches all deleted. Net −223 lines. Surviving slider inventory: Flat (none); Gaussian (amplitude 0–55 mm, sigma 1–30 mm). `tests/test_clip_detection.py:256` left at amplitude=100 (Gaussian-based coverage case; `make_gaussian` has no internal cap, math layer free). New `scripts/stage4c_smoke.py` smoke harness (verify \| Flat \| Gaussian). 122 tests. |
-| 2 | `db0cd21` | `src/stl_loader.py` (pure NumPy peer of `test_surfaces.py`): `load_stl_heightmap(path, shape, pixel_size_mm)` and `get_stl_bbox_mm(path)`. Projected-barycentric rasterization, per-pixel max-z upper envelope (camera-visible top surface; closed-solid bottom discarded). Lift by **global** mesh-Z minimum (the part's true base, including discarded bottom shell — not envelope minimum), so a closed solid's diameter lands at the right peak height. Coordinate convention replicated from `test_surfaces._centered_grid_mm` (no cross-module private import). Empty mesh raises `ValueError`; non-empty-but-all-XY-degenerate (vertical-walls-only) returns all-zero heightmap legitimately. 14 new tests covering cube, pyramid, tilted triangle, closed UV sphere, vertical-walls-only, empty mesh, offset cube, bbox extents — all synthetic in-memory via `tmp_path`. `numpy-stl==3.2.0` added to `environment.yml` pip block (NOT conda-forge — see "Stage 4c environmental lessons" below). 136 tests. |
+| 2 | `db0cd21` | `src/stl_loader.py` (pure NumPy peer of `test_surfaces.py`): `load_stl_heightmap(path, shape, pixel_size_mm)` and `get_stl_bbox_mm(path)`. Projected-barycentric rasterization, per-pixel max-z upper envelope (camera-visible top surface; closed-solid bottom discarded). Lift convention at the time of this commit: by global mesh-Z minimum across all triangles. **This convention was reset to visible-envelope minimum in the Stage 4d follow-up GUI review** — see "Stage 4d follow-up commits" below. 14 new tests covering cube, pyramid, tilted triangle, closed UV sphere, vertical-walls-only, empty mesh, offset cube, bbox extents — all synthetic in-memory via `tmp_path`. `numpy-stl==3.2.0` added to `environment.yml` pip block (NOT conda-forge — see "Stage 4c environmental lessons" below). 136 tests. |
 | 3 | `2c73955` | STL wired into the surface dropdown as `"STL file..."`. `_build_stl_page` with inner `QStackedWidget` (placeholder ↔ `STL: <basename> [Change...]` row, full path as tooltip). `_on_surface_combo_changed` slot inserted between page-swap and refresh in `currentIndexChanged` connection order. `_load_stl_from_path(path) → bool` is the no-dialog hook used by the `QFileDialog` flow, the Change button, the smoke script, and the tests. Cache lives for the window's lifetime; switching to Flat/Gaussian and back to STL re-renders the cache without re-importing. `_revert_stl_dropdown` carries a maintainer comment explaining why both the combo AND the surface_pages stacked widget need manual `setCurrentIndex` under `blockSignals`. Temporary `QMessageBox.warning` bbox guard (replaced in sub-task 4). 6 new GUI tests in `tests/test_main_window_stl.py` (monkeypatched `QFileDialog`/`QMessageBox`). Smoke harness extended with STL mode (synthetic 30 mm cube). 142 tests. |
 | 4 | `286ebb3` | Finalize the bbox guard: hard-reject only. `QMessageBox.warning` text rewritten to explain why oversized STLs are rejected and point at Stage 4d's STL Browser. The earlier draft of sub-task 4 (custom `QDialog`, `rescale_mesh_uniform`, `truncate_heightmap_z`) was **dropped during planning** — rescale and truncate both distort the geometry being measured. Five stale "sub-task 4" forward-references in `src/stl_loader.py` comments cleaned up to point at where the bbox check actually landed (`main_window.py`'s `_load_stl_from_path`). Text-only commit; 142 tests unchanged. |
 | 5 (close) | this commit | Docs update + tag `stage-4c-complete`. |
@@ -604,11 +630,11 @@ All clip-detection geometry constants are derived from the cone builders themsel
 | Decision | Rationale |
 |---|---|
 | Surface dropdown collapses to (Flat, Gaussian, STL file...) | Tilt/step/sphere were synthetic surfaces with no calibration role; Flat (zero-height ref) and Gaussian (known-answer) cover all the smoke-test use cases. STL covers real specimens. Three is the right number. |
-| Gaussian amplitude cap 100 → 55 mm | Matches the 55 mm Z component of the working volume so the GUI can't drive the surface beyond what the camera FOV honestly supports. `make_gaussian` itself has no internal cap; the bound is GUI-only. |
+| Gaussian amplitude cap 100 → 55 mm | Matches the 55 mm Z component of the working volume so the GUI can't drive the surface beyond what the camera FOV honestly supports. `make_gaussian` itself has no internal cap; the bound is GUI-only. (Raised again to 120 mm in Stage 4d sub-task 2.5.) |
 | `numpy-stl` in the pip block, NOT conda-forge | Installing `numpy-stl` via conda-forge dragged in MKL/BLAS/LAPACK and a duplicate numpy build that broke `numpy.linalg` at the ABI level. Pip is clean because this env's numpy is pip-installed; matching the install mechanism avoids ABI conflicts. Documented in `environment.yml` comment. |
 | Projected-barycentric rasterization (not z-buffer search) | Scales O(N_triangles × pixels-per-triangle), not O(N_pixels × N_triangles). CAD STLs have 10k+ triangles; the projected-barycentric path is the only one fast enough to feel interactive. |
 | Per-pixel max-z upper envelope | Matches what a single-viewpoint FPP camera actually sees: the top surface, not the closed solid's interior or bottom. Documented in the loader docstring. |
-| Lift by global mesh-Z min, not envelope-min | Caught during sub-task 2 summarize-back. Envelope-min would put a cube's top face at 0 (envelope-min = envelope-max = z_top inside footprint) and a sphere at peak = R, not 2R. Global mesh-min puts the part's base at z = 0, matching the physical setup (the part rests on a flat stage). |
+| ~~Lift by global mesh-Z min, not envelope-min~~ **Superseded by Stage 4d follow-up:** lift by visible-envelope minimum (the lowest camera-VISIBLE point). The original global-mesh-min convention put a closed solid's full diameter above the stage, but a real FPP camera only measures the visible top surface, so the visible base — not the discarded bottom shell — should define z=0. The reset closed three visible symptoms in the Stage 4d GUI review: floating-part appearance, 15 mm step at FOV-bbox boundary, angle-dependent recovered shape from straddling-FOV-induced phase-unwrap branch differences. See "Stage 4d follow-up commits" below for the diagnostic chain and consequences. |
 | STL coordinates are assumed to be mm (no unit parameter) | mm is the de-facto CAD convention. Wrong-unit files trip the bbox guard immediately on normally-sized parts — failure mode is loud and self-diagnosing. |
 | Empty mesh raises `ValueError`; XY-degenerate returns zeros | Empty = malformed input; degenerate vertical walls = legitimately invisible to a top-down camera. Two different cases, two different behaviors. |
 | Coordinate convention replicated, not imported | `stl_loader.py` and `test_surfaces.py` are peers in the surface-library role. Cross-module private imports would couple them. The 4-line `_centered_grid_mm` formula is small enough to replicate with a "source of truth" comment. |
@@ -625,7 +651,7 @@ All clip-detection geometry constants are derived from the cone builders themsel
 
 - **The cache in `main_window` (`_stl_heightmap`, `_stl_path`, `_stl_filename`) is the surface-state contract.** Stage 4d's Browser will extend this with FOV-window state (`_stl_full_heightmap`, `_stl_fov_origin`, etc.); the dispatch in `_compute_current_heightmap` reads from one shared place.
 
-- **Halt-and-confirm gates earned their cost three times in Stage 4c.** Sub-task 2's halt caught the lift-formula contradiction (envelope-min vs global-min). Sub-task 3's halt confirmed connection-ordering risk with `blockSignals`. Sub-task 4's halt-and-pivot replaced a substantial dialog implementation with a 24-line message edit. None of these would have been caught by the test suite — they're all "prompt vs. actual code intent" mismatches that only surface in summarize-back.
+- **Halt-and-confirm gates earned their cost three times in Stage 4c.** Sub-task 2's halt caught the lift-formula contradiction (envelope-min vs global-min, which itself was later reset to envelope-min in the Stage 4d follow-up — see below). Sub-task 3's halt confirmed connection-ordering risk with `blockSignals`. Sub-task 4's halt-and-pivot replaced a substantial dialog implementation with a 24-line message edit. None of these would have been caught by the test suite — they're all "prompt vs. actual code intent" mismatches that only surface in summarize-back.
 
 - **The Stage 4c sub-task 4 pivot is the most substantial design decision in the stage.** The originally-drafted Rescale/Truncate/Cancel dialog was a real, defensible design path — it would have worked, with tests. The user pushed back during summarize-back: "we cant have a full sized object that fits in the small FOV, most artifacts will be a lot bigger." That observation reframed the problem from "salvage oversized parts" to "explore oversized parts FOV-by-FOV," which made rescale/truncate the wrong answer regardless of how cleanly implemented. Stage 4d's STL Browser is the right answer; sub-task 4 became a 2-file text edit. The lesson: when a sub-task feels right technically but the user pushes on practicality, the spec is what's wrong, not the user.
 
@@ -661,7 +687,7 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 
 **This record exists** because the dialog work was preserved-in-history-as-a-reset would have wasted a sub-task's worth of code. Catching it before implementation was a halt-gate win, and the design rationale is worth preserving so future stages don't re-derive "why didn't we just rescale" from scratch.
 
-### Stage 4 controls (locked as of Stage 4b close)
+### Stage 4 controls (locked as of Stage 4d follow-up)
 
 **Sliders / dropdowns in the GUI:**
 
@@ -699,8 +725,11 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 - When `|tan(θ_proj) + tan(θ_cam)| < 1e-3`, the pipeline short-circuits; warning banner shows with textbook-form Eq. 2-51 and the explanation that triangulation requires angular separation.
 - The 3D view (or stages view) keeps the last good frame so the user can drag back without seeing a crash or NaN garbage.
 
-**Clip-detection warning banner (new in 4b):**
+**Clip-detection warning banner (new in 4b, refined in Stage 4d follow-up):**
 - 5 advisory checks (3 collision + 2 coverage). Collisions gray the offending hardware bodies + cones; coverage advisories show banner only.
+- Body-overlap check (collision #3) upgraded from world-AABB approximation to exact OBB intersection via SAT in the Stage 4d follow-up. Eliminated documented false positives of 22–32 mm true clearance at ordinary and extreme poses.
+- Projector-cone coverage check (advisory #5) gained a 2 mm advisory tolerance in the Stage 4d follow-up. Sub-mm hairline triggers from the cone math's sharp-boundary idealization no longer fire; spills of > 2 mm still warn.
+- Camera viewing-prism coverage check (advisory #4) stays exact — telecentric parallel-sided prism.
 - Banner is independent of the degenerate-λ_eq banner; both can show simultaneously.
 - Math pipeline keeps running regardless of clip state.
 
@@ -745,24 +774,24 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 | 5 | `ce3667a` | **Panel 2 minimap + draggable FOV rectangle + live Panel 3 update.** `pg.GraphicsLayoutWidget` + `PlotItem` + `ImageItem` (grayscale, row-major, Y-up, aspect-locked) + `pg.RectROI` with bright cyan `(0, 220, 255)` 2 px outline, fixed FOV size 68×55 mm, `movable=True, resizable=False, rotatable=False`, all handles scrubbed in a loop for pg version safety. `fov_dragged = pyqtSignal(tuple)` emits on `sigRegionChanged`. MainWindow's `_on_fov_dragged` slot updates the cache, calls `_extract_fov_slice`, calls `update_windowed_slice`. Lab view and Pipeline Stages NOT touched on drag (drag-vs-commit separation). Mid-execution correction: initial view padding bumped from half-FOV to full-FOV when C3 capture showed rectangle clipped at extreme off-part drag (`+40, -27.5`). 172 tests. |
 | 5.5 | `8fafa94` | **Panel 1 FOV highlight overlay (surface-following, live, alpha=1.0 cyan).** Second `GLSurfacePlotItem` at the FOV-windowed region in Panel 1's GLView, positioned at Z = part-surface + 0.05 mm epsilon, rendered in opaque cyan matching the minimap rectangle. Updates live on `_on_fov_dragged`. **Pyqtgraph 0.14.0 alpha-rendering bug discovered:** `alpha < 1.0` on `GLSurfacePlotItem` produces inverted-complement colors (empirical: `output_X ≈ 127 - 44·input_X`) regardless of shader, color-input path, sibling-item presence, or `glOptions`. Six diagnostic experiments ran (single-item, white-on-white, pure-RGB inputs, shader=None, alpha=1.0) before isolating alpha as the trigger. Workaround locked at alpha=1.0; root cause undiagnosed (would require Qt/driver source dive). Diagnostic chain captured as a 17-line comment above `_FOV_HIGHLIGHT_COLOR_RGBA`. 176 tests. |
 | 6 | `27385b9` | **Commit FOV button + lab view promotion path.** `QPushButton("Commit FOV")` lives below the minimap in Panel 2 (wrapped with the minimap in a `QVBoxLayout(panel2_wrapper)` so the inner splitter stays two-region). `commit_fov_requested = pyqtSignal()` (no payload — cache already current from drag handler). MainWindow's `_on_commit_fov_requested` slot calls `_refresh_surface_preview` to propagate `_stl_heightmap` to the lab view + Pipeline Stages + math pipeline. Button enabled on `show_panels`, disabled on `show_placeholder`, belt-and-suspenders `setEnabled(False)` in `__init__`. Lab view auto-shows the centered initial FOV at load via the implicit refresh chain through `_open_stl_dialog` (line 958 calls `_refresh_surface_preview` after `_load_stl_browser` returns) — no explicit auto-commit needed; the implicit chain is the load-bearing contract, documented in `_load_stl_browser`'s docstring. Z-overflow at commit is impossible by construction (load-time bbox classification already rejects Z > 120, and `_extract_fov_slice` is monotonic in Z). Degenerate-geometry short-circuit is handled by `_refresh_surface_preview` itself. 181 tests. |
-| close (this commit) | docs update + tag `stage-4d-complete`. |
+| close | `stage-4d-complete` | Docs update + tag `stage-4d-complete`. |
 
 **Key design decisions locked during Stage 4d:**
 
 | Decision | Rationale |
 |---|---|
 | Math grid reconciled to exact 68×55 mm patch ((550, 680) at 0.1 mm/px) | Sub-task 1.5. Stage 4a chose (480, 640) at 0.1 mm/px = 48×64 mm grid, which never honestly matched the advertised 68×55 mm camera FOV. Stage 4d's Browser couldn't proceed with that mismatch — the FOV rectangle on the minimap is the user's mental model of what the camera sees, and it has to match the math grid bit-for-bit. |
-| Three-way bbox classification: direct / Browser / hard-reject | Sub-task 2. Two thresholds (`WORKING_VOLUME_MM`, `ABSURDLY_LARGE_MM`) give three buckets. The direct path stays for parts that fit; the Browser path activates for oversized-but-bounded XY; absurd-sized XY (>272×220 mm) hard-rejects with the same memory-bound + usability ceiling reasoning as Stage 4c's hard-reject. |
+| Three-way bbox classification: direct / Browser / hard-reject | Sub-task 2. Two thresholds (`WORKING_VOLUME_MM`, `ABSURDLY_LARGE_MM`) give three buckets. The direct path stays for parts that fit; the Browser path activates for oversized-but-bounded XY; absurd-sized XY hard-rejects with the same memory-bound + usability ceiling reasoning as Stage 4c's hard-reject. Threshold raised to (500, 500, 120) in Stage 4d follow-up. |
 | Z cap raised 55 → 120 mm (placeholder backed by empirical observation) | Sub-task 2.5. Stage 4c chose 55 mm to match the camera FOV Y extent — a coincidence-equal value, not a derived hardware constraint. User's bench testing showed 100 mm parts cleared the hardware without contact. 120 mm = 100 mm specimen + 20 mm safety margin. Real Z constraint (projector focus depth, phase unambiguity range, triangulation lateral-spill) is a Stage 5/6 derivation. |
 | `Z_EXAGGERATION` permanently locked at 1.0 (honest scale) — **DOCTRINE** | Stage 4b locked Z=1.0 at honest scale; Stage 4d makes this permanent. The lab view's job is to show the part as the system sees it — at true scale, in proper proportion to camera/projector/stage. Exaggerating Z would lie about the geometry the rest of the simulation is designed to measure honestly. A 50 µm bump shouldn't look like a 5 mm bump because the visualization would then communicate different information than the math is computing. **Configurable Z exaggeration is NOT on the roadmap; do not add it.** |
-| Lab view shows only the committed FOV slice (3D mesh with depth) | Sub-task 6. The slice is itself a heightmap, so the lab view renders it as a 3D mesh with full Z relief — user can orbit around to read the depth profile. Whole-part-with-FOV-cone visualization is deferred to Stage 5/6 (depends on real hardware-mounting geometry to set the relative scale of part vs apparatus). |
+| Lab view shows only the committed FOV slice (3D mesh with depth) | Sub-task 6. The slice is itself a heightmap, so the lab view renders it as a 3D mesh with full Z relief — user can orbit around to read the depth profile. Whole-part-with-FOV-cone visualization is deferred to Stage 5/6 (depends on real hardware-mounting geometry to set the relative scale of part vs apparatus). **Parking-lot item from Stage 4d follow-up:** the next refactor will make lab view show ground truth by default with an opt-in recovered-surface overlay toggle, and add a dedicated "Recovered Surface" tab for quantitative comparison. See "Stage 4d follow-up parking lot" below. |
 | Drag updates Panel 3 + Panel 1 highlight only; lab view + Pipeline Stages wait for commit | Sub-tasks 5 + 5.5 + 6. Re-running the math pipeline at 60 Hz drag rate would be unacceptably laggy. Two NumPy slices + two GPU uploads per drag tick is the cheap path; pipeline + tab-render is the expensive path. The Commit FOV button is the latency boundary. |
 | Browser tab placeholder always visible; panels shown only when Browser-mode STL active | Sub-task 3. The QTabWidget always shows "STL Browser" as a tab — clicking it shows either the placeholder ("Load an oversized STL to use the Browser") or the three-panel layout. Tab-disable was rejected as worse UX (the user can't see what the tab does until they try). |
 | FOV highlight color matches minimap rectangle cyan exactly | Sub-task 5.5. Visual continuity — "the same region" across two panels reinforces the FOV selection metaphor. Bright cyan `(0, 220, 255)` is high-contrast against grayscale minimap content and unused elsewhere in the GUI color vocabulary. |
 | FOV highlight opaque (alpha=1.0), not translucent | Sub-task 5.5. Pyqtgraph 0.14.0 alpha-rendering bug forces alpha=1.0 — translucency was a nice-to-have, not load-bearing. Panel 3 (windowed preview) shows the FOV contents directly anyway; the highlight's job is "show WHICH region" not "show through to underlying contour." |
-| Implicit refresh chain via `_open_stl_dialog`, not explicit auto-commit in `_load_stl_browser` | Sub-task 6. `_open_stl_dialog` already calls `_refresh_surface_preview` after `_load_stl_browser` returns. Adding an explicit auto-commit would be a redundant 2nd/3rd refresh per load — a real perf cost (272×220 mm parts can be 10s of MB heightmaps × pipeline run) for hypothetical future-caller decoupling we don't have a concrete use case for. The implicit chain is the load-bearing contract, documented in `_load_stl_browser`'s docstring. Future direct callers would invoke `_refresh_surface_preview` themselves. |
+| Implicit refresh chain via `_open_stl_dialog`, not explicit auto-commit in `_load_stl_browser` | Sub-task 6. `_open_stl_dialog` already calls `_refresh_surface_preview` after `_load_stl_browser` returns. Adding an explicit auto-commit would be a redundant 2nd/3rd refresh per load — a real perf cost (large parts can be 10s of MB heightmaps × pipeline run) for hypothetical future-caller decoupling we don't have a concrete use case for. The implicit chain is the load-bearing contract, documented in `_load_stl_browser`'s docstring. Future direct callers would invoke `_refresh_surface_preview` themselves. |
 | Two-method update API for Browser content (`update_whole_stl` + `update_windowed_slice` separate, not unified) | Sub-task 4. Sub-task 5's drag handler calls `update_windowed_slice` on every mouse-move tick; redoing Panel 1's whole-STL mesh on every drag would be wasted GPU work. Separation is the perf path. |
-| Panel 1 distance scales to part bbox; Panel 3 distance fixed at 200 mm | Sub-task 4. Panel 1's content size varies with the part (100×80 → 272×220 mm); a fixed distance would over-zoom small parts or under-zoom large ones. `1.5 × max(W, H)` keeps the part filling ~30% of frame width across the range. Panel 3 always shows a fixed 68×55 mm slice, so fixed distance is fine. |
+| Panel 1 distance scales to part bbox; Panel 3 distance fixed at 200 mm | Sub-task 4. Panel 1's content size varies with the part (100×80 → 500×500 mm); a fixed distance would over-zoom small parts or under-zoom large ones. `1.5 × max(W, H)` keeps the part filling ~30% of frame width across the range. Panel 3 always shows a fixed 68×55 mm slice, so fixed distance is fine. |
 | Minimap initial view padded by full-FOV on each side | Sub-task 5. Half-FOV padding (the original spec) clipped the rectangle at extreme off-part drag positions, surfaced by the C3 capture. Full-FOV padding keeps the rectangle visible across all drag positions including worst-case dragged-fully-off-part. Cosmetic cost: part appears ~30% of minimap width instead of ~60%. The silent-failure mode of "I dragged my rectangle and now I can't see it" loses to the cosmetic-failure mode of "part looks smaller." |
 | FOV rectangle: 2 px cyan outline, no fill | Sub-task 5. Outline-only keeps the part's grayscale content visible inside the rectangle, which is the region the user is about to measure. Adding fill would compete with the part content the user wants to see. |
 
@@ -774,7 +803,7 @@ The shift: **rescale/truncate distort the geometry the simulation claims to meas
 
 - **Drag-vs-commit separation is the core interaction discipline.** Drag updates the cheap previews (Panel 3 windowed slice, Panel 1 surface-following highlight). Commit promotes to the expensive paths (lab view, Pipeline Stages, math pipeline). The Commit FOV button is the latency boundary between exploration and measurement.
 
-- **The math layer never knew Browser mode existed.** Sub-tasks 1.5 through 6 added zero lines to `src/pipeline.py`, `src/geometry.py`, `src/synthetic_fringes.py`, `src/calibration.py`, `src/reconstruction.py`. The math layer continues to receive one 68×55 mm heightmap and produces one 68×55 mm recovered surface. The Browser is a UI for choosing which 68×55 mm patch the math sees, nothing more.
+- **The math layer never knew Browser mode existed.** Sub-tasks 1.5 through 6 added zero lines to `src/pipeline.py`, `src/geometry.py`, `src/synthetic_fringes.py`, `src/calibration.py`, `src/reconstruction.py`. The math layer continues to receive one 68×55 mm heightmap and produces one 68×55 mm recovered surface. The Browser is a UI for choosing which 68×55 mm patch the math sees, nothing more. **Stage 4d follow-up extends this:** edge-extend pre-processing and recovered-output masking both live in the GUI layer (`main_window.py`), not in `pipeline.py`. The math layer still doesn't know Browser mode exists.
 
 - **MainWindow's cache is the surface-state contract.** `_stl_heightmap` (the currently active slice — what the math reads), `_stl_full_heightmap` (the entire rasterized part, Browser mode only), `_stl_fov_origin_mm` (current FOV position in part-local coordinates), `_stl_is_browser_mode` flag. `_extract_fov_slice(origin_xy_mm)` is the shared arithmetic used by both `_on_fov_dragged` (drag refresh) and the highlight-overlay path.
 
@@ -826,7 +855,7 @@ Row 0 corresponds to Y = `y_full_min` (bottom of part in plot frame), consistent
 
 Recording these because they came up repeatedly and the pattern matters more than the specific bugs.
 
-**Diagnostic-prompt-before-decision.** When strategy chat catches itself about to recommend a decision built on guesses about library internals, code-not-yet-read, or environment-specific quirks, the right move is to pause and write a **read-only diagnostic prompt** for Claude Code to investigate first. Evidence drives the next recommendation. The pattern surfaced repeatedly in sub-task 5.5's cyan-vs-maroon investigation — the original recommendation (try per-vertex layout) was strategy-chat guessing at pyqtgraph 0.14.0's color-binding API. Replacing it with "investigate first, then decide" caught two wrong recommendation cycles before they landed in code.
+**Diagnostic-prompt-before-decision.** When strategy chat catches itself about to recommend a decision built on guesses about library internals, code-not-yet-read, or environment-specific quirks, the right move is to pause and write a **read-only diagnostic prompt** for Claude Code to investigate first. Evidence drives the next recommendation. The pattern surfaced repeatedly in sub-task 5.5's cyan-vs-maroon investigation — the original recommendation (try per-vertex layout) was strategy-chat guessing at pyqtgraph 0.14.0's color-binding API. Replacing it with "investigate first, then decide" caught two wrong recommendation cycles before they landed in code. **The Stage 4d follow-up GUI review extended this pattern aggressively:** every fix in that review pass was preceded by a read-only diagnostic prompt, including ones where the strategy-chat prediction turned out to be wrong (the byte-identical θ=15°/30° pipeline finding, see "Stage 4d follow-up commits" below).
 
 **Two failure modes to watch for:**
 
@@ -840,21 +869,97 @@ Recording these because they came up repeatedly and the pattern matters more tha
 2. Sub-task 2.5: prompt omitted `scripts/stage4c_smoke.py` from the in-scope-to-edit list — but the script has a hard-coded `amp_max == 55.0` assertion that the bump would break.
 3. Sub-task 6: prompt said "the lab view doesn't show the FOV at load time" — it actually does, via the implicit refresh chain through `_open_stl_dialog`. Strategy chat's proposed explicit auto-commit would have been a redundant 2nd/3rd refresh.
 
-The pattern: when strategy chat writes "X doesn't appear in module Y" or "Currently the system doesn't do Z," that's a claim about state the strategy chat doesn't have direct access to. Halt-gate summarize-back's grep-level read catches the discrepancy before code lands. The fix is to grep first, claim second.
+The pattern: when strategy chat writes "X doesn't appear in module Y" or "Currently the system doesn't do Z," that's a claim about state the strategy chat doesn't have direct access to. Halt-gate summarize-back's grep-level read catches the discrepancy before code lands. The fix is to grep first, claim second. **The Stage 4d follow-up GUI review made this an explicit pre-greenlight ritual:** every halt-gate summary started with "grep-check the prompt's core assumption" and frequently corrected the prompt (e.g., the Z=55→120 catch in the ABSURDLY_LARGE_MM bump, where the prompt's stated Z value was a stale recollection from before sub-task 2.5).
+
+### Stage 4d follow-up commits — Hands-on visual GUI review
+
+After Stage 4d closed at tag `stage-4d-complete`, the user opened a hands-on visual review session. The workflow was: launch the GUI, exercise real STL files and slider configurations, catch any cosmetic or behavioral issue that didn't surface during programmatic smoke-testing. Five focused commits landed during this review pass, all unpushed at session close.
+
+The review framing locked in early: **PyQt6 fixes that lock in UX targets the web port must match are worth doing in this session; PyQt6 tweaks that fight pyqtgraph-specific quirks are not.** All five commits below fall in the first bucket.
+
+**Stage 4d follow-up commit table:**
+
+| # | Commit | What landed |
+|---|---|---|
+| 1 | `9480b94` | **STL lift convention: visible-envelope minimum, not global mesh minimum.** `tris[:, :, 2].min() → acc[finite].min()` in both `load_stl_heightmap` and `load_stl_heightmap_full_scale`. Variable rename `z_min_mesh → z_min_visible`. Docstrings rewritten in both functions to describe the new convention. Five existing tests' assertions updated to match the new behavior: cube and full-scale box collapse to z=0 (flat-topped boxes have no relief under envelope-min lift); sphere peak ≈ R, not 2R (visible equator at z=0); pyramid and sphere tolerances loosened to cover the discretization offset of the visible base (the captured base edge sits a fraction above the true geometric base). One new regression test won't be added in this commit; the pre-existing tests' updated assertions document the contract. 181 tests in, 181 tests out (assertion changes only). Five stale lift-convention claims in PROJECT_CONTEXT.md and CONVERSATION_SUMMARY.md flagged in commit body for a later docs pass; not edited in this commit. |
+| 2 | `fb19e0c` | **Off-part edge-extend into pipeline, mask recovered output to 0.** Three new helpers in `main_window.py`: `_browser_offpart_window` (rectangle in FOV-slice coords containing the on-part region, derived from `_extract_fov_slice`'s clamped-window arithmetic, value-independent), `_browser_offpart_mask` (boolean mask of off-part cells), `_edge_extend_offpart` (column-then-row edge copy, pure NumPy, ~5 lines). `_refresh_surface_preview` gains gated padding before `run_pipeline` (Browser mode only) and masking-to-zero of the recovered output after. The Pipeline Stages tab's ground-truth panel shows the ORIGINAL slice (off-part = 0) — not the edge-extended pipeline input — to preserve physical truth in the input panel; the phase panels still reflect the padded input the math actually processed. One new GUI test (`test_browser_commit_masks_offpart_preserves_onpart`) using a synthetic X-ramp full heightmap to verify both that fully-on-part is byte-identical to the unmodified pipeline AND that straddling masks off-part to exactly 0.0 while on-part keeps real recovered relief. 181 → 182 tests. |
+| 3 | `e3c14bb` | **SAT body-overlap (OBB intersection) replaces assembly-AABB.** New `_obb_overlap(transform_a, local_corners_a, transform_b, local_corners_b)` in `clip_detection.py`: pure NumPy SAT testing 15 candidate axes (3 local axes per box + 9 pairwise cross products), strict no-epsilon separation (any positive gap clears), cross-axis degeneracy threshold 1e-9. The body-overlap block in `detect_clips` replaced from a single union-AABB-vs-union-AABB test to four pairwise OBB tests (body-vs-body, body-vs-lens, lens-vs-body, lens-vs-lens) with `any()` aggregation. Removed `_world_aabb` and `_aabb_overlap` (zero callsites remain). Module docstring updated: the AABB-trade-off note (lines 49-56) replaced with a SAT description; `Section 13.1` summary updated. One new regression test locking both documented false-positive poses (θ_cam=-13°, θ_proj=-45°, throw=200, WD=180 with 31.6 mm OBB clearance; θ_cam=30°, θ_proj=30°, throw=50, WD=132 with 22.3 mm OBB clearance). All four existing body-overlap tests kept their assertions — verified by SAT verification probe before the edit. 182 → 183 tests. Closes the §13.8 deferred-OBB note. |
+| 4 | `079cde4` | **2 mm advisory tolerance on projector-cone coverage check.** New constant `_CONE_COVERAGE_TOLERANCE_MM = 2.0` placed after `_CONE_HALF_V_PER_L`. `_surface_exceeds_cone` widens per-depth lateral half-extents by the tolerance (`hw = _CONE_HALF_U_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM`; same for `hh`); axial `s >= 0` check is NOT relaxed (axial spill is a different failure mode). Camera prism check stays exact (parallel-sided telecentric prism doesn't soften at its bounds). Function docstring + module docstring updated to describe the new tolerance and its asymmetry with the camera prism check. One new regression test locking the documented 0.40 mm hairline false positive at θ_cam=0°, θ_proj=-41°, throw=149, WD=157 with a flat 15 mm slab (no STL fixture needed; the synthetic surface places the diagnosed corners at the same world points). 183 → 184 tests. The existing throw=50 cone test spills 22 mm — far beyond 2 mm — so it still fires; lockstep verification probe confirmed no existing assertions need updating. |
+| 5 | `48efdc4` | **ABSURDLY_LARGE_MM raised to (500, 500, 120) for 450×450 mm specimens.** XY raised from (272, 220) to (500, 500); Z kept at 120 (Stage 4d sub-task 2.5's empirical raise + the lockstep invariant `WORKING_VOLUME_MM[2] == ABSURDLY_LARGE_MM[2]`). Memory footprint at 0.1 mm/px: 200 MB per heightmap, vs. 48 MB at the old threshold — user accepted the trade-off explicitly. `stl_browser.py`'s `_PLACEHOLDER_TEXT` updated from "272 × 220 mm" to "500 × 500 mm" (hardcoded string, not data-driven). `main_window.py` memory-footprint comment updated from "5.98M pixels / 48 MB" to "25M pixels / ~200 MB". One existing reject test (`test_absurd_xy_rejected`) updated: box size 300×250 → 550×550, message assertions "300.0"→"550.0" and "272"→"500". One comment update on `test_browser_mode_populates_full_cache`. Bug-bait grep for "272"/"220" classified all hits into related-vs-unrelated buckets; only the related four sites edited. Headline catch in halt-gate: the original prompt requested target (500, 500, 55), but Z was already 120 — setting Z=55 would have silently regressed sub-task 2.5 and broken `test_z_cap_matches_absurd_z`. The grep-check before the edit caught it. 184 tests in, 184 tests out (lockstep edits only). |
+
+**Five-commit branch state at session close:** all unpushed on `main`. Suite count progression: 181 → 181 → 182 → 183 → 184 → 184. No tag updates yet — the docs commit covering the stale claims and the parking-lot items (see below) lands as a sixth commit, then the full six-commit stack gets tagged and pushed together.
+
+**Key design decisions locked during Stage 4d follow-up:**
+
+| Decision | Rationale |
+|---|---|
+| Lift convention = visible-envelope minimum (Section 7.6) | Three visible symptoms in the GUI review all traced to the same root: the global-mesh-minimum lift convention from Stage 4c sub-task 2 placed the visible part above the stage. Real FPP can't measure the bottom shell of a closed solid, so the visible base — not the discarded bottom — should define z=0. The fix resolved floating-part appearance, 15 mm FOV-bbox-boundary step, and angle-sensitive recovered shape (the downstream consequence of phase unwrap encountering the 15 mm discontinuity at the part edge). |
+| Off-part padding = edge-extend, output masking = back to 0 (Section 7.7) | The user objected (correctly) that edge-extending off-part cells creates "phantom" geometry that lies about the physical reality of bare stage beyond the part. The compromise: edge-extend ONLY inside the math pipeline (where the discontinuity-free input keeps the unwrap and self-cal clean), then mask back to 0 in the recovered output before display (so the user sees physical truth: off-part = flat stage at z=0). One commit, not two — the masking lives in the same code block as the padding because they're inseparable parts of one contract. |
+| SAT body-overlap (full Option 1), not cylinder approximation (Option 2) | A comparative diagnostic probe tested three options against the false-positive pose plus three control poses. Option 3 (per-component AABB) didn't resolve the false positive — the 200 mm camera lens's own world-AABB still dominated. Options 1 (SAT) and 2 (cylinder) both resolved the tested poses, but Option 2 retains an axis-aligned body-body test that would itself become a false-positive vector at high-tilt close-distance body-body pairs. Option 1 (full SAT) closes the body-body weak spot too. Two extra strict-no-epsilon design notes: touching counts as collision (correct boundary for an advisory check); adding positive tolerance would re-inflate exactly what the upgrade removes. |
+| Cone-coverage tolerance = 2 mm (Section 7.8) | The user reported a single-pose hairline cone trigger (0.40 mm spill at FOV-patch corners). Diagnostic confirmed structurally exact angular test, not an inflation bug; the trigger was honest geometric reporting that real projector edge falloff would cover. 2 mm tolerance silences sub-mm hairlines AND minor (1-2 mm) edge-case spills without hiding real coverage failures (which are typically 5+ mm). Camera-prism check stays exact for a different physical reason (parallel-sided telecentric prism doesn't soften). |
+| ABSURDLY_LARGE_MM Z stays at 120 (not 55 as user-prompt requested) | The lockstep invariant `WORKING_VOLUME_MM[2] == ABSURDLY_LARGE_MM[2]` was locked by `test_z_cap_matches_absurd_z` in Stage 4d sub-task 2.5. Halt-gate caught the stale Z value in the user's prompt and corrected it before the edit. Memory footprint at 200 MB per heightmap acknowledged explicitly; user accepted the trade-off. |
+
+**Architectural decisions worth carrying forward from Stage 4d follow-up:**
+
+- **Lift convention is the visible-envelope minimum (Section 7.6 doctrine).** The Stage 4c global-mesh-minimum convention is gone. Any future surface-rasterization code that joins the surface library must follow the visible-envelope convention or document why it diverges.
+
+- **Off-part contract in Browser mode: padded internally, masked externally (Section 7.7 doctrine).** Any future GUI code that feeds the math pipeline a Browser-mode slice must use the same edge-extend-then-mask pattern. The math layer remains agnostic; the contract is enforced by the GUI layer (`_refresh_surface_preview`).
+
+- **Clip-detection tolerance philosophy (Section 7.8 doctrine).** Future coverage / collision checks follow the same asymmetry: physical-boundary-soft checks get an advisory tolerance (cone); physical-boundary-hard checks stay exact (prism, body-overlap). Strict no-epsilon for collision checks; positive advisory tolerance for soft-boundary advisories where real-world physics covers the math's idealization.
+
+- **Diagnostic-before-decision discipline matured into the default workflow.** Every Stage 4d follow-up commit was preceded by at least one read-only diagnostic probe. Multiple probes were required for the lift fix (lift-formula, off-part fill, cyan-slab attribution), the recovery angle-sensitivity investigation (initial threshold probe, asymmetric sweep, fine threshold sweep — the asymmetric sweep overturned the prediction that recovered output would be byte-identical across angles, surfacing the >50° unwrap-branch divergence as a real-but-physically-correct phenomenon), and the body-overlap fix (initial AABB-vs-OBB probe quantifying the 31.6 mm false positive, then the three-option comparative probe that ruled out per-component AABB and made the case for full SAT over cylinder). **The discipline saved at least two fix attempts that would have shipped wrong**: the off-part angle-sensitivity that turned out to be the input-discontinuity bug not a recovery bug; the SAT-vs-cylinder decision that would have left the body-body weak spot if Option 2 had been picked from intuition.
+
+- **Halt-gate grep-check-the-prompt is a hard ritual.** Three times during the follow-up the halt-gate summary corrected prompt assumptions: the lift Z value (already 120, prompt said 55), the bug-bait around "272"/"220" classification, the at-risk same-side-stack test for SAT (verified True under SAT before the commit instead of trusting strategy-chat's prediction). The grep-first discipline catches things that even careful strategy-chat reasoning misses.
+
+- **Test-suite progression as a sanity check.** 181 → 184 across the five commits. Each commit's halt-gate predicted the expected pass count and any lockstep assertion changes; each commit hit the prediction exactly. The discipline of "verify the suite-count prediction in halt-gate" caught at least one wrong assertion early (the over-tight pyramid/sphere tolerances in commit 1's first pytest run, which the halt-gate had assumed would pass but the discretization-offset measurement showed needed loosening before re-running).
+
+### Stage 4d follow-up parking lot — design inputs for next session
+
+The next strategy chat (Stage 5 prep / lab-view refactor) needs to absorb these accumulated design inputs:
+
+1. **Lab view refactor: ground truth by default, recovered as opt-in overlay.** Lab view (in the 3D Scene tab) defaults to showing the **ground-truth FOV slice** alongside the hardware bodies. A toggle checkbox enables an additional **recovered-surface overlay** (translucent or wireframe, depending on pyqtgraph alpha-bug resolution) drawn from the same origin in a contrasting color so the user can see real-time geometric divergence as angle / distance sliders change. Both can be off, either can be on, or both visible simultaneously. NO xyz coordinate grid in lab view — that's the 4th tab's job (see #2). Rationale: the recovered surface is a math output that legitimately changes when angles/parameters change; defaulting to ground truth keeps lab view honest about "what the camera sees," and the toggle lets the user opt into "what the math produces from what it sees" for live exploration. This also separates "live exploration while adjusting setup" (lab view) from "quantitative analysis of one captured measurement" (4th tab).
+
+2. **New 4th tab: "Recovered Surface" (or similar) — the quantitative comparison view.** A dedicated tab next to STL Browser containing:
+   - Rotatable 3D view of the recovered heightmap (matching SurfacePreview's interaction model)
+   - **Translucent (or wireframe, depending on pyqtgraph alpha-bug resolution) ground-truth overlay drawn from the same origin in a contrasting color**, both visible by default (this is the dedicated comparison view). Overlay is constrained to the FOV-slice region, NOT the whole STL — the overlay's job is "show me what the system *should* have measured for the region it actually measured."
+   - **X/Y/Z coordinate grid with labeled scales in mm** — measurement-grade visualization rather than just shape rendering. THIS GRID IS UNIQUE TO THIS TAB, NOT IN LAB VIEW.
+   - Existing error stats panel (mean/std/max-abs/RMS) migrates here from the left pane.
+   - Existing error-colormap overlay toggle migrates here.
+   - Contract: input is a `(H, W) float64 mm` heightmap from any source — synthetic pipeline OR real hardware capture. The view doesn't care about the source. This future-proofs the tab for hardware integration in Stage 5/6.
+   - Known landmine: pyqtgraph 0.14.0 alpha-rendering bug (Stage 4d sub-task 5.5) may force the ground-truth overlay to be wireframe rather than translucent solid. Wireframe is arguably better for comparison anyway (clear truth-cage on top of recovered surface). Same constraint applies to the lab view overlay in #1.
+   - **The lab view (#1) and this tab share the same overlay-rendering code path**, with the only differences being: (a) default visibility (lab view = ground truth only by default with recovered opt-in; this tab = both by default); (b) the xyz grid (lab view absent; this tab present); (c) error stats and error overlay (lab view absent; this tab present).
+
+3. **Pipeline Stages 6th slot stays empty.** Slot 5 (recovered height, 2D top-down heatmap) already covers the recovered-output-as-2D representation; adding a second view of the same data in slot 6 would be redundant. Empty for now as a future placeholder for whatever turns out to be useful.
+
+4. **Hardware coordinate readout.** Display the camera and projector physical positions in world coordinates relative to the surface origin (z=0 = stage). Reference points:
+   - **Camera position** = center of the lens front face (the bottom circle of the front lens element — the optical entry pupil reference for the imaging side). For a telecentric lens, this is the practical mounting reference.
+   - **Projector position** = center of the projector lens exit pupil / front face. For the Pico Genie, this accounts for the documented `PROJECTOR_LENS_X_OFFSET_MM = -6.5` body-frame offset.
+   - Output: (x, y, z) triple per arm in mm in the surface-anchored world frame.
+   - Could ship as a "Show coordinates" panel in the GUI info section, a CLI script in `scripts/` taking slider values and printing positions, or both.
+
+5. **STL Browser panel swap.** Currently bottom-left = windowed slice 3D preview (Panel 3); big right panel = whole-STL 3D preview with cyan highlight (Panel 1); bottom-left of the layout = minimap (Panel 2). **Proposal:** swap Panels 1 and 3 — windowed slice (what the camera will actually see) takes the big right real estate; whole-STL context becomes the smaller bottom-left view. Minimap stays exactly where it is. Rationale: the windowed slice is the primary thing the user cares about (it's the measurement target); whole-STL context is reference geometry, less central to the interaction.
+
+6. **Web port as final design surface.** Once the GUI refactor above lands cleanly in PyQt6, port the whole thing to HTML for larger screens, shareability without a Python installation, and more visual real estate. The PyQt6 implementation is the **reference implementation** — every UX target validated in PyQt6 becomes a requirement for the web port.
+
+7. **Smaller items also on the parking lot:**
+   - **Extreme-angle warning banner** (advisory like the degenerate-λ_eq one, fires when `peak_height / λ_eq` exceeds a safe threshold — say 2π for borderline, π for full safety margin). Closes the UX gap from the recovery angle-sensitivity diagnostic: at >50° projector angles on tall parts, the unwrap fails and the recovered output diverges by 30+ mm. The math is correct; the user just needs to know when they've crossed into "math expects to fail" territory.
+   - **Load-time progress indicator** for large STLs. At 500×500 mm 0.1 mm/px = ~200 MB heightmap, rasterization can take 5-20 s and the GUI appears frozen during load. A loading indicator (modal dialog or progress bar) is the obvious palliative.
+   - **STEP file support.** The user has STEP-format CAD files; currently must convert to STL externally before loading. Adding a STEP loader requires a new peer module `step_loader.py` (probably backed by `cadquery` or `pythonocc-core`) producing the same `(shape, pixel_size_mm) → (H, W) float64 mm` contract. Real work; deserves its own planning conversation.
+   - **Body-overlap design history.** The §13.8 OBB upgrade was deferred from Stage 4b "unless real false positives surface." Real false positives surfaced (22.3 mm and 31.6 mm at ordinary and extreme poses, respectively). The SAT upgrade closes the deferral. Worth recording the AABB → SAT trade-off rationale in this section so it doesn't get re-derived if ever revisited.
+   - **Console mojibake dash** in `MSG_SURFACE_OUTSIDE_CONE` (the em-dash gets cp1252-mangled in stdout but renders fine in the Qt banner). Cosmetic; console-only.
 
 ### Deferred from Stage 4 (still deferred)
 
 - **MockCamera, MockProjector, Camera/Projector protocols** → Stage 5/6.
 - **Taylor/exact model toggle in GUI** → adds two lines later; not v1.
 - **Resolution toggle (480×640 vs 1280×1024)** → adds a "Compute at full res" button later. Note: math grid is now (550, 680) post-Stage-4d-sub-task-1.5.
-- **Three.js embed for lab view** → explicitly rejected; lab view is native PyQt6 (now part of unified scene).
+- **Three.js embed for lab view** → explicitly rejected; lab view is native PyQt6 (now part of unified scene). Note: the web port (Stage 4d follow-up parking lot #6) is the appropriate venue for browser-based 3D rendering, not an embed within PyQt6.
 - **Object position offset** → locked at center.
 - **`equivalent_wavelength()` → `height_per_radian()` rename** → cosmetic; documented in code instead.
 - **Unit reconciliation between info panel mm-values and math-layer pixel-values** → Stage 5/6 when real hardware arrives.
 - **Click-and-drag scene manipulation (rotate/translate hardware bodies + surface via mouse, sync back to sliders)** → still deferred. The FOV-rectangle drag in Stage 4d's Browser was a concrete instance of mouse-event handling, but it's specialized to a 2D ImageItem + RectROI in a `pg.PlotItem`, not the 3D scene manipulation problem. No shared abstraction was extracted; YAGNI until a second concrete use case appears.
 - **Multi-FOV stitching / batch capture** → not in any planned stage yet. Would let the user queue several FOV positions and process them in sequence, producing a stitched result. Out of scope for the simulation; possibly relevant when real hardware lands with motorized stages.
 - **Persistence (save/load FOV positions, save committed slices, export results)** → not in any planned stage yet. The simulation is currently stateless across runs.
-- **Performance work for absurd-limit (272×220 mm) parts** → flagged as a known issue; rasterization on load can be 5–15 seconds for ~50k-triangle parts. A loading indicator is the obvious palliative; full perf work depends on real use patterns.
 - **Robust STL ingestion (degenerate triangles, non-manifold meshes, very large files)** → handled to a basic standard (empty mesh raises `ValueError`, XY-degenerate returns zeros). Hardening against pathological inputs is deferred.
 
 ### When real hardware arrives (Stage 6 prep)
@@ -865,7 +970,9 @@ The pattern: when strategy chat writes "X doesn't appear in module Y" or "Curren
 - `test_project_is_lambda_eq_independent` must still pass after the update — `HybridGeometry` and `SymmetricGeometry` defaults must change in lockstep.
 - Scene primitives in `src/scene.py` (Stage 4b) update to reflect real lab layout. Projector lens dimensions (~20mm dia × 5mm protrusion) refined from lab measurement.
 - **Re-derive the STL Z cap from hardware** — the 120 mm value is a placeholder backed by bench observation + safety margin. Real value depends on projector focus depth, phase unambiguity range, and triangulation lateral-spill, none of which map to a clean single number until measured against real hardware. `WORKING_VOLUME_MM[2]` and `ABSURDLY_LARGE_MM[2]` must update in lockstep (locked by `test_z_cap_matches_absurd_z`).
-- **Whole-part-with-FOV-cone visualization in the lab view** becomes viable. Currently the lab view shows only the committed FOV slice because hardware-mounting geometry isn't finalized — the relative scale of part vs apparatus depends on real mounting. Once real mounting is in, the lab view can show the whole part on the stage with the camera/projector cones highlighting the active FOV region, and the Browser's role narrows to FOV-selection-on-minimap (Panel 1's whole-STL view may then be redundant). Significant lab view refactor; planned as a Stage 5/6 sub-task.
+- **Re-derive the XY ABSURDLY_LARGE_MM ceiling from real specimens.** The (500, 500) value is a placeholder backed by user-needed specimen size + memory-cost trade-off. Real ceiling depends on the largest specimen geometry the lab actually measures.
+- **The new "Recovered Surface" tab's heightmap-from-any-source contract becomes the integration point.** Real hardware capture feeds the same recovery view that synthetic simulation feeds. The translucent ground-truth overlay (when truth is the CAD model) becomes especially valuable here — quantify spatially where the system disagrees with truth on a real measurement.
+- **Whole-part-with-FOV-cone visualization in the lab view** becomes viable once the lab view refactor (parking-lot #1) lands. Currently the lab view shows only the committed FOV slice because hardware-mounting geometry isn't finalized — the relative scale of part vs apparatus depends on real mounting. Once real mounting is in AND the refactor makes ground truth the lab view default (with opt-in recovered overlay), the lab view can show the whole part on the stage with the camera/projector cones highlighting the active FOV region. Significant lab view refactor; planned as a Stage 5/6 sub-task.
 
 ### Future-stage hooks deferred during Stages 2–4
 
@@ -876,7 +983,7 @@ The pattern: when strategy chat writes "X doesn't appear in module Y" or "Curren
 
 ---
 
-## 13. Clip-detection geometry reference (NEW in Stage 4b)
+## 13. Clip-detection geometry reference (NEW in Stage 4b, refined in Stage 4d follow-up)
 
 This section documents the precise 3D math used in `src/gui/clip_detection.py`. Self-contained: a fresh chat / future maintainer can reconstruct the geometric reasoning from here alone.
 
@@ -887,11 +994,11 @@ This section documents the precise 3D math used in `src/gui/clip_detection.py`. 
 **Collision checks** (gray-override on offending hardware + warning banner):
 1. `camera_clipping_surface` — camera lens-front disc dips below z=0 plane
 2. `projector_clipping_surface` — projector lens-front disc dips below z=0 plane
-3. `bodies_overlapping` — camera assembly AABB overlaps projector assembly AABB (in world frame)
+3. `bodies_overlapping` — camera assembly oriented bounding box overlaps projector assembly OBB (4 pairwise tests via SAT)
 
 **Coverage advisories** (banner only, no gray):
-4. `surface_outside_camera_fov` — any 3D surface sample is outside the camera viewing prism volume
-5. `surface_outside_projector_cone` — any 3D surface sample is outside the projector cone volume
+4. `surface_outside_camera_fov` — any 3D surface sample is outside the camera viewing prism volume (exact test, no tolerance)
+5. `surface_outside_projector_cone` — any 3D surface sample is outside the projector cone volume (2 mm advisory tolerance)
 
 ### 13.2 World-frame axis extraction
 
@@ -941,6 +1048,8 @@ The along-axis coordinate is **deliberately ignored** — that's the defining pr
 
 This works for ALL camera tilts. The prism axes rotate with the camera arm; the |u|, |v| checks remain against the same fixed half-extents.
 
+**No tolerance on this check** — a parallel-sided telecentric prism doesn't have gradual edge falloff. The camera either sees a point or it doesn't.
+
 ### 13.4 Projection cone (projector) — 3D point-in-volume
 
 The Pico Genie is **non-telecentric**: the cone diverges linearly from the lens. At axial distance `s` from the apex, the cone's cross-section half-extents are:
@@ -952,7 +1061,16 @@ hh(s) = hw(s) * 9 / 16
 
 These derive from the 1.2:1 throw ratio (width = throw / 1.2) and 16:9 aspect.
 
-Test: is a world-frame 3D point `P` inside the cone?
+**Stage 4d follow-up: 2 mm advisory tolerance applied.** The cone math models an idealized projection volume with a sharp boundary; real projectors have gradual edge falloff at the cone's geometric bounds. The tolerance widens the per-depth lateral half-extents:
+
+```
+hw(s) = (s / 2.4) + _CONE_COVERAGE_TOLERANCE_MM  # 2.0 mm
+hh(s) = (s / 2.4) * 9/16 + _CONE_COVERAGE_TOLERANCE_MM
+```
+
+The axial `s >= 0` check is NOT relaxed — points behind the apex are a different failure mode, not a near-edge spill.
+
+Test: is a world-frame 3D point `P` inside the cone (post-tolerance)?
 
 ```python
 apex = (projection_cone_world @ [0, 0, 0, 1])[:3]
@@ -966,7 +1084,9 @@ lat = rel - s * axis        # lateral component (perpendicular to axis)
 lu  = lat @ u
 lv  = lat @ v
 
-inside = (s >= 0) and (abs(lu) <= s/2.4) and (abs(lv) <= (s/2.4) * 9/16)
+hw = _CONE_HALF_U_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
+hh = _CONE_HALF_V_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
+inside = (s >= 0) and (abs(lu) <= hw) and (abs(lv) <= hh)
 ```
 
 **Why `s >= 0` only, no upper bound:** `throw` is the projector's nominal DLP **focus distance**, not a hard light cutoff. The beam keeps diverging past it. The outer regions of a flat surface sit a few mm beyond the tilted nominal-focus plane (`s` slightly > throw) yet are physically still illuminated. Bounding at `s ≤ throw` would false-flag those regions. The angular criterion alone is the correct coverage test. This was a real geometry correction discovered during Stage 4b sub-task 4 (3/3); the original plan had `s ≤ throw` and the clean-baseline test failed until the bound was dropped.
@@ -994,21 +1114,35 @@ The heightmap is sampled on 11×11 = 121 points spanning the modelled surface re
 
 Cost: 121 samples × 2 vectorized tests per pose update ≈ 250µs total. Negligible at every slider tick.
 
-### 13.7 Hairline-trigger behavior (documented as feature)
+### 13.7 Hairline-trigger behavior (refined in Stage 4d follow-up)
 
-At extreme synthetic surface heights (e.g., Gaussian amp=100 mm with camera tilted -20° at WD=157, where the 100mm peak's tip sits 0.25 mm outside the FOV `u_proj = +34.248 mm > 34.0 mm`), the advisory will fire on a single sample at the boundary.
+At extreme synthetic surface heights (e.g., Gaussian amp=100 mm with camera tilted -20° at WD=157, where the 100mm peak's tip sits 0.25 mm outside the FOV `u_proj = +34.248 mm > 34.0 mm`), the camera-prism advisory will fire on a single sample at the boundary.
 
-This is honest geometric reporting, not a bug or tunable parameter. Real fringe projection measures sub-mm features (solder bumps ~40µm); the 100mm amplitude slider was set in Stage 4a for math-layer exploration before hardware bodies were in the scene. The hairline triggers happen only at slider extremes that don't exist in real operation.
+This is honest geometric reporting for the camera prism, which stays exact (no tolerance). For the projector cone, sub-mm hairline triggers no longer fire — the 2 mm advisory tolerance (Section 13.4) silences them. The cone math has a sharp idealized boundary; real projectors have gradual edge falloff that covers the sub-2-mm range.
 
-Alternatives considered and rejected:
-- **Tolerance margin** (e.g., flag only if exceeding by > 1mm): hides real coverage failures; magic threshold.
-- **Sample-count threshold** (e.g., flag only if > K of 121 samples outside): depends on grid resolution; magic threshold.
+Alternatives considered and rejected for both checks:
+- **Sample-count threshold** (e.g., flag only if > K of 121 samples outside): depends on grid resolution; magic threshold; same flaw on both checks.
+- **Universal tolerance margin on the camera prism** (similar to the cone): rejected because the prism is parallel-sided with sharp physical boundaries; there's no real-world softening to model.
 
-### 13.8 Body-overlap AABB approximation
+### 13.8 Body-overlap: SAT oriented-box intersection (Stage 4d follow-up)
 
-Check 3 (`bodies_overlapping`) uses world-frame AABB (axis-aligned bounding box) intersection between the camera assembly (body + lens AABB union) and projector assembly. Rotated bodies have inflated AABBs vs. their true oriented bounding boxes — this makes the check **slightly over-sensitive on rotation** (it may flag near-collisions as collisions). Acceptable for advisory feedback. Documented in the function docstring.
+Check 3 (`bodies_overlapping`) uses **exact OBB intersection via the Separating Axis Theorem**. Each arm assembly is two oriented boxes (body + lens), giving four pairwise OBB tests: body-vs-body, body-vs-lens (×2), lens-vs-lens. The check returns True if any pair intersects.
 
-A future OBB (oriented bounding box) implementation would be more accurate but more complex; deferred unless real false positives surface.
+SAT tests 15 candidate axes per pair: 3 face normals per box (6 total) + 9 cross products of pairs of face normals. Two boxes are separated iff any axis projection has positive gap; otherwise they intersect.
+
+```python
+def _obb_overlap(transform_a, local_corners_a, transform_b, local_corners_b):
+    # Extract box center, half-extents, and local axes from transform + corners
+    # Build 15 candidate axes (3 + 3 + 9 cross products, skip degenerate < 1e-9)
+    # For each axis: project both boxes; if abs(t·axis) > sum_radii, return False
+    # Otherwise return True (no axis separates them).
+```
+
+**Strict separation, no epsilon:** any positive gap clears; gap-zero (touching) counts as collision. Adding positive tolerance would re-inflate exactly the false-positive surface the SAT upgrade was designed to remove.
+
+**Cross-axis degeneracy threshold 1e-9:** cross products of nearly-parallel axes produce near-zero vectors; skipping them is correct SAT behavior because the parallel-axes case is already covered by the box-local axis tests.
+
+**Why SAT and not AABB:** the earlier AABB approximation (world-frame axis-aligned bounding boxes of rotated bodies, replaced in commit `e3c14bb`) inflated rotated body footprints into large diagonal volumes and false-positive'd up to 31.6 mm of true clearance at ordinary and extreme poses. SAT is exact for boxes, so a long camera lens tilted in world frame no longer over-reports.
 
 ---
 
@@ -1022,9 +1156,13 @@ A future OBB (oriented bounding box) implementation would be more accurate but m
 
 **pyqtgraph 0.14.0 `GLSurfacePlotItem.setData(colors=...)` docstring is wrong** — claims `(width, height, 4)`, actually needs flat `(N_vertices, 4)`. Workaround documented in `surface_preview.py`.
 
-**pyqtgraph 0.14.0 `GLSurfacePlotItem` alpha-rendering bug (Stage 4d sub-task 5.5)** — `alpha < 1.0` on a `GLSurfacePlotItem` produces inverted-complement colors in the rendered output, regardless of shader (`shaded`, `None`, or any other), regardless of color-input path (per-vertex `colors=` or uniform `setColor()`), regardless of sibling-item presence, regardless of `glOptions`. Empirical formula: `output_X ≈ 127 - 44 · input_X` for `alpha=0.5`. Six diagnostic experiments ran during sub-task 5.5 (single-item, white-on-white, pure-RGB inputs, shader=None, alpha=1.0) before isolating alpha as the trigger. Root cause undiagnosed analytically — would require Qt OpenGL driver source-level inspection. **Workaround: use `alpha=1.0` (opaque)** anywhere `GLSurfacePlotItem` color matters. Full diagnostic chain captured in the comment above `_FOV_HIGHLIGHT_COLOR_RGBA` in `stl_browser.py`.
+**pyqtgraph 0.14.0 `GLSurfacePlotItem` alpha-rendering bug (Stage 4d sub-task 5.5)** — `alpha < 1.0` on a `GLSurfacePlotItem` produces inverted-complement colors in the rendered output, regardless of shader (`shaded`, `None`, or any other), regardless of color-input path (per-vertex `colors=` or uniform `setColor()`), regardless of sibling-item presence, regardless of `glOptions`. Empirical formula: `output_X ≈ 127 - 44 · input_X` for `alpha=0.5`. Six diagnostic experiments ran during sub-task 5.5 (single-item, white-on-white, pure-RGB inputs, shader=None, alpha=1.0) before isolating alpha as the trigger. Root cause undiagnosed analytically — would require Qt OpenGL driver source-level inspection. **Workaround: use `alpha=1.0` (opaque)** anywhere `GLSurfacePlotItem` color matters. Full diagnostic chain captured in the comment above `_FOV_HIGHLIGHT_COLOR_RGBA` in `stl_browser.py`. **Note for Stage 4d follow-up parking-lot item #2:** the proposed translucent ground-truth overlay on the new Recovered Surface tab will hit this bug if attempted with `alpha < 1.0`. The fallback is wireframe-mesh overlay (which arguably reads better as a reference cage anyway).
 
 **pyqtgraph 0.14.0 sibling `GLSurfacePlotItem` GL state hazard (Stage 4d sub-task 5.5)** — two `GLSurfacePlotItem`s in the same `GLViewWidget` using different `a_color` GL paths (one with constant-attribute `glVertexAttrib4f`, the other with buffer-backed `glVertexAttribPointer`) introduces unreliable GL state transitions. Discovered as a candidate hypothesis during the maroon-vs-cyan investigation (eventually superseded by the alpha-rendering finding above — but the hazard is real even after the alpha workaround). `SurfacePreview` works because it has one `GLSurfacePlotItem` per view. Browser Panel 1 has two, and both must now use the constant-attribute path via `setColor()` at construction. Documented in `stl_browser.py`'s `update_panel1_highlight` docstring.
+
+**Console mojibake dash in clip-detection messages (Stage 4d follow-up)** — `MSG_SURFACE_OUTSIDE_CONE` uses a Unicode em-dash that gets cp1252-mangled when the message is printed to stdout (e.g., during probe scripts or `print(state.messages)` debugging). The Qt banner renders the message correctly; only the console is affected. Cosmetic; non-blocking. Possible future fix: replace the em-dash with an ASCII hyphen in the constant string.
+
+**Load-time freeze for large STLs (Stage 4d follow-up)** — at the (500, 500, 120) absurd limit, rasterization can take 5-20 seconds for ~50k-triangle parts producing ~200 MB heightmaps. The GUI appears frozen during the load; no progress indicator currently exists. Flagged as a parking-lot item; not blocking.
 
 ---
 
