@@ -684,10 +684,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.error_colorbar)
         layout.addWidget(self._build_error_stats_group())
 
-        # Visibility toggles: bool signal -> bool setter, no pipeline rerun.
+        # Recovered visibility toggle ALSO gates "Color by error" (sub-task
+        # 4d.8) — error coloring only makes sense when the recovered surface
+        # is shown — so it routes through a slot, not a direct setter connect.
         self.show_recovered_checkbox.toggled.connect(
-            self.recovered_comparison_view.set_recovered_visible
+            self._on_show_recovered_toggled
         )
+        # Ground-truth visibility: bool signal -> bool setter, no rerun.
         self.show_ground_truth_checkbox.toggled.connect(
             self.recovered_comparison_view.set_ground_truth_visible
         )
@@ -695,8 +698,35 @@ class MainWindow(QMainWindow):
         self.color_by_error_checkbox.toggled.connect(
             self._refresh_surface_preview
         )
+        # Initial gate state (explicit — not relying on the QCheckBox default):
+        # color-by-error is enabled iff the recovered surface is shown.
+        self.color_by_error_checkbox.setEnabled(
+            self.show_recovered_checkbox.isChecked()
+        )
 
         return container
+
+    def _on_show_recovered_toggled(self, checked: bool) -> None:
+        """Toggle the recovered surface AND gate "Color by error" (sub-task
+        4d.8). Error coloring is only meaningful when the recovered surface is
+        shown, so:
+
+        - recovered ON  -> enable "Color by error" (left OFF; user re-clicks).
+        - recovered OFF -> if "Color by error" is on, turn it off (its handler
+          fires one refresh that re-renders solid recovered, restores the GT,
+          and hides the colorbar), then disable it.
+
+        No blockSignals needed: the only programmatic fire here is
+        `color_by_error_checkbox.setChecked(False)`, which routes to color-by-
+        error's own handler — it never re-enters this slot.
+        """
+        self.recovered_comparison_view.set_recovered_visible(checked)
+        if checked:
+            self.color_by_error_checkbox.setEnabled(True)
+        else:
+            if self.color_by_error_checkbox.isChecked():
+                self.color_by_error_checkbox.setChecked(False)
+            self.color_by_error_checkbox.setEnabled(False)
 
     def _build_warning_banner(self) -> QLabel:
         """Degenerate-geometry warning banner. Hidden until needed.

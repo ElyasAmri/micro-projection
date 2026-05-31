@@ -1257,3 +1257,55 @@ def test_browser_panel_swap_positions(main_window):
     win_parent = browser._windowed_view.parent()
     assert win_parent.orientation() == Qt.Orientation.Vertical
     assert win_parent.indexOf(browser._windowed_view) == 1
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 sub-task 4d.8 — gate "Color by error" on "Recovered surface".
+# ---------------------------------------------------------------------------
+def test_color_by_error_enabled_initially_with_recovered_checked(main_window):
+    """Initial state: recovered shown (default) -> color-by-error enabled."""
+    assert main_window.show_recovered_checkbox.isChecked() is True
+    assert main_window.color_by_error_checkbox.isEnabled() is True
+
+
+def test_color_by_error_disabled_when_recovered_unchecked(main_window):
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    assert main_window.color_by_error_checkbox.isEnabled() is True
+
+    main_window.show_recovered_checkbox.setChecked(False)
+    assert main_window.color_by_error_checkbox.isEnabled() is False
+
+
+def test_unticking_recovered_turns_off_color_by_error_and_re_renders(main_window):
+    """Untick recovered while Color-by-error is ON: it turns OFF, and the
+    cascade re-renders to solid recovered (GT restored, colorbar hidden)."""
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    view = main_window.recovered_comparison_view
+
+    main_window.color_by_error_checkbox.setChecked(True)
+    assert view._ground_truth_item.visible() is False        # GT suppressed
+    assert main_window.error_colorbar.isHidden() is False     # colorbar shown
+
+    main_window.show_recovered_checkbox.setChecked(False)
+
+    # Color-by-error forced off + disabled.
+    assert main_window.color_by_error_checkbox.isChecked() is False
+    assert main_window.color_by_error_checkbox.isEnabled() is False
+    # Cascade re-render: GT restored (its checkbox still on), colorbar hidden.
+    assert view._ground_truth_item.visible() is True
+    assert main_window.error_colorbar.isHidden() is True
+    # The recovered surface itself is hidden (it was unticked).
+    assert view._recovered_item.visible() is False
+
+
+def test_reticking_recovered_reenables_color_by_error_but_leaves_it_off(main_window):
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    main_window.color_by_error_checkbox.setChecked(True)
+    main_window.show_recovered_checkbox.setChecked(False)  # off + disabled
+    assert main_window.color_by_error_checkbox.isChecked() is False
+
+    main_window.show_recovered_checkbox.setChecked(True)   # re-tick
+
+    assert main_window.color_by_error_checkbox.isEnabled() is True
+    assert main_window.color_by_error_checkbox.isChecked() is False  # stays OFF
+    assert main_window.recovered_comparison_view._recovered_item.visible() is True
