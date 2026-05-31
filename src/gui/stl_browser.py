@@ -77,18 +77,29 @@ _FOV_RECT_WIDTH_PX = 2
 # continuity — "the same region" across the minimap rectangle and
 # Panel 1's surface-following overlay.
 #
-# pyqtgraph 0.14.0 (in this Qt OpenGL environment) has a
-# rendering bug where alpha < 1.0 on GLSurfacePlotItem
-# produces inverted-complement colors regardless of shader.
+# pyqtgraph 0.14.0 (in this Qt OpenGL environment) was observed
+# (Stage 4d sub-task 5.5) to render alpha < 1.0 on GLSurfacePlotItem
+# as inverted-complement colors regardless of shader.
 # Empirical: output_X ≈ 127 - 44 × input_X for alpha=0.5.
 # Bug ruled out at the shader, the per-vertex-vs-constant
 # color path, sibling-item state, glOptions/blending, and
 # the color-input layer (full diagnostic chain in Stage 4d
 # sub-task 5.5 captures, ~/AppData/Local/Temp/stage4d_st55_*).
-# Workaround: use opaque cyan (alpha=1.0). Translucency was
-# a nice-to-have, not load-bearing — Panel 3 shows the
-# FOV contents directly, and the highlight's job is "show
-# WHICH region" not "show through to underlying contour."
+#
+# UPDATE (Stage 5 sub-task 1 / "4d.1" translucent-primitive probe):
+# the inversion did NOT reproduce on pyqtgraph 0.14.0 / Qt 6.11.0
+# when the item is given setGLOptions("translucent"). The 5.5 attempt
+# almost certainly omitted that call, which makes pyqtgraph silently
+# ignore the alpha and render opaque — and the color workarounds layered
+# on top read as "inversion". Translucent GLSurfacePlotItem is therefore
+# confirmed WORKING and is load-bearing for the Stage 5 comparison view
+# (src/gui/comparison_view.py). See PROJECT_CONTEXT §14.
+#
+# This highlight still uses opaque cyan (alpha=1.0) ON PURPOSE — it never
+# set glOptions("translucent"), and its job is "show WHICH region", not
+# "show through to the underlying contour" (Panel 3 shows FOV contents
+# directly). So the local opaque choice stays correct; only the global
+# "alpha is unusable" conclusion is retired.
 _FOV_HIGHLIGHT_COLOR_RGBA = (0.0, 220.0 / 255.0, 1.0, 1.0)
 # Z-offset to lift the highlight above the part surface and avoid
 # z-fighting. 0.05 mm is ~28000x the depth-buffer precision floor

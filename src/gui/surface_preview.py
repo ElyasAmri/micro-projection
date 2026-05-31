@@ -53,6 +53,7 @@ from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QWidget
 
 from src.gui.hardware_scene import HardwareScene
+from src.gui.surface_render import apply_heightmap
 
 
 # Locked at the launch-default Stage 4a grid. Revisit when the info
@@ -189,10 +190,6 @@ class SurfacePreview(gl.GLViewWidget):
         self.setBackgroundColor((30, 30, 30))
 
         self._pixel_size_mm = DEFAULT_PIXEL_SIZE_MM
-        # Cached coordinate arrays; rebuilt on shape change.
-        self._x: Optional[np.ndarray] = None
-        self._y: Optional[np.ndarray] = None
-        self._z_shape: Optional[tuple[int, int]] = None
         # Cached unscaled heightmap from the last update_heightmap call.
         # Task 4c may use this for the degenerate-warning logic.
         self._last_heightmap: Optional[np.ndarray] = None
@@ -296,29 +293,17 @@ class SurfacePreview(gl.GLViewWidget):
         heightmap_mm = np.asarray(heightmap_mm, dtype=np.float64)
         self._last_heightmap = heightmap_mm
 
-        H, W = heightmap_mm.shape
-        if self._z_shape != (H, W):
-            self._rebuild_coordinate_arrays((H, W))
-
         colors = self._compute_colors(heightmap_mm, error_mm)
-        z_scaled = heightmap_mm * Z_EXAGGERATION
-
-        # pyqtgraph wants z[x_idx, y_idx] -> transpose our (H, W) to (W, H).
-        # colors must be flat (W*H, 4) in C-order matching the vertex
-        # enumeration; see module docstring "pyqtgraph axis + colors quirk".
-        self._surface_item.setData(
-            x=self._x,
-            y=self._y,
-            z=z_scaled.T,
-            colors=colors.transpose(1, 0, 2).reshape(-1, 4),
+        # Render core (centering + z.T + colors reshape) is shared with the
+        # Stage 5 comparison view via surface_render.apply_heightmap — one
+        # source of truth for the pyqtgraph quirk documented above.
+        apply_heightmap(
+            self._surface_item,
+            heightmap_mm,
+            colors,
+            self._pixel_size_mm,
+            Z_EXAGGERATION,
         )
-
-    def _rebuild_coordinate_arrays(self, shape: tuple[int, int]) -> None:
-        H, W = shape
-        ps = self._pixel_size_mm
-        self._x = (np.arange(W, dtype=np.float64) - (W - 1) / 2.0) * ps
-        self._y = (np.arange(H, dtype=np.float64) - (H - 1) / 2.0) * ps
-        self._z_shape = shape
 
     def _compute_colors(
         self,
