@@ -64,6 +64,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -185,13 +186,20 @@ class LabeledFloatSlider(QWidget):
 
     QSlider is integer-only natively; this widget multiplies by a scale
     factor (derived from `step`) under the hood and exposes float
-    `value()` / `set_value()` accessors. The value label updates
-    automatically as the slider is dragged.
+    `value()` / `set_value()` accessors.
 
-    Emits `valueChanged(float)` whenever the underlying slider moves.
-    Task-3 callers (e.g., `MainWindow._refresh_surface_preview`)
-    connect to this signal rather than the inner QSlider so the
-    int<->float conversion stays encapsulated.
+    Sub-task 4d.9: the read-only value label became an editable
+    `QDoubleSpinBox` for exact numeric entry, synced bidirectionally with
+    the slider. The slider stays the int-quantized source of truth; the
+    spinbox snaps to its resolution (off-step entries round to the nearest
+    step, out-of-range clamps to min/max — both silently). The slider<->
+    spinbox feedback loop is broken with `blockSignals`, and the widget's
+    `valueChanged(float)` fires exactly once per change.
+
+    Emits `valueChanged(float)` whenever the value changes (slider drag OR
+    spinbox commit). Callers (e.g., `MainWindow._refresh_surface_preview`)
+    connect to this signal rather than the inner widgets so the int<->float
+    conversion and sync stay encapsulated.
     """
 
     valueChanged = pyqtSignal(float)
@@ -220,35 +228,66 @@ class LabeledFloatSlider(QWidget):
         )
         self._slider.setValue(int(round(default * self._scale)))
 
-        self._value_label = QLabel()
-        self._value_label.setMinimumWidth(70)
-        self._value_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
-        self._refresh_value_label(self._slider.value())
-        self._slider.valueChanged.connect(self._refresh_value_label)
+        # Editable numeric entry (sub-task 4d.9). Range/precision/step/suffix
+        # mirror the slider exactly; keyboardTracking off so it commits on
+        # Enter / focus-out, not on every keystroke.
+        self._spinbox = QDoubleSpinBox()
+        self._spinbox.setRange(vmin, vmax)
+        self._spinbox.setDecimals(self._decimals)
+        self._spinbox.setSingleStep(step)
+        self._spinbox.setSuffix(suffix)
+        self._spinbox.setKeyboardTracking(False)
+        self._spinbox.setMinimumWidth(80)
+        self._spinbox.setValue(self.value())  # initial sync (no signal wired yet)
+
+        self._slider.valueChanged.connect(self._on_slider_changed)
+        self._spinbox.valueChanged.connect(self._on_spinbox_changed)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._name_label)
         layout.addWidget(self._slider, 1)
-        layout.addWidget(self._value_label)
+        layout.addWidget(self._spinbox)
 
-    def _refresh_value_label(self, int_val: int) -> None:
+    def _on_slider_changed(self, int_val: int) -> None:
+        """Inner slider moved: mirror into the spinbox (signal-blocked to
+        avoid a feedback loop) and emit the widget's valueChanged once."""
         v = int_val / self._scale
-        self._value_label.setText(f"{v:.{self._decimals}f}{self._suffix}")
+        self._spinbox.blockSignals(True)
+        self._spinbox.setValue(v)
+        self._spinbox.blockSignals(False)
         self.valueChanged.emit(v)
+
+    def _on_spinbox_changed(self, v: float) -> None:
+        """Spinbox committed: move the int-quantized slider (signal-blocked),
+        snap the spinbox back to the slider's resolution if the entry was
+        off-step, and emit the widget's valueChanged once.
+
+        Out-of-range is already clamped by the spinbox's own setRange.
+        """
+        int_val = int(round(v * self._scale))
+        self._slider.blockSignals(True)
+        self._slider.setValue(int_val)
+        self._slider.blockSignals(False)
+        quantized = self._slider.value() / self._scale
+        if quantized != v:
+            # Off-step (or int-range-clamped) entry: reflect the slider's
+            # actual value back into the spinbox.
+            self._spinbox.blockSignals(True)
+            self._spinbox.setValue(quantized)
+            self._spinbox.blockSignals(False)
+        self.valueChanged.emit(quantized)
 
     def value(self) -> float:
         """Current slider value as a float."""
         return self._slider.value() / self._scale
 
     def set_value(self, v: float) -> None:
-        """Programmatically set the slider value.
+        """Programmatically set the value (clamps to range, snaps to step).
 
-        Clamps to the slider's int range under the hood and emits
-        `valueChanged(float)` if the new value differs from the
-        current one. Used by smoke tests and any future automation.
+        Moves the inner slider, which mirrors into the spinbox and emits
+        `valueChanged(float)` once if the value differs. Used by smoke tests
+        and any automation.
         """
         self._slider.setValue(int(round(v * self._scale)))
 
