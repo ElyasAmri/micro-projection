@@ -134,6 +134,7 @@ def test_dropdown_has_three_entries(main_window):
         "3D Scene",
         "Pipeline Stages",
         "STL Browser",
+        "Recovered Surface",
     ]
 
 
@@ -385,7 +386,7 @@ def test_extract_fov_slice_entirely_off_part(main_window):
 def test_browser_tab_present_and_initial_placeholder(main_window):
     """Tab exists at construction; initial state is placeholder."""
     tabs = main_window.right_pane_tabs
-    assert tabs.count() == 3
+    assert tabs.count() == 4
     assert tabs.tabText(2) == "STL Browser"
     assert main_window.stl_browser.is_showing_panels is False
 
@@ -1099,3 +1100,107 @@ def test_recovered_persists_across_slider_and_drag_refresh_in_stl(
     main_window.stl_browser._minimap_roi.setPos((origin[0] - 10.0, origin[1]))
     assert main_window.labview_recovered_radio.isChecked() is True
     assert main_window.labview_ground_truth_radio.isChecked() is False
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 sub-task 5 — Recovered Surface tab wiring.
+# ---------------------------------------------------------------------------
+RECOVERED_TAB = 3
+
+
+def test_recovered_surface_tab_exists(main_window):
+    tabs = main_window.right_pane_tabs
+    assert tabs.count() == 4
+    assert tabs.tabText(RECOVERED_TAB) == "Recovered Surface"
+    # The comparison view is constructed and reachable.
+    assert main_window.recovered_comparison_view is not None
+
+
+def test_switch_to_recovered_tab_calls_set_data_with_heightmap(main_window):
+    """Landing on the tab fires set_data with the recovered + ground-truth
+    arrays. Ground truth is exactly `_compute_current_heightmap()`."""
+    captured = {}
+
+    def spy(recovered, ground_truth):
+        captured["rec"] = recovered
+        captured["gt"] = ground_truth
+
+    main_window.recovered_comparison_view.set_data = spy
+
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+
+    assert captured["rec"].shape == SURFACE_SHAPE
+    assert captured["gt"].shape == SURFACE_SHAPE
+    np.testing.assert_array_equal(
+        captured["gt"], main_window._compute_current_heightmap()
+    )
+
+
+def test_recovered_tab_feeds_honest_offpart_arrays(main_window):
+    """Browser straddle: the tab gets the off-part=0 honest arrays —
+    post-mask recovered + off-part=0 heightmap — NOT the edge-extended
+    pipeline input."""
+    H_full, W_full = 550, 1200
+    ramp = np.linspace(0.0, 20.0, W_full, dtype=np.float64)
+    main_window._stl_full_heightmap = np.broadcast_to(
+        ramp, (H_full, W_full)
+    ).copy()
+    main_window._stl_full_origin_mm = (0.0, 0.0)
+    main_window._stl_is_browser_mode = True
+    # Straddling FOV on the +x edge: off-part band [400:680) in the slice.
+    main_window._stl_fov_origin_mm = (80.0, 0.0)
+    main_window._stl_heightmap = main_window._extract_fov_slice((80.0, 0.0))
+    main_window.surface_combo.setCurrentText(STL_LABEL)  # cache set -> no dialog
+
+    captured = {}
+
+    def spy(recovered, ground_truth):
+        captured["rec"] = recovered
+        captured["gt"] = ground_truth
+
+    main_window.recovered_comparison_view.set_data = spy
+
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+
+    off_mask = main_window._browser_offpart_mask()
+    assert off_mask.any() and (~off_mask).any()  # genuine straddle
+    # Both arrays masked to 0 off-part (honest, not edge-extended).
+    np.testing.assert_array_equal(captured["rec"][off_mask], 0.0)
+    np.testing.assert_array_equal(captured["gt"][off_mask], 0.0)
+    # On-part recovered keeps real relief (the ramp), proving it's the
+    # recovered output, not a zero array.
+    assert np.ptp(captured["rec"][~off_mask]) > 1.0
+
+
+def test_recovered_checkbox_toggles_recovered_visibility(main_window):
+    view = main_window.recovered_comparison_view
+    assert view._recovered_item.visible() is True  # default on
+    main_window.show_recovered_checkbox.setChecked(False)
+    assert view._recovered_item.visible() is False
+    main_window.show_recovered_checkbox.setChecked(True)
+    assert view._recovered_item.visible() is True
+    # Ground truth untouched.
+    assert view._ground_truth_item.visible() is True
+
+
+def test_ground_truth_checkbox_toggles_visibility(main_window):
+    view = main_window.recovered_comparison_view
+    assert view._ground_truth_item.visible() is True  # default on
+    main_window.show_ground_truth_checkbox.setChecked(False)
+    assert view._ground_truth_item.visible() is False
+    main_window.show_ground_truth_checkbox.setChecked(True)
+    assert view._ground_truth_item.visible() is True
+    assert view._recovered_item.visible() is True
+
+
+def test_recovered_tab_hides_colorbar_and_stats(main_window):
+    """On the Recovered Surface tab, the 3D-Scene colorbar + error-stats
+    group are hidden (stale-state hygiene). Visibility checked via
+    isHidden() since the window is not shown."""
+    main_window.error_colorbar.setVisible(True)
+    main_window.error_stats_group.setVisible(True)
+
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+
+    assert main_window.error_colorbar.isHidden() is True
+    assert main_window.error_stats_group.isHidden() is True

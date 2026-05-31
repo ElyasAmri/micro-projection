@@ -84,6 +84,7 @@ from PyQt6.QtWidgets import (
 
 from geometry import HybridGeometry
 from pipeline import run_pipeline
+from src.gui.comparison_view import RecoveredComparisonView
 from src.gui.stages_view import StagesView
 from src.gui.stl_browser import STLBrowser
 from src.gui.surface_preview import ErrorColorbar, SurfacePreview
@@ -109,6 +110,10 @@ DEGENERATE_TAN_SUM_THRESHOLD: float = 1e-3
 # hardware-derived values.
 SURFACE_SHAPE: tuple[int, int] = (550, 680)
 SURFACE_PIXEL_SIZE_MM: float = 0.1
+
+# Right-pane tab order (see _build_right_pane). Named so the dispatch in
+# _refresh_surface_preview doesn't carry bare magic indices.
+RECOVERED_TAB_INDEX = 3
 
 # Stage 4c sub-task 3: dropdown label for the STL import entry. The
 # three-dot ASCII ellipsis is intentional UI convention for "opens a
@@ -590,9 +595,12 @@ class MainWindow(QMainWindow):
         self.stl_browser = STLBrowser()
 
         self.right_pane_tabs = QTabWidget()
-        self.right_pane_tabs.addTab(page_3d, "3D Scene")
-        self.right_pane_tabs.addTab(self.stages_view, "Pipeline Stages")
-        self.right_pane_tabs.addTab(self.stl_browser, "STL Browser")
+        self.right_pane_tabs.addTab(page_3d, "3D Scene")                      # 0
+        self.right_pane_tabs.addTab(self.stages_view, "Pipeline Stages")      # 1
+        self.right_pane_tabs.addTab(self.stl_browser, "STL Browser")          # 2
+        self.right_pane_tabs.addTab(
+            self._build_recovered_surface_page(), "Recovered Surface"
+        )  # RECOVERED_TAB_INDEX (3)
 
         return self.right_pane_tabs
 
@@ -624,6 +632,50 @@ class MainWindow(QMainWindow):
         self.error_colorbar = ErrorColorbar()
         self.error_colorbar.setVisible(False)
         layout.addWidget(self.error_colorbar)
+
+        return container
+
+    def _build_recovered_surface_page(self) -> QWidget:
+        """Stage 5 sub-task 5: the "Recovered Surface" tab (index 3).
+
+        A thin tab-local control strip (two independent visibility
+        checkboxes, both on by default) above the RecoveredComparisonView,
+        which stacks the solid recovered + translucent ground-truth surfaces
+        over the labeled grid. The checkboxes drive the view's visibility
+        setters directly — toggling visibility must NOT re-run the pipeline,
+        and landing on the tab always fires set_data first (via the
+        currentChanged refresh) so the view has fresh data before any
+        checkbox is reachable.
+        """
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Control strip (tab-local — not the left Display Mode group, which
+        # owns the 3D Scene tab's lab-view XOR radios).
+        toggle_row = QHBoxLayout()
+        self.show_recovered_checkbox = QCheckBox("Recovered surface")
+        self.show_recovered_checkbox.setChecked(True)
+        self.show_ground_truth_checkbox = QCheckBox("Ground truth")
+        self.show_ground_truth_checkbox.setChecked(True)
+        toggle_row.addWidget(self.show_recovered_checkbox)
+        toggle_row.addWidget(self.show_ground_truth_checkbox)
+        toggle_row.addStretch(1)
+        layout.addLayout(toggle_row)
+
+        self.recovered_comparison_view = RecoveredComparisonView(
+            SURFACE_SHAPE, SURFACE_PIXEL_SIZE_MM
+        )
+        layout.addWidget(self.recovered_comparison_view, 1)
+
+        # Visibility toggles: bool signal -> bool setter, no pipeline rerun.
+        self.show_recovered_checkbox.toggled.connect(
+            self.recovered_comparison_view.set_recovered_visible
+        )
+        self.show_ground_truth_checkbox.toggled.connect(
+            self.recovered_comparison_view.set_ground_truth_visible
+        )
 
         return container
 
@@ -836,6 +888,17 @@ class MainWindow(QMainWindow):
                 recovered=recovered,
             )
             self.error_colorbar.setVisible(False)
+            return
+
+        if self.right_pane_tabs.currentIndex() == RECOVERED_TAB_INDEX:
+            # Recovered Surface tab (sub-task 5): feed the comparison view the
+            # SAME physically-honest arrays the other views use — `recovered`
+            # post off-part mask and `heightmap` (off-part = 0), NOT the
+            # edge-extended pipeline_input. Colorbar + error stats belong to
+            # the 3D Scene tab; hide them here (stale-state hygiene).
+            self.recovered_comparison_view.set_data(recovered, heightmap)
+            self.error_colorbar.setVisible(False)
+            self.error_stats_group.setVisible(False)
             return
 
         # 3D scene tab is current. Three render paths; this branch is
