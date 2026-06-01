@@ -86,6 +86,7 @@ from PyQt6.QtWidgets import (
 from geometry import HybridGeometry
 from pipeline import run_pipeline
 from src.gui.comparison_view import RecoveredComparisonView
+from src.gui.hardware_scene import arm_lens_front_world
 from src.gui.stages_view import StagesView
 from src.gui.stl_browser import STLBrowser
 from src.gui.surface_preview import ErrorColorbar, SurfacePreview
@@ -368,6 +369,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self._build_surface_group())
         layout.addWidget(self._build_geometry_group())
+        layout.addWidget(self._build_hardware_coords_group())
         layout.addWidget(self._build_psi_group())
         # Display-mode group (lab-view XOR radios). The error stats panel +
         # colorbar moved to the Recovered Surface tab in Stage 5 sub-task 6.
@@ -612,6 +614,46 @@ class MainWindow(QMainWindow):
             grid.addWidget(name_label, row, 0)
             grid.addWidget(value_label, row, 1)
         return box
+
+    def _build_hardware_coords_group(self) -> QGroupBox:
+        """Live camera + projector lens-center world coordinates.
+
+        Stage 5 sub-task 4d.11. Two read-only rows showing each lens-
+        front (x, y, z) mm in the surface-anchored world frame (z=0 =
+        stage). Updated in `_on_pose_changed` on every pose-slider move
+        via the shared `arm_lens_front_world` helper. Values use a
+        monospace font + fixed-width signed format so the labels don't
+        jump as the numbers change.
+        """
+        box = QGroupBox("Hardware Coordinates")
+        grid = QGridLayout(box)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
+
+        camera_name = QLabel("Camera:")
+        camera_name.setStyleSheet("color: #888;")
+        projector_name = QLabel("Projector:")
+        projector_name.setStyleSheet("color: #888;")
+
+        self.hw_coord_camera = QLabel()
+        self.hw_coord_projector = QLabel()
+        for value_label in (self.hw_coord_camera, self.hw_coord_projector):
+            value_label.setStyleSheet("font-family: Consolas, monospace;")
+            value_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+
+        grid.addWidget(camera_name, 0, 0)
+        grid.addWidget(self.hw_coord_camera, 0, 1)
+        grid.addWidget(projector_name, 1, 0)
+        grid.addWidget(self.hw_coord_projector, 1, 1)
+        return box
+
+    @staticmethod
+    def _format_coord(xyz: tuple) -> str:
+        """Fixed-width signed `x=__ y=__ z=__ mm` for the coord labels."""
+        x, y, z = xyz
+        return f"x={x:+7.1f}  y={y:+7.1f}  z={z:+7.1f} mm"
 
     # ------------------------------------------------------------------
     # Right pane — QTabWidget with three tabs
@@ -1079,6 +1121,16 @@ class MainWindow(QMainWindow):
             surface_pixel_size_mm=SURFACE_PIXEL_SIZE_MM,
         )
         self._update_clip_warning(clip_state.messages)
+
+        # Live lens-center world coordinates (same helper the CLI uses).
+        coords = arm_lens_front_world(
+            theta_cam_deg=self.theta_camera.value(),
+            theta_proj_deg=self.theta_projector.value(),
+            proj_dist_mm=self.projector_distance.value(),
+            cam_dist_mm=self.camera_distance.value(),
+        )
+        self.hw_coord_camera.setText(self._format_coord(coords["camera"]))
+        self.hw_coord_projector.setText(self._format_coord(coords["projector"]))
 
     def _update_error_stats(self, error: np.ndarray) -> float:
         """Refresh the four QLabels and return abs_max for the colorbar.

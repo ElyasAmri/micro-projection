@@ -268,6 +268,84 @@ def compute_arm_transforms(
     }
 
 
+def _camera_cone_world(camera_body_transform: np.ndarray) -> np.ndarray:
+    """Camera viewing-cone world transform (apex at the lens-front).
+
+    Shared by `update_pose` (cone rendering) and `arm_lens_front_world`
+    (coordinate readout) so the two never drift. Camera lens is
+    centered (no in-face offset, no recess).
+    """
+    return cone_local_to_world_transform(
+        camera_body_transform,
+        lens_length_mm=_CAMERA_LENS_LENGTH_MM,
+        body_depth_mm=_CAMERA_BODY_DEPTH_MM,
+        x_offset_mm=0.0,
+    )
+
+
+def _projector_cone_world(projector_body_transform: np.ndarray) -> np.ndarray:
+    """Projector cone world transform (apex at the anchored lens-front).
+
+    Shared by `update_pose` and `arm_lens_front_world`. Re-applies the
+    Pico Genie in-face offsets + recess to the already-anchored body
+    transform so the apex lands on the optical axis (0,0,~throw) when
+    vertical (4d.10).
+    """
+    return cone_local_to_world_transform(
+        projector_body_transform,
+        lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
+        body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
+        x_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_x,
+        y_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_vertical,
+        recess_mm=PROJECTOR_LENS_OFFSET_MM.recess,
+    )
+
+
+def arm_lens_front_world(
+    theta_cam_deg: float,
+    theta_proj_deg: float,
+    proj_dist_mm: float,
+    cam_dist_mm: float,
+) -> Dict[str, tuple]:
+    """Camera + projector lens-front world positions (mm), surface frame.
+
+    Single source of truth for the hardware-coordinate readout — both
+    the GUI "Hardware Coordinates" panel and the `scripts/hardware_
+    coords.py` CLI call this; neither re-extracts the geometry.
+
+    Composes `compute_arm_transforms` with the same cone placement
+    `update_pose` renders (via the shared `_camera_cone_world` /
+    `_projector_cone_world` helpers), then returns each lens-front
+    (cone apex) world position — the translation column of the cone
+    transform.
+
+    Frame: world origin at the stage-surface center, +z up toward the
+    rig (z=0 is the stage). After 4d.10 anchoring, the projector
+    lens-front sits at (0, 0, ~throw) when vertical (theta_proj=0) and
+    the camera at (0, 0, WD).
+
+    Pure NumPy — creates no QApplication, so it is headlessly
+    unit-testable and safe to call from the CLI.
+
+    Returns
+    -------
+    dict
+        ``{"camera": (x, y, z), "projector": (x, y, z)}`` — float mm.
+    """
+    transforms = compute_arm_transforms(
+        theta_camera_deg=theta_cam_deg,
+        theta_projector_deg=theta_proj_deg,
+        projector_distance_mm=proj_dist_mm,
+        camera_distance_mm=cam_dist_mm,
+    )
+    cam = _camera_cone_world(transforms[KEY_CAMERA_BODY])
+    proj = _projector_cone_world(transforms[KEY_PROJECTOR_BODY])
+    return {
+        "camera": (float(cam[0, 3]), float(cam[1, 3]), float(cam[2, 3])),
+        "projector": (float(proj[0, 3]), float(proj[1, 3]), float(proj[2, 3])),
+    }
+
+
 class HardwareScene:
     """Owns the four GLMeshItems for the hardware bodies in a 3D view.
 
@@ -368,12 +446,7 @@ class HardwareScene:
         view_verts, view_edges = make_viewing_cone_wireframe(
             camera_distance_mm
         )
-        view_world = cone_local_to_world_transform(
-            transforms[KEY_CAMERA_BODY],
-            lens_length_mm=_CAMERA_LENS_LENGTH_MM,
-            body_depth_mm=_CAMERA_BODY_DEPTH_MM,
-            x_offset_mm=0.0,
-        )
+        view_world = _camera_cone_world(transforms[KEY_CAMERA_BODY])
         self._cones[KEY_VIEWING_CONE].setData(
             pos=self._edges_to_segments(view_verts, view_edges)
         )
@@ -382,16 +455,7 @@ class HardwareScene:
         proj_verts, proj_edges = make_projection_cone_wireframe(
             projector_distance_mm
         )
-        # transforms[KEY_PROJECTOR_BODY] already carries the body anchor
-        # shift; re-apply the +face offsets so the apex lands on-axis.
-        proj_world = cone_local_to_world_transform(
-            transforms[KEY_PROJECTOR_BODY],
-            lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
-            body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
-            x_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_x,
-            y_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_vertical,
-            recess_mm=PROJECTOR_LENS_OFFSET_MM.recess,
-        )
+        proj_world = _projector_cone_world(transforms[KEY_PROJECTOR_BODY])
         self._cones[KEY_PROJECTION_CONE].setData(
             pos=self._edges_to_segments(proj_verts, proj_edges)
         )

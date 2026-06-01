@@ -6,7 +6,7 @@ GUI wrapper is exercised by the smoke-test screenshots, not unit
 tests — keeping the test suite Qt-free, consistent with the rest of
 the project.
 
-Coverage (10 cases)
+Coverage (12 cases)
 -------------------
   1. test_compute_transforms_returns_four_named_matrices
   2. test_initial_pose_at_zero_zero_default_distances
@@ -18,6 +18,8 @@ Coverage (10 cases)
   8. test_projector_body_hangs_off_axis_when_vertical       (4d.10)
   9. test_camera_lens_still_at_origin_when_vertical         (4d.10)
  10. test_projector_lens_stays_on_arm_axis_across_theta     (4d.10)
+ 11. test_arm_lens_front_world_anchored_when_vertical       (4d.11)
+ 12. test_arm_lens_front_world_shifts_with_theta            (4d.11)
 
 Tolerances
 ----------
@@ -37,6 +39,7 @@ from gui.hardware_scene import (
     KEY_PROJECTOR_LENS,
     PROJECTOR_LENS_OFFSET_MM,
     PROJECTOR_LENS_X_OFFSET_MM,
+    arm_lens_front_world,
     compute_arm_transforms,
 )
 from scene_compose import body_lens_offset, projector_arm_transform
@@ -332,3 +335,44 @@ def test_projector_lens_stays_on_arm_axis_across_theta():
             lens_pos, on_axis, atol=1e-4,
             err_msg=f"lens off the arm axis at theta={theta}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 11 (4d.11) — The readout helper reports the anchored lens-center world
+# positions: projector at (0, 0, throw + recess) and camera at (0, 0, WD)
+# when vertical. This is the sanity lock the panel + CLI depend on.
+# ---------------------------------------------------------------------------
+def test_arm_lens_front_world_anchored_when_vertical():
+    throw = 150.0
+    wd = 157.0
+    coords = arm_lens_front_world(
+        theta_cam_deg=0.0,
+        theta_proj_deg=0.0,
+        proj_dist_mm=throw,
+        cam_dist_mm=wd,
+    )
+    # Projector: on the optical axis, z = throw + recess (recess pulls the
+    # apex back from the front face toward the body).
+    np.testing.assert_allclose(
+        coords["projector"],
+        [0.0, 0.0, throw + PROJECTOR_LENS_OFFSET_MM.recess],
+        atol=1e-4,
+    )
+    # Camera: centered lens, lens-front sits exactly at WD above the stage.
+    np.testing.assert_allclose(coords["camera"], [0.0, 0.0, wd], atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Test 12 (4d.11) — The reported coordinates track the pose: tilting the
+# projector arm to +theta swings the lens-center to +X and lowers its Z
+# (it stays on the arm axis, so Y holds at 0).
+# ---------------------------------------------------------------------------
+def test_arm_lens_front_world_shifts_with_theta():
+    vertical = arm_lens_front_world(0.0, 0.0, 150.0, 157.0)["projector"]
+    tilted = arm_lens_front_world(0.0, 30.0, 150.0, 157.0)["projector"]
+
+    assert tilted[0] > 5.0, f"projector X did not swing to +X: {tilted[0]}"
+    assert abs(tilted[1]) < 1e-4, f"projector Y left the axis: {tilted[1]}"
+    assert tilted[2] < vertical[2], (
+        f"projector Z did not drop when tilted: {tilted[2]} !< {vertical[2]}"
+    )
