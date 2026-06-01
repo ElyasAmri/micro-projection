@@ -1,0 +1,6 @@
+numpy==2.2.6
+
+# Spinnaker SDK - installed from a vendored wheel in ./wheels/.
+# The wheel is NOT tracked in git: copy it into ./wheels/ before installing
+# (see wheels/README.md). Platform-specific: Windows 64-bit, Python 3.10.
+./wheels/spinnaker_python-4.3.0.190-cp310-cp310-win_amd64.whl
