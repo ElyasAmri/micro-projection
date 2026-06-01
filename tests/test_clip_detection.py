@@ -58,7 +58,7 @@ from gui.hardware_scene import (
     _PROJECTOR_LENS_LENGTH_MM,
     KEY_CAMERA_BODY as HS_KEY_CAMERA_BODY,
     KEY_PROJECTOR_BODY as HS_KEY_PROJECTOR_BODY,
-    PROJECTOR_LENS_X_OFFSET_MM,
+    PROJECTOR_LENS_OFFSET_MM,
     compute_arm_transforms,
 )
 from scene_compose import cone_local_to_world_transform
@@ -79,7 +79,9 @@ def _cone_worlds(transforms):
         transforms[HS_KEY_PROJECTOR_BODY],
         lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
         body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
-        x_offset_mm=PROJECTOR_LENS_X_OFFSET_MM,
+        x_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_x,
+        y_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_vertical,
+        recess_mm=PROJECTOR_LENS_OFFSET_MM.recess,
     )
     return viewing, projection
 

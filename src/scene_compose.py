@@ -202,6 +202,8 @@ def cone_local_to_world_transform(
     lens_length_mm: float,
     body_depth_mm: float,
     x_offset_mm: float = 0.0,
+    y_offset_mm: float = 0.0,
+    recess_mm: float = 0.0,
 ) -> np.ndarray:
     """Place a cone's local origin at the lens-front in world coords.
 
@@ -213,15 +215,19 @@ def cone_local_to_world_transform(
     translation along body-local +Z from the body center out to the
     lens-front:
 
-        tz = body_depth_mm / 2 + lens_length_mm
+        tz = body_depth_mm / 2 + lens_length_mm - recess_mm
 
     (Note: this is the lens-FRONT offset — `body/2 + lens_length` —
     not the lens-CENTER offset `body/2 + lens_length/2` that
     `body_lens_offset` uses. The cone starts at the front of the
     lens, not its midpoint.)
 
-    `x_offset_mm` handles the Pico Genie's off-center lens (X = -6.5
-    mm in body-centered frame); pass 0.0 for the camera.
+    `x_offset_mm` / `y_offset_mm` handle the Pico Genie's off-center
+    lens in the body face plane (face-X = -6.5, face-vertical = +17.5
+    mm in body-centered frame); pass 0.0 for the camera (centered
+    lens). `recess_mm` pulls the apex back toward the body along the
+    optical axis when the lens sits recessed behind the front face
+    (Pico Genie ~1.5 mm); 0.0 for a flush lens.
 
     Parameters
     ----------
@@ -232,15 +238,21 @@ def cone_local_to_world_transform(
     body_depth_mm : float
         Body depth along body-local +Z (camera 30, projector 55).
     x_offset_mm : float
-        Body-local horizontal lens offset. Camera: 0.0. Projector:
-        -6.5 (Pico Genie measured).
+        Body-local horizontal (face-X) lens offset. Camera: 0.0.
+        Projector: -6.5 (Pico Genie measured).
+    y_offset_mm : float
+        Body-local vertical (face-vertical) lens offset. Camera: 0.0.
+        Projector: +17.5 (Pico Genie measured).
+    recess_mm : float
+        Distance the lens exit sits behind the front face along the
+        optical axis. Camera: 0.0. Projector: ~1.5.
 
     Returns
     -------
     (4, 4) float32, row-major.
     """
-    tz = float(body_depth_mm) / 2.0 + float(lens_length_mm)
-    t = _translation(float(x_offset_mm), 0.0, tz)
+    tz = float(body_depth_mm) / 2.0 + float(lens_length_mm) - float(recess_mm)
+    t = _translation(float(x_offset_mm), float(y_offset_mm), tz)
     return (np.asarray(arm_transform_4x4, dtype=np.float32) @ t).astype(
         np.float32, copy=False
     )

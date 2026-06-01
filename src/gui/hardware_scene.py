@@ -41,7 +41,7 @@ running QApplication. Sec 7.2 math-layer-purity carries forward.
 """
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, NamedTuple
 
 import numpy as np
 import pyqtgraph as pg
@@ -80,9 +80,38 @@ _PROJECTOR_BODY_DEPTH_MM = 55.0
 _PROJECTOR_LENS_LENGTH_MM = 5.0
 
 
-# Pico Genie lens horizontal offset in body-centered frame
-# (PROJECT_CONTEXT Sec 2). Locked hardware geometry, not slider-driven.
-PROJECTOR_LENS_X_OFFSET_MM: float = -6.5
+# Pico Genie lens offset from the projector front-FACE center, measured
+# in the body face frame (PROJECT_CONTEXT Sec 2). Locked hardware
+# geometry, not slider-driven.
+#
+#   face_x        body-local +X (horizontal on the face) -> world +X at theta=0
+#   face_vertical body-local +Y ("up the face")          -> world -Y at theta=0
+#   recess        mm the lens exit sits BEHIND the front face (optical axis)
+#
+# These anchor the projector LENS CENTER over world (0,0) when vertical
+# (see compute_arm_transforms); the body then hangs off-axis. Promote a
+# projector swap to a one-line constant edit.
+#
+# FACE-VERTICAL SIGN UNVERIFIED: +17.5 "up the face" maps to world -Y under
+# the sim's current orientation convention. The physical rig is not built
+# yet; confirm against the real projector at mount time and flip the sign
+# if the lens sits on the opposite world-Y side. Magnitude (17.5) and the
+# anchoring behavior are correct regardless.
+class ProjectorLensOffset(NamedTuple):
+    face_x: float
+    face_vertical: float
+    recess: float
+
+
+PROJECTOR_LENS_OFFSET_MM = ProjectorLensOffset(
+    face_x=-6.5,
+    face_vertical=17.5,
+    recess=1.5,
+)
+
+# Backward-compat alias: pre-4d.10 readers referenced the scalar face-X
+# offset by this name. Kept so external/test imports stay valid.
+PROJECTOR_LENS_X_OFFSET_MM: float = PROJECTOR_LENS_OFFSET_MM.face_x
 
 
 # Mesh-item keys; used by `compute_arm_transforms` return dict and
@@ -180,14 +209,27 @@ def compute_arm_transforms(
     M_cam_body  = camera_arm_transform(theta_cam, camera_distance_mm + 215)
     M_cam_lens  = M_cam_body @ body_lens_offset(30, 200)
     M_proj_body = projector_arm_transform(theta_proj, projector_distance_mm + 32.5)
+                              @ _translation(-face_x, -face_vertical, 0)
     M_proj_lens = M_proj_body @ body_lens_offset(55, 5)
-                              @ _translation(PROJECTOR_LENS_X_OFFSET_MM, 0, 0)
+                              @ _translation(+face_x, +face_vertical, 0)
 
-    The projector-lens X-offset is right-multiplied (applied in lens
-    local frame, BEFORE the parent arm transform), so the -6.5 mm
-    horizontal shift is in the body-centered frame on the projector's
-    front face — not in world coordinates.
+    Projector lens anchoring (4d.10)
+    --------------------------------
+    The Pico Genie lens sits off-center on the body's front face
+    (face_x = -6.5, face_vertical = +17.5 mm). To park the LENS CENTER
+    over world (0,0) when the projector points straight down, the BODY
+    is shifted by the negative of the in-face offset (the
+    `_translation(-face_x, -face_vertical, 0)` on M_proj_body), and the
+    lens re-applies `+face_x, +face_vertical` so it lands back on the
+    arm axis. Net: lens on-axis at (0,0,...), body hanging off-axis at
+    (+6.5, +17.5, ...) when vertical. Both translations are
+    right-multiplied (body-local frame, BEFORE the parent arm
+    transform), so the anchoring composes correctly at every theta —
+    face_vertical maps to world -Y invariantly under the R_y arm swing.
+    The camera lens is centered (no offset), so it is untouched.
     """
+    face_x = PROJECTOR_LENS_OFFSET_MM.face_x
+    face_vertical = PROJECTOR_LENS_OFFSET_MM.face_vertical
     camera_body_distance = (
         camera_distance_mm
         + _CAMERA_LENS_LENGTH_MM
@@ -204,13 +246,18 @@ def compute_arm_transforms(
         _CAMERA_BODY_DEPTH_MM, _CAMERA_LENS_LENGTH_MM
     )
 
-    M_proj_body = projector_arm_transform(
-        theta_projector_deg, projector_body_distance
-    )
+    # Anchor the projector LENS CENTER over world (0,0) when vertical by
+    # shifting the BODY by the negative of the in-face lens offset. Body-
+    # local right-multiply, so it composes correctly at all theta.
+    M_proj_body = (
+        projector_arm_transform(theta_projector_deg, projector_body_distance)
+        @ _translation(-face_x, -face_vertical, 0.0)
+    ).astype(np.float32, copy=False)
+    # Lens re-applies +face offsets, landing back on the arm axis (0,0).
     M_proj_lens = (
         M_proj_body
         @ body_lens_offset(_PROJECTOR_BODY_DEPTH_MM, _PROJECTOR_LENS_LENGTH_MM)
-        @ _translation(PROJECTOR_LENS_X_OFFSET_MM, 0.0, 0.0)
+        @ _translation(face_x, face_vertical, 0.0)
     ).astype(np.float32, copy=False)
 
     return {
@@ -335,11 +382,15 @@ class HardwareScene:
         proj_verts, proj_edges = make_projection_cone_wireframe(
             projector_distance_mm
         )
+        # transforms[KEY_PROJECTOR_BODY] already carries the body anchor
+        # shift; re-apply the +face offsets so the apex lands on-axis.
         proj_world = cone_local_to_world_transform(
             transforms[KEY_PROJECTOR_BODY],
             lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
             body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
-            x_offset_mm=PROJECTOR_LENS_X_OFFSET_MM,
+            x_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_x,
+            y_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_vertical,
+            recess_mm=PROJECTOR_LENS_OFFSET_MM.recess,
         )
         self._cones[KEY_PROJECTION_CONE].setData(
             pos=self._edges_to_segments(proj_verts, proj_edges)
