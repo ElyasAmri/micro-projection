@@ -15,12 +15,16 @@ physically buildable, or the coverage is incomplete):
   3. Camera assembly vs projector assembly (OBB intersection via SAT).
   4. Surface extends outside the camera viewing prism (coverage).
   5. Surface extends outside the projector cone (coverage).
+  6. Cross-arm optical obstruction: one arm's hardware sits in the
+     other arm's optical volume between the lens and the surface.
 
 Checks 1-3 are physical impossibilities and gray the offending
-bodies. Checks 4-5 are measurement-incompleteness advisories: an
-11x11 surface sample is tested against the 3D prism / cone VOLUME
-(catching a tall peak poking out of a tilted prism, not just a
-wide z=0 footprint). They are banner-only and never gray.
+bodies. Checks 4-6 are measurement advisories (banner-only, never
+gray): 4-5 sample the surface against the 3D prism / cone VOLUME
+(catching a tall peak poking out of a tilted prism, not just a wide
+z=0 footprint); 6 samples each assembly's body+lens box edges against
+the OTHER arm's volume (axially bounded to the lens->surface segment)
+to catch e.g. the camera body blocking the projection beam.
 
 Surface-clip criterion: lens-front DISC edge, not center
 ---------------------------------------------------------
@@ -117,6 +121,26 @@ MSG_SURFACE_OUTSIDE_FOV = (
 MSG_SURFACE_OUTSIDE_CONE = (
     "Test surface extends outside projector cone — region(s) not illuminated"
 )
+# Sub-task 4d.12: cross-arm optical-obstruction advisories. One arm's
+# hardware sits in the OTHER arm's optical volume between the lens and
+# the surface, blocking the beam / line of sight. Banner-only (the rig
+# is buildable; the measurement is obstructed) — same category as the
+# coverage advisories, never grays a body.
+MSG_CAMERA_IN_PROJECTOR_CONE = (
+    "Camera assembly blocking the projector beam — projected light "
+    "obstructed before it reaches the surface"
+)
+MSG_PROJECTOR_IN_CAMERA_FOV = (
+    "Projector assembly blocking the camera view — obstructs the line "
+    "of sight to the surface"
+)
+
+# Edge samples per box edge for the obstruction check. Corner-only
+# sampling misses a long box (the 200 mm camera lens) spearing a cone
+# with both end-corners outside but the middle inside; sampling along
+# the 12 edges catches it (both volumes are convex). 7 includes both
+# endpoints (the corners) plus 5 interior points.
+_OBSTRUCTION_EDGE_SAMPLES = 7
 
 
 def _local_bbox_corners(verts: np.ndarray) -> np.ndarray:
@@ -195,6 +219,11 @@ class ClipState:
     # projector lit volume. Advisory only (banner, no gray).
     surface_outside_camera_fov: bool = False
     surface_outside_projector_cone: bool = False
+    # Sub-task 4d.12: cross-arm optical-obstruction advisories. One
+    # arm's hardware sits in the other arm's optical volume between
+    # lens and surface. Advisory only (banner, no gray).
+    camera_in_projector_cone: bool = False
+    projector_in_camera_fov: bool = False
     messages: List[str] = field(default_factory=list)
 
     @property
@@ -205,6 +234,8 @@ class ClipState:
             or self.bodies_overlapping
             or self.surface_outside_camera_fov
             or self.surface_outside_projector_cone
+            or self.camera_in_projector_cone
+            or self.projector_in_camera_fov
         )
 
 
@@ -214,6 +245,48 @@ def _apply(M: np.ndarray, pts: np.ndarray) -> np.ndarray:
     homog = np.concatenate([pts, np.ones((pts.shape[0], 1))], axis=1)
     out = homog @ np.asarray(M, dtype=np.float64).T
     return out[:, :3]
+
+
+def _box_edge_samples(
+    world_corners: np.ndarray, n_per_edge: int = _OBSTRUCTION_EDGE_SAMPLES
+) -> np.ndarray:
+    """Sample points along the 12 edges of an 8-corner box.
+
+    `world_corners` follows `_local_bbox_corners` ordering: corner
+    index bits are (x<<2 | y<<1 | z), so two corners share an edge iff
+    their indices differ in exactly one bit. Returns (12 * n_per_edge,
+    3) world points (endpoints, i.e. the corners, are included).
+
+    Corner-only testing misses a long box spearing a convex volume
+    with both end-corners outside but the middle inside; sampling the
+    edges catches it (see `_OBSTRUCTION_EDGE_SAMPLES`).
+    """
+    c = np.asarray(world_corners, dtype=np.float64)
+    ts = np.linspace(0.0, 1.0, n_per_edge)[:, None]
+    segments = []
+    for i in range(8):
+        for bit in (1, 2, 4):
+            j = i ^ bit
+            if j > i:                       # each edge once
+                segments.append(c[i] + ts * (c[j] - c[i]))
+    return np.concatenate(segments, axis=0)
+
+
+def _assembly_edge_samples(
+    transforms: Dict[str, np.ndarray], keys
+) -> np.ndarray:
+    """Edge samples for an assembly's body+lens boxes, in world space.
+
+    Places each box's local bbox corners with its post-4d.10 anchored
+    transform, then edge-samples. Stacks the keys' samples.
+    """
+    return np.concatenate(
+        [
+            _box_edge_samples(_apply(transforms[k], _LOCAL_CORNERS[k]))
+            for k in keys
+        ],
+        axis=0,
+    )
 
 
 def _lens_front_disc_lowest_z(M_lens: np.ndarray, key: str) -> float:
@@ -317,48 +390,67 @@ def _sample_surface_points(
     return np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
 
 
-def _surface_exceeds_prism(
-    viewing_cone_world: np.ndarray, pts: np.ndarray
-) -> bool:
-    """Any sample point outside the telecentric viewing prism volume?
+def _points_in_prism(
+    viewing_cone_world: np.ndarray,
+    pts: np.ndarray,
+    axial_max: float = np.inf,
+) -> np.ndarray:
+    """Per-point INSIDE mask for the telecentric viewing prism volume.
 
-    Telecentric => parallel sides => the along-axis coordinate is
-    irrelevant; only the two perpendicular cross-section offsets
-    matter (constant 68 x 55 mm regardless of working distance).
+    Telecentric => parallel sides => the cross-section is constant
+    (68 x 55 mm) regardless of working distance; a point is inside iff
+    its two perpendicular offsets are within the half-extents.
+
+    `axial_max` bounds the along-axis extent: with the default `inf`
+    the prism is unbounded both ways (the coverage criterion — surface
+    samples always sit in front of the lens, so this reproduces the
+    pre-4d.12 mask exactly). A FINITE `axial_max` restricts to the
+    segment `0 <= s <= axial_max` from the lens front toward the
+    surface — used by the obstruction check so hardware behind the
+    camera (s < 0) or beyond the surface (s > WD) is excluded.
+
+    Returns
+    -------
+    (N,) bool
     """
     C = _apply(viewing_cone_world, np.array([[0.0, 0.0, 0.0]]))[0]
     u = _world_unit(viewing_cone_world, [1.0, 0.0, 0.0, 0.0])
     v = _world_unit(viewing_cone_world, [0.0, 1.0, 0.0, 0.0])
     d = pts - C
-    du = d @ u
-    dv = d @ v
-    inside = (np.abs(du) <= _PRISM_HALF_U_MM) & (
-        np.abs(dv) <= _PRISM_HALF_V_MM
+    inside = (np.abs(d @ u) <= _PRISM_HALF_U_MM) & (
+        np.abs(d @ v) <= _PRISM_HALF_V_MM
     )
-    return bool(np.any(~inside))
+    if np.isfinite(axial_max):
+        axis = _world_unit(viewing_cone_world, [0.0, 0.0, 1.0, 0.0])
+        s = d @ axis
+        inside = inside & (s >= 0.0) & (s <= axial_max)
+    return inside
 
 
-def _surface_exceeds_cone(
+def _points_in_cone(
     projection_cone_world: np.ndarray,
     pts: np.ndarray,
-    throw_mm: float,
-) -> bool:
-    """Any sample point outside the diverging projection-cone volume?
+    axial_max: float = np.inf,
+) -> np.ndarray:
+    """Per-point INSIDE mask for the diverging projection-cone volume.
 
-    The cone grows linearly from the apex; half-extents at axial
-    distance s from the apex are `(_CONE_HALF_*_PER_L) * s`. A point
-    is lit iff it is in front of the projector (s >= 0) and within
-    the angular cross-section at its own depth, widened by
+    The cone grows linearly from the apex; lateral half-extents at
+    axial distance s are `(_CONE_HALF_*_PER_L) * s`, widened by
     `_CONE_COVERAGE_TOLERANCE_MM` (advisory tolerance for the real
-    projector's gradual edge falloff vs. this sharp-boundary model).
+    projector's gradual edge falloff vs. this sharp-boundary model). A
+    point is inside iff it is in front of the projector (`s >= 0`) and
+    within that cross-section.
 
-    Note: there is deliberately NO `s <= throw` upper bound. `throw`
-    is only the nominal DLP focus distance; the light cone keeps
-    diverging past it. Bounding at the (tilted) throw plane would
-    false-flag the outer regions of a flat surface, which sit a few
-    mm beyond that plane yet are physically still illuminated. The
-    angular test is the correct coverage criterion. `throw_mm` is
-    accepted for API symmetry / future focus checks.
+    `axial_max` defaults to `inf` (the coverage criterion — NO upper
+    bound; the light cone keeps diverging past the nominal throw, so a
+    flat surface's outer regions a few mm beyond the throw plane are
+    still lit). This reproduces the pre-4d.12 mask exactly. A FINITE
+    `axial_max` restricts to `0 <= s <= axial_max` (= throw) for the
+    obstruction check, excluding hardware below the surface.
+
+    Returns
+    -------
+    (N,) bool
     """
     apex = _apply(projection_cone_world, np.array([[0.0, 0.0, 0.0]]))[0]
     axis = _world_unit(projection_cone_world, [0.0, 0.0, 1.0, 0.0])
@@ -370,14 +462,39 @@ def _surface_exceeds_cone(
     lat = rel - np.outer(s, axis)
     lu = lat @ u
     lv = lat @ v
-    # Widen the per-depth lateral half-extents by the advisory tolerance
-    # (real projector edge falloff vs. the math's sharp cone wall). The
-    # axial s >= 0 check is NOT relaxed — a point behind the apex is a
-    # different failure mode, not a near-edge spill.
     hw = _CONE_HALF_U_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
     hh = _CONE_HALF_V_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
     inside = (s >= 0.0) & (np.abs(lu) <= hw) & (np.abs(lv) <= hh)
-    return bool(np.any(~inside))
+    if np.isfinite(axial_max):
+        inside = inside & (s <= axial_max)
+    return inside
+
+
+def _surface_exceeds_prism(
+    viewing_cone_world: np.ndarray, pts: np.ndarray
+) -> bool:
+    """Any sample point outside the telecentric viewing prism volume?
+
+    Coverage criterion: unbounded along-axis (axial_max=inf), so this
+    is `any(~_points_in_prism(...))` — behavior-identical to the
+    pre-4d.12 inline test.
+    """
+    return bool(np.any(~_points_in_prism(viewing_cone_world, pts)))
+
+
+def _surface_exceeds_cone(
+    projection_cone_world: np.ndarray,
+    pts: np.ndarray,
+    throw_mm: float,
+) -> bool:
+    """Any sample point outside the diverging projection-cone volume?
+
+    Coverage criterion: unbounded along-axis (axial_max=inf), so this
+    is `any(~_points_in_cone(...))` — behavior-identical to the
+    pre-4d.12 inline test. `throw_mm` is accepted for API symmetry /
+    future focus checks (the coverage cone is deliberately unbounded).
+    """
+    return bool(np.any(~_points_in_cone(projection_cone_world, pts)))
 
 
 def detect_clips(
@@ -390,7 +507,7 @@ def detect_clips(
     viewing_cone_world: "np.ndarray | None" = None,
     projection_cone_world: "np.ndarray | None" = None,
 ) -> ClipState:
-    """Run the three collision checks plus two coverage advisories.
+    """Run three collision checks plus three banner-only advisories.
 
     Parameters
     ----------
@@ -476,5 +593,41 @@ def detect_clips(
         ):
             state.surface_outside_projector_cone = True
             state.messages.append(MSG_SURFACE_OUTSIDE_CONE)
+
+    # 6 — cross-arm optical obstruction (advisory, banner-only). One
+    # arm's hardware sitting in the OTHER arm's optical volume between
+    # the lens and the surface blocks the beam / line of sight. The
+    # pairing is strictly CROSS (camera assembly -> projector cone;
+    # projector assembly -> camera prism): an arm's own lens sits at the
+    # apex/origin of its own volume and would always self-trigger. The
+    # axial bound (0 <= s <= throw / WD) excludes hardware behind the
+    # lens or beyond the surface, which is laterally inside the
+    # unbounded volume but does not actually obstruct.
+    if viewing_cone_world is not None and projection_cone_world is not None:
+        if projector_distance_mm > 0.0:
+            cam_pts = _assembly_edge_samples(
+                transforms, (KEY_CAMERA_BODY, KEY_CAMERA_LENS)
+            )
+            if np.any(
+                _points_in_cone(
+                    projection_cone_world, cam_pts,
+                    axial_max=projector_distance_mm,
+                )
+            ):
+                state.camera_in_projector_cone = True
+                state.messages.append(MSG_CAMERA_IN_PROJECTOR_CONE)
+
+        if camera_distance_mm > 0.0:
+            proj_pts = _assembly_edge_samples(
+                transforms, (KEY_PROJECTOR_BODY, KEY_PROJECTOR_LENS)
+            )
+            if np.any(
+                _points_in_prism(
+                    viewing_cone_world, proj_pts,
+                    axial_max=camera_distance_mm,
+                )
+            ):
+                state.projector_in_camera_fov = True
+                state.messages.append(MSG_PROJECTOR_IN_CAMERA_FOV)
 
     return state

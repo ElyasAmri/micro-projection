@@ -34,6 +34,17 @@ against the camera viewing prism / projector cone VOLUME. Case 8 is
 the failure mode the old 2D z=0-footprint check missed: a tall
 narrow peak whose base is inside the footprint but whose tip pokes
 out of the tilted telecentric prism.
+
+Sub-task 4d.12 — cross-arm optical-obstruction advisories
+---------------------------------------------------------
+Each assembly's body+lens box edges are sampled against the OTHER
+arm's optical volume, axially bounded to the lens->surface segment.
+Tests cover: the camera assembly obstructing the projector cone (the
+live photo case) and the projector obstructing the camera prism; a
+clean V-rig firing neither (and proving no arm self-triggers on its
+own volume); the axial bound excluding behind-lens / beyond-surface
+hardware; and edge-sampling catching a box spearing a volume with all
+8 corners outside (corner-only would miss it).
 """
 from __future__ import annotations
 
@@ -45,10 +56,16 @@ from gui.clip_detection import (
     KEY_PROJECTOR_BODY,
     KEY_PROJECTOR_LENS,
     MSG_BODY_OVERLAP,
+    MSG_CAMERA_IN_PROJECTOR_CONE,
     MSG_CAMERA_SURFACE,
+    MSG_PROJECTOR_IN_CAMERA_FOV,
     MSG_PROJECTOR_SURFACE,
     MSG_SURFACE_OUTSIDE_CONE,
     MSG_SURFACE_OUTSIDE_FOV,
+    _box_edge_samples,
+    _local_bbox_corners,
+    _points_in_cone,
+    _points_in_prism,
     detect_clips,
 )
 from gui.hardware_scene import (
@@ -392,3 +409,139 @@ def test_no_cone_clip_at_documented_hairline_pose():
     )
     assert not state.surface_outside_projector_cone
     assert MSG_SURFACE_OUTSIDE_CONE not in state.messages
+
+
+# ===========================================================================
+# Sub-task 4d.12 — cross-arm optical-obstruction advisories.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 13 — Camera assembly inside the projector cone (the live photo case):
+# both arms same side, camera tilted -50, projector -25, wide throw=200.
+# The camera body/lens crosses the projection beam before it reaches the
+# surface. Advisory fires; banner-only so no collision flag is set.
+# ---------------------------------------------------------------------------
+def test_camera_assembly_obstructs_projector_cone():
+    t = compute_arm_transforms(
+        theta_camera_deg=-50.0,
+        theta_projector_deg=-25.0,
+        projector_distance_mm=200.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    state = detect_clips(
+        t,
+        camera_distance_mm=157.0,
+        projector_distance_mm=200.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert state.camera_in_projector_cone
+    assert MSG_CAMERA_IN_PROJECTOR_CONE in state.messages
+    # Advisory only — no physical collision at this pose.
+    assert not state.bodies_overlapping
+    assert not state.camera_clipping_surface
+    assert not state.projector_in_camera_fov
+
+
+# ---------------------------------------------------------------------------
+# 14 — Projector assembly inside the camera viewing prism: projector
+# vertical (theta=0), camera tilted -25 toward it at a short WD-ish throw.
+# The projector body (off-axis at +6.5,+17.5 when vertical) sits in the
+# camera's line of sight. Advisory fires, banner-only.
+# ---------------------------------------------------------------------------
+def test_projector_assembly_obstructs_camera_view():
+    t = compute_arm_transforms(
+        theta_camera_deg=-25.0,
+        theta_projector_deg=0.0,
+        projector_distance_mm=100.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    state = detect_clips(
+        t,
+        camera_distance_mm=157.0,
+        projector_distance_mm=100.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert state.projector_in_camera_fov
+    assert MSG_PROJECTOR_IN_CAMERA_FOV in state.messages
+    assert not state.bodies_overlapping
+    assert not state.camera_in_projector_cone
+
+
+# ---------------------------------------------------------------------------
+# 15 — Clean V-rig: neither obstruction advisory fires. Also proves no arm
+# self-triggers on its own volume — the camera lens front sits AT the prism
+# origin and the projector lens AT the cone apex; if the pairing weren't
+# strictly cross, those would false-fire even here.
+# ---------------------------------------------------------------------------
+def test_no_obstruction_at_clean_v_rig():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=30.0,
+        projector_distance_mm=150.0,
+        camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    state = detect_clips(
+        t,
+        camera_distance_mm=157.0,
+        projector_distance_mm=150.0,
+        viewing_cone_world=viewing,
+        projection_cone_world=projection,
+    )
+    assert not state.camera_in_projector_cone
+    assert not state.projector_in_camera_fov
+    assert MSG_CAMERA_IN_PROJECTOR_CONE not in state.messages
+    assert MSG_PROJECTOR_IN_CAMERA_FOV not in state.messages
+
+
+# ---------------------------------------------------------------------------
+# 16 — Axial-bound guard (predicate level): a point laterally inside the
+# volume but BEHIND the lens (s<0) or BEYOND the surface (s>max) must be
+# excluded by the finite axial_max, yet INCLUDED by the unbounded coverage
+# default (axial_max=inf) — locking the behavior-preserving coverage path.
+# ---------------------------------------------------------------------------
+def test_axial_bound_excludes_behind_and_beyond():
+    world = np.eye(4, dtype=np.float64)  # origin 0, axis +Z, u=X, v=Y
+    behind = np.array([[0.0, 0.0, -50.0]])   # s = -50
+    beyond = np.array([[0.0, 0.0, 300.0]])   # s = 300
+    within = np.array([[0.0, 0.0, 100.0]])   # s = 100
+
+    # Prism — unbounded (coverage): along-axis is ignored, so behind AND
+    # beyond are both "inside" laterally.
+    assert _points_in_prism(world, behind).all()
+    assert _points_in_prism(world, beyond).all()
+    # Bounded to WD=157 (obstruction): both excluded, within kept.
+    assert not _points_in_prism(world, behind, axial_max=157.0).any()
+    assert not _points_in_prism(world, beyond, axial_max=157.0).any()
+    assert _points_in_prism(world, within, axial_max=157.0).all()
+
+    # Cone — unbounded keeps beyond (cone diverges past throw); bounded
+    # drops it. (Behind the apex is excluded either way: cone needs s>=0.)
+    assert _points_in_cone(world, beyond).all()
+    assert not _points_in_cone(world, beyond, axial_max=150.0).any()
+    assert _points_in_cone(world, within, axial_max=150.0).all()
+    assert not _points_in_cone(world, behind).any()
+
+
+# ---------------------------------------------------------------------------
+# 17 — Edge-sampling vs corner-only (the recon-Q3 rationale): a long thin
+# box whose 8 corners are ALL outside the cone but whose long edge spears
+# straight through it. Corner-only sampling reports nothing; edge-sampling
+# catches the crossing. This is why the 200 mm camera lens needs edges.
+# ---------------------------------------------------------------------------
+def test_edge_sampling_catches_box_spearing_cone():
+    world = np.eye(4, dtype=np.float64)  # apex 0, axis +Z; half-U ~ 0.42*z
+    # Box at z~100 (cone half-width there ~ 43.7 mm) spanning x = +/-100:
+    # every corner has |x| = 100 -> outside; the x-edge crosses x=0 -> in.
+    corners = _local_bbox_corners(
+        np.array([[-100.0, -5.0, 99.0], [100.0, 5.0, 101.0]])
+    )
+    # Corner-only: nothing inside.
+    assert not _points_in_cone(world, corners).any()
+    # Edge-sampling: the long edge's interior samples land inside.
+    samples = _box_edge_samples(corners)
+    assert _points_in_cone(world, samples).any()
