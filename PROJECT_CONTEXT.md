@@ -197,18 +197,21 @@ Fringe_Projection_Project_Phase1/
 │   ├── io_utils.py
 │   ├── test_surfaces.py           # Stage 4a — heightmap generators
 │   ├── scene.py                   # Stage 4b — mesh + wireframe builders (pure NumPy)
-│   ├── scene_compose.py           # Stage 4b — pose composition layer (arm transforms)
+│   ├── scene_compose.py           # Stage 4b — pose composition layer (arm transforms); Stage 5 (4d.10) added y_offset_mm + recess_mm to cone_local_to_world_transform
 │   ├── stl_loader.py              # Stage 4c — STL → heightmap loader (pure NumPy, peer of test_surfaces.py)
 │   └── gui/                       # Stage 4a/4b — PyQt6 GUI package
 │       ├── __init__.py
 │       ├── __main__.py            # `python -m src.gui` entry
 │       ├── app.py
-│       ├── main_window.py
-│       ├── surface_preview.py     # SurfacePreview + HardwareScene host + ErrorColorbar
-│       ├── hardware_scene.py      # Stage 4b — HardwareScene class + compute_arm_transforms
-│       ├── clip_detection.py      # Stage 4b — pure NumPy clip-detection (5 checks)
+│       ├── main_window.py         # Stage 5 added: lab-view XOR toggle, Hardware Coordinates panel, numeric slider entry (LabeledFloatSlider spinbox), Recovered Surface tab wiring, error-UI migration
+│       ├── surface_preview.py     # SurfacePreview + HardwareScene host + ErrorColorbar; Stage 5 (4d.4) render core extracted to surface_render.py
+│       ├── surface_render.py      # Stage 5 (4d.4) — shared render core (pure: centered_coords, apply_heightmap, error_colors, ERROR_COLORMAP). Both SurfacePreview and RecoveredComparisonView call it.
+│       ├── coordinate_grid.py     # Stage 5 (4d.3) — labeled XYZ mm grid (pure compute_axis_ticks + thin CoordinateGrid class)
+│       ├── comparison_view.py     # Stage 5 (4d.4) — RecoveredComparisonView: solid recovered + translucent ground-truth over the labeled grid
+│       ├── hardware_scene.py      # Stage 4b — HardwareScene class + compute_arm_transforms; Stage 5 (4d.10) projector lens-anchor + ProjectorLensOffset; (4d.11) arm_lens_front_world helper
+│       ├── clip_detection.py      # Stage 4b — pure NumPy clip-detection; Stage 5 (4d.12) 6th check (cross-arm optical obstruction) + bounded point-in-volume predicates
 │       ├── stages_view.py         # 2×3 grid of pipeline-stage images
-│       └── stl_browser.py         # Stage 4d — Browser tab (whole-STL + minimap + windowed slice + FOV overlay)
+│       └── stl_browser.py         # Stage 4d — Browser tab (whole-STL + minimap + windowed slice + FOV overlay); Stage 5 (4d.7) panel swap (whole-STL big-right, slice small-bottom-left)
 ├── tests/
 │   ├── test_geometry.py
 │   ├── test_synthetic_fringes.py
@@ -221,16 +224,24 @@ Fringe_Projection_Project_Phase1/
 │   ├── test_pipeline_synthetic.py
 │   ├── test_scene.py              # Stage 4b — mesh/wireframe builders
 │   ├── test_scene_compose.py      # Stage 4b — pose composition
-│   ├── test_hardware_scene.py     # Stage 4b — arm transforms integration
-│   ├── test_clip_detection.py     # Stage 4b — 10 cases (3 collision + 4 coverage advisories) + Stage 4d follow-up SAT + cone-tolerance regression tests
+│   ├── test_hardware_scene.py     # Stage 4b — arm transforms integration; Stage 5 (4d.10/4d.11) lens-anchor + arm_lens_front_world tests (12 cases)
+│   ├── test_clip_detection.py     # Stage 4b — collision + coverage advisories; Stage 5 (4d.12) obstruction + bounded-predicate tests
 │   ├── test_stl_loader.py         # Stage 4c — 14 cases (synthetic in-memory meshes via tmp_path)
 │   ├── test_stl_loader_full_scale.py # Stage 4d — full-scale loader (oversized STL → (heightmap, origin))
 │   ├── test_main_window.py        # Stage 4d sub-task 1.5 — module-level invariants (no GUI construction)
-│   ├── test_main_window_stl.py    # Stage 4c+4d — GUI-level tests (small-path + Browser flow + commit + off-part-mask regression)
+│   ├── test_main_window_stl.py    # Stage 4c+4d — GUI-level tests; Stage 5 added lab-view-toggle, Recovered-Surface-tab, color-by-error-gating, panel-swap tests
+│   ├── test_coordinate_grid.py    # Stage 5 (4d.3) — 27 cases (pure tick logic + GL-assembly)
+│   ├── test_surface_render.py     # Stage 5 (4d.4) — render-core helpers (centered_coords, apply_heightmap, error_colors)
+│   ├── test_comparison_view.py    # Stage 5 (4d.4) — RecoveredComparisonView construction + visibility toggles
+│   ├── test_labeled_float_slider.py # Stage 5 (4d.9) — numeric spinbox entry, snap/clamp, slider↔spinbox sync
+│   ├── test_hardware_coords_cli.py  # Stage 5 (4d.11) — CLI prints the same numbers as arm_lens_front_world
 │   ├── regression_data.npz
 │   └── conftest.py
 ├── scripts/                       # standalone runnable scripts
-│   └── stage4c_smoke.py           # Stage 4c — GUI smoke harness (verify | Flat | Gaussian | STL). Verify mode updated in Stage 4d sub-task 2.5 to assert Gaussian amp cap == 120.0.
+│   ├── stage4c_smoke.py           # Stage 4c — GUI smoke harness (verify | Flat | Gaussian | STL). Verify mode asserts Gaussian amp cap == 120.0.
+│   ├── stage5_grid_smoke.py       # Stage 5 (4d.3) — coordinate-grid legibility smoke (grid | surface)
+│   ├── stage5_comparison_smoke.py # Stage 5 (4d.4) — comparison-view smoke (both-on | recovered-only | gt-only)
+│   └── hardware_coords.py         # Stage 5 (4d.11) — CLI: print camera + projector lens-center world coords
 ├── data/                          # synthetic frames, calibration files
 ├── docs/
 │   ├── Projector_Geometry_Summary.docx
@@ -253,11 +264,14 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | 3.5 | Math layer upgrade: two-angle λ_eq (Eq. 2-51) | No | ✅ Done |
 | **4a** | **PyQt6 GUI digital twin: surface library + pipeline + recovered-height view + error overlay + warning banner + stages viewer** | No | ✅ Done |
 | **4b** | **Unified hardware-bodies scene: camera + projector bodies + cones added to the same 3D view; live pose sliders; clip-detection (collisions + coverage advisories)** | No | ✅ Done |
-| **4c** | **STL import for arbitrary specimens: surface dropdown reduced to (Flat, Gaussian, STL file...); pure-NumPy STL→heightmap loader; QFileDialog flow; hard-reject for STLs exceeding the (68, 55, 55) mm working volume** | No | ✅ Done |
-| **4d** | **STL Browser for full-scale specimens: windowed FOV selection on oversized parts via minimap + draggable cyan FOV rectangle; live windowed-slice preview; surface-following highlight overlay on whole-STL view; Commit FOV button promotes dragged slice to lab view + math pipeline; QTabWidget refactor for view modes (3D Scene / Pipeline Stages / STL Browser)** | No | ✅ Done |
-| **4d follow-ups** | **GUI review pass: STL lift convention reset to visible-envelope, off-part edge-extend with masked output, SAT body-overlap (OBB intersection), 2 mm cone-coverage tolerance, ABSURDLY_LARGE_MM raised to (500, 500, 120). Five focused commits driven by hands-on visual review of the Stage 4d GUI.** | No | ✅ Done |
-| 5 | Hardware familiarization (capture frame, project pattern) | Optional | — |
-| 6 | Real hardware integration with mounting + new projector | Yes | — |
+| **4c** | **STL import for arbitrary specimens: surface dropdown reduced to (Flat, Gaussian, STL file...); pure-NumPy STL→heightmap loader; QFileDialog flow; hard-reject for oversized STLs** | No | ✅ Done |
+| **4d** | **STL Browser for full-scale specimens: windowed FOV selection on oversized parts via minimap + draggable cyan FOV rectangle; live windowed-slice preview; Commit FOV; QTabWidget refactor (3D Scene / Pipeline Stages / STL Browser)** | No | ✅ Done |
+| **4d follow-ups** | **GUI review pass: STL lift convention reset to visible-envelope, off-part edge-extend with masked output, SAT body-overlap, 2 mm cone-coverage tolerance, ABSURDLY_LARGE_MM raised to (500, 500, 120).** | No | ✅ Done |
+| **5** | **Lab-view + Recovered-Surface refactor + hardware-coordinate readout + cross-arm obstruction advisory. 11 commits (4d.2–4d.12). Lab-view ground-truth/recovered XOR toggle; new "Recovered Surface" 4th tab (solid recovered + translucent ground-truth over a labeled XYZ mm grid, error stats/colormap migrated here); STL Browser panel swap; numeric slider entry; projector lens-center anchored at origin-when-vertical; live Hardware Coordinates panel + CLI; cross-arm optical-obstruction advisory.** | No | ✅ Done |
+| 6 | Hardware familiarization (capture frame, project pattern) | Optional | — |
+| 7 | Real hardware integration with mounting + new projector | Yes | — |
+
+> **Stage numbering note:** the Stage 5 commits are prefixed `Stage 5 (4d.X)` for X = 2…12. The `4d.` is a historical continuation of the Stage 4d sub-task numbering (Stage 5 grew directly out of the Stage 4d follow-up parking lot); the stage itself is **Stage 5**, tagged `stage-5-complete`. Hardware familiarization/integration shifted to Stages 6/7.
 
 ---
 
@@ -284,6 +298,8 @@ Concrete implementations: `HybridGeometry` (default for this project), `Symmetri
 
 **Stage 4b extension of this principle:** `src/gui/clip_detection.py` is also pure NumPy despite living under `gui/`. It imports only `scene` (NumPy mesh builders) and numpy. This lets clip-detection be unit-tested without Qt, matching the math-layer discipline.
 
+**Stage 5 extension:** `src/gui/surface_render.py` (render core) and `src/gui/coordinate_grid.py` (pure `compute_axis_ticks`) and `hardware_scene.arm_lens_front_world` continue this — the pure pieces are headlessly unit-tested; the Qt assembly is a thin layer on top. The `arm_lens_front_world` helper in particular is pure NumPy and is the single source of truth shared by the GUI Hardware Coordinates panel and the `scripts/hardware_coords.py` CLI.
+
 ### 7.3 — Hardware behind a thin interface
 When hardware is added, define abstractions like:
 
@@ -297,22 +313,24 @@ class Projector(Protocol):
 
 Initial implementations: `MockCamera` (returns synthetic frames), `MockProjector` (saves PNGs / writes to extended display). Real implementations: `FLIRCamera` (PySpin wrapper), `RealProjector` (extended display).
 
-**Note (Stage 4 deferral):** the `Camera` / `Projector` protocols and their mock implementations are deliberately deferred to Stage 5/6, not Stage 4. The Stage 4a/4b GUI calls math modules directly. Rationale: the hardware shape isn't finalized (upgraded projector pending), so designing protocols against unknown specs is premature. When real hardware arrives, the protocols get designed against actual SDK calls and frame formats.
+**Note (Stage 4 deferral):** the `Camera` / `Projector` protocols and their mock implementations are deliberately deferred to Stage 6/7, not Stage 4/5. The Stage 4a/4b/5 GUI calls math modules directly. Rationale: the hardware shape isn't finalized (upgraded projector pending), so designing protocols against unknown specs is premature. When real hardware arrives, the protocols get designed against actual SDK calls and frame formats.
 
 ### 7.4 — Honest scale in the 3D scene (Stage 4b)
 
 `Z_EXAGGERATION = 1.0` in `surface_preview.py`. The 3D scene renders the recovered surface at real geometric scale alongside the hardware bodies (also at real scale). This makes the visual scene a **geometric ruler** — when the user sees the surface touch the (graying) lens, that literally means the surface height equals the clip-detection threshold. Any exaggeration would desync the visual from the clip math.
 
-Trade-off accepted: sub-mm specimens visually vanish in the 3D dome at 1×. The error overlay (diverging colormap, already implemented in Stage 4a) is the tool for fine surface variation; the 3D dome conveys macro shape only.
+Trade-off accepted: sub-mm specimens visually vanish in the 3D dome at 1×. The error overlay (diverging colormap, on the Recovered Surface tab since Stage 5) is the tool for fine surface variation; the 3D dome conveys macro shape only.
 
-### 7.5 — Banner vs gray semantics (Stage 4b)
+### 7.5 — Banner vs gray semantics (Stage 4b, extended Stage 5)
 
-The Stage 4b clip-detection system distinguishes two failure modes:
+The clip-detection system distinguishes two failure modes:
 
 - **Gray hardware override** = physical collision (camera/projector lens intersects surface plane, or assemblies overlap). Pose is not physically buildable.
-- **Banner only, no gray** = measurement incompleteness (surface extends outside camera FOV or projector cone). Pose is buildable, but reconstruction values in the uncovered region are simulation artifacts, not real measurements.
+- **Banner only, no gray** = measurement incompleteness or obstruction. Pose is buildable, but reconstruction is compromised.
 
 The math pipeline keeps running in both cases. The user sees the warning but the simulation produces a heightmap regardless. This is by design — the digital twin should let users explore "silly" rigs and see what the math does in those poses.
+
+**Stage 5 (4d.12) added a third banner-only category:** cross-arm optical obstruction (one arm's hardware sits in the other arm's optical volume between the lens and the surface). Like the coverage advisories, it is banner-only — the rig is buildable; the measurement is just obstructed. See 7.9.
 
 ### 7.6 — Lift convention: visible envelope, not global mesh (Stage 4d follow-up)
 
@@ -320,23 +338,45 @@ The math pipeline keeps running in both cases. The user sees the warning but the
 
 Rationale: FPP only measures the visible top surface. A closed solid's bottom shell is discarded by the max-z envelope (camera can't see it), so using the global mesh minimum to define z=0 puts the visible surface artificially above the stage. The visible-envelope convention places the part's visible base flush with z=0, matching what a real measurement would produce.
 
-Consequence: a flat-topped box collapses to a single z=0 plane (zero relief), which is honest — the only thing the camera could measure on such a part is its top surface, and that surface has no internal variation. A closed sphere recovers as a half-dome with the equator at z=0 and apex at radius R (not diameter 2R as the earlier convention produced).
+Consequence: a flat-topped box collapses to a single z=0 plane (zero relief), which is honest. A closed sphere recovers as a half-dome with the equator at z=0 and apex at radius R (not diameter 2R as the earlier convention produced).
 
-The earlier convention (lift by global mesh-Z minimum, including discarded bottom shell) was set in Stage 4c sub-task 2 and reset to visible-envelope minimum in the Stage 4d follow-up GUI review (see Section 12). The reset closed three visible symptoms: floating-part appearance in lab view, 15 mm step at FOV-bbox boundary, angle-dependent recovered shape from straddling-FOV-induced phase-unwrap branch differences.
+The earlier convention (lift by global mesh-Z minimum) was set in Stage 4c sub-task 2 and reset to visible-envelope minimum in the Stage 4d follow-up GUI review.
 
 ### 7.7 — Browser-mode off-part padding contract (Stage 4d follow-up)
 
-In Browser mode, the FOV slice (`_extract_fov_slice`) fills cells outside the part's XY footprint with 0.0 (bare stage). For the math pipeline, this creates a discontinuity at the part edge that contaminates the self-cal tilt fit, producing recovered off-part values that ramp away from zero.
+In Browser mode, the FOV slice (`_extract_fov_slice`) fills cells outside the part's XY footprint with 0.0 (bare stage). For the math pipeline, this creates a discontinuity at the part edge that contaminates the self-cal tilt fit.
 
-The fix (commit `fb19e0c`): **feed the pipeline an edge-extended heightmap, then mask the recovered output's off-part cells back to 0.0 before display.** Off-part is a rectangular band / L / corner by construction (from `_extract_fov_slice`'s clamped-window arithmetic), so a column-then-row edge copy fills it correctly — corners inherit the corner value via the row pass after the column pass.
-
-The user sees physical truth (off-part = flat stage at 0) while the math sees a smooth input (no on-part / off-part discontinuity). This applies ONLY in Browser mode; small-part direct STL, Flat, and Gaussian surface modes are unaffected.
+The fix (commit `fb19e0c`): **feed the pipeline an edge-extended heightmap, then mask the recovered output's off-part cells back to 0.0 before display.** The user sees physical truth (off-part = flat stage at 0) while the math sees a smooth input. Browser mode only; small-part direct STL, Flat, and Gaussian are unaffected.
 
 ### 7.8 — Clip-detection tolerance philosophy (Stage 4d follow-up)
 
-- **Projector-cone coverage check:** 2 mm advisory tolerance (`_CONE_COVERAGE_TOLERANCE_MM`). The cone math models an idealized projection volume with a sharp boundary; real projectors have gradual edge falloff at the cone's geometric bounds. Sub-mm and minor (< 2 mm) corner spills don't represent real illumination loss.
-- **Camera viewing-prism check:** stays exact (no tolerance). A parallel-sided telecentric prism doesn't soften at its bounds — the camera either sees a point or it doesn't.
-- **Body-overlap check:** exact OBB intersection via SAT (no tolerance). Strict separation, no epsilon — touching counts as collision. Adding positive tolerance would re-inflate exactly what the SAT upgrade was designed to remove.
+- **Projector-cone coverage check:** 2 mm advisory tolerance (`_CONE_COVERAGE_TOLERANCE_MM`). Real projectors have gradual edge falloff vs. the math's sharp boundary.
+- **Camera viewing-prism check:** stays exact (no tolerance). A parallel-sided telecentric prism doesn't soften at its bounds.
+- **Body-overlap check:** exact OBB intersection via SAT (no tolerance). Strict separation, no epsilon — touching counts as collision.
+
+### 7.9 — Cross-arm optical obstruction (Stage 5, 4d.12)
+
+A sixth clip-detection check, banner-only. Fires when one arm's hardware sits inside the **other** arm's optical volume **between the lens and the surface** — blocking the beam / line of sight even though the bodies are not touching (a distinct failure mode from body-overlap collision). Two independent directional advisories:
+- `camera_in_projector_cone` — camera assembly (body + lens) blocks the projected light.
+- `projector_in_camera_fov` — projector assembly blocks the camera's line of sight.
+
+Three design points, all in `clip_detection.py`:
+- **Edge-sampling, not corner-only.** A long thin box (the 200 mm camera lens) can spear a convex volume with all 8 corners outside but the middle inside. The check samples ~7 points along each of the 12 box edges (both volumes are convex, so interior edge samples reliably catch a spearing box). Corner-only would silently miss the camera-lens case.
+- **Along-axis bound.** Only hardware between the lens and the surface obstructs. Prism: `0 ≤ s ≤ WD`. Cone: `0 ≤ s ≤ throw`. This excludes hardware *behind* the lens or *beyond* the surface, which is laterally inside the (unbounded) coverage volume but does not actually block anything. Implemented by extracting the per-point INSIDE mask into bounded predicates (`_points_in_prism` / `_points_in_cone`, `axial_max` param); the coverage checks (4–5) call them with `axial_max=inf` and are behavior-preserving.
+- **Cross-only pairing.** Camera assembly → projector cone; projector assembly → camera prism. Never an arm against its own volume (its own lens sits at the apex/origin of its own volume and would always self-trigger).
+
+### 7.10 — Lab view vs Recovered Surface tab: live exploration vs quantitative comparison (Stage 5)
+
+The 3D Scene tab (lab view) and the Recovered Surface tab serve two different purposes, deliberately separated:
+
+- **Lab view (3D Scene tab)** = "what the camera sees, in the physical rig." Shows the hardware bodies + cones + one surface at a time. In STL mode a two-radio XOR toggle picks **ground truth** or **recovered** (never both, never neither; defaults to ground truth — "honest by default"). No XYZ grid. Live exploration while adjusting setup.
+- **Recovered Surface tab** = "quantitative comparison of one measurement." Solid opaque recovered surface + translucent ground-truth overlay, both over a **labeled XYZ mm grid** (unique to this tab). Tab-local checkboxes toggle each surface; a "Color by error" checkbox recolors the recovered surface by signed error (CET-D1 blue-white-red) and render-suppresses the ground-truth overlay. Error stats (mean/std/max-abs/RMS) + colorbar live here. Input is any `(H, W) float64 mm` heightmap — synthetic now, real hardware capture later.
+
+Rationale: the recovered surface is a math output that legitimately changes when angles/parameters change; defaulting the lab view to ground truth keeps it honest about "what the camera sees," while the 4th tab is the dedicated home for "what the math produced vs. what it should have."
+
+### 7.11 — Visualization layer is decoupled from the math pipeline (confirmed Stage 5)
+
+The hardware bodies, arm transforms, lens positions, cones, and clip-detection are the **visualization / scene layer**. The math pipeline (forward model, λ_eq, phase recovery, recovered heightmap, pipeline stages) is driven by **slider VALUES** (θ_projector, θ_camera, distances), NOT by mesh placement. The two paths from the sliders never cross. This was relied on explicitly in Stage 5 (4d.10): moving the projector body 17.5 mm to anchor its lens at the origin is purely cosmetic and cannot change the recovered output. Any future change to body/lens/cone placement is visualization-only.
 
 ---
 
@@ -355,7 +395,7 @@ The user sees physical truth (off-part = flat stage at 0) while the math sees a 
 
 ## 9. Coordinate / Sign Conventions
 
-- **Projector body frame**: origin at front-bottom-left corner of cube; +X right, +Y into body, +Z up.
+- **Projector body frame**: origin at front-bottom-left corner of cube; +X right, +Y into body, +Z up. Measured lens center on the front face: 21 mm along face-X, 45 mm up face-vertical, recessed ~1.5 mm. Relative to the face CENTER that is (face_x = −6.5, face_vertical = +17.5, recess = 1.5) mm — encoded as `ProjectorLensOffset` in `hardware_scene.py` (Stage 5, 4d.10).
 - **Wall plane** at projection: Y = −D where D is throw distance.
 - **Image arrays**: NumPy convention `(H, W)` = (rows, cols). When mapping to physical X (horizontal) and Y (vertical), array axis 0 = vertical (Y), axis 1 = horizontal (X).
 - **Phase units**: radians.
@@ -420,6 +460,14 @@ In rough priority order. Do them with the user, one at a time:
 For each module, write **clear docstrings** with units, dimensions, and references to the relevant chapter equation (e.g., `# Implements Eq. 4-7 from Samara Chapter 4`).
 
 **Note:** the actual Stage 2 module order differed from the list above — see Section 12 "Stage 2 architectural decisions worth carrying forward" for details. Section 12 supersedes this section.
+
+### Projector lens anchoring & hardware coordinate frame (Stage 5)
+
+Stage 5 (4d.10) anchored the projector **lens center** (not the body center) over world (X, Y) = (0, 0) when the projector points straight down (θ = 0). The body therefore hangs off-axis at (+6.5, +17.5) when vertical; the lens lands on the optical axis. The camera lens is centered (no offset), already at (0, 0, WD) when vertical.
+
+- **Axis mapping at θ = 0** (from the arm transform `T(0,0,d) @ R_x(π)`): body-local face-X → world +X; face-vertical → world **−Y**; optical axis → world −Z (straight down). The arm swings about world-Y (`R_y(θ)`), so the face-vertical offset stays purely in Y at every angle (never mixes into X/Z); anchoring at θ = 0 anchors at all θ.
+- **FACE-VERTICAL SIGN UNVERIFIED:** the +17.5 "up the face" → world −Y mapping reflects the sim's current orientation convention. The physical rig is not built yet and the projector will be replaced. Confirm the sign against the real projector at mount time and flip if the lens sits on the opposite world-Y side. Magnitude (17.5) and the anchoring behavior are correct regardless. (Flagged in `hardware_scene.py`.)
+- **Hardware coordinate readout (4d.11):** `arm_lens_front_world(theta_cam, theta_proj, proj_dist, cam_dist)` returns each arm's lens-front world (x, y, z) in this frame; surfaced live in the GUI "Hardware Coordinates" panel and via `scripts/hardware_coords.py`. This is the instrument for cross-checking the simulation against the real mounts during the hardware phase. With both arms swinging about world-Y, the y-coordinate stays ~0 as angles change (the projector's fixed face-vertical offset is zeroed out by the anchoring).
 
 ---
 
@@ -915,6 +963,8 @@ The review framing locked in early: **PyQt6 fixes that lock in UX targets the we
 
 ### Stage 4d follow-up parking lot — design inputs for next session
 
+> **STAGE 5 RESOLUTION (update):** Items #1 (lab-view ground-truth/recovered toggle), #2 (Recovered Surface 4th tab), #4 (hardware coordinate readout), and #5 (STL Browser panel swap) were all DELIVERED in Stage 5 — see "Stage 5 — Done" below. Item #5's panel swap was implemented in the REVERSE sense of the wording below: the user's actual preference was whole-STL-context (with the cyan FOV highlight) in the BIG RIGHT panel and the windowed slice in the small bottom-left — see Stage 5 (4d.7). Item #3 (empty Pipeline Stages 6th slot) remains deliberately empty. Of item #7's smaller items: the **extreme-angle warning banner is still DEFERRED** (explicitly parked by the user during Stage 5); load-time progress indicator, STEP file support, and the console mojibake dash also remain deferred. A NEW item beyond this list — the cross-arm optical-obstruction advisory — was added and delivered in Stage 5 (4d.12).
+
 The next strategy chat (Stage 5 prep / lab-view refactor) needs to absorb these accumulated design inputs:
 
 1. **Lab view refactor: ground truth by default, recovered as opt-in overlay.** Lab view (in the 3D Scene tab) defaults to showing the **ground-truth FOV slice** alongside the hardware bodies. A toggle checkbox enables an additional **recovered-surface overlay** (translucent or wireframe, depending on pyqtgraph alpha-bug resolution) drawn from the same origin in a contrasting color so the user can see real-time geometric divergence as angle / distance sliders change. Both can be off, either can be on, or both visible simultaneously. NO xyz coordinate grid in lab view — that's the 4th tab's job (see #2). Rationale: the recovered surface is a math output that legitimately changes when angles/parameters change; defaulting to ground truth keeps lab view honest about "what the camera sees," and the toggle lets the user opt into "what the math produces from what it sees" for live exploration. This also separates "live exploration while adjusting setup" (lab view) from "quantitative analysis of one captured measurement" (4th tab).
@@ -1156,13 +1206,71 @@ def _obb_overlap(transform_a, local_corners_a, transform_b, local_corners_b):
 
 **pyqtgraph 0.14.0 `GLSurfacePlotItem.setData(colors=...)` docstring is wrong** — claims `(width, height, 4)`, actually needs flat `(N_vertices, 4)`. Workaround documented in `surface_preview.py`.
 
-**pyqtgraph 0.14.0 `GLSurfacePlotItem` alpha — observed bug (Stage 4d sub-task 5.5), NOT reproduced (Stage 5 sub-task 1).** Original observation (5.5): `alpha < 1.0` on a `GLSurfacePlotItem` appeared to produce inverted-complement colors regardless of shader (`shaded`, `None`, or any other), color-input path (per-vertex `colors=` or uniform `setColor()`), sibling-item presence, and `glOptions`. Empirical formula: `output_X ≈ 127 - 44 · input_X` for `alpha=0.5`. Six diagnostic experiments ran during 5.5 before pinning alpha as the apparent trigger. **UPDATE (Stage 5 sub-task 1, "4d.1" translucent-primitive probe): the inversion did NOT reproduce on pyqtgraph 0.14.0 / Qt 6.11.0.** A six-config probe (opaque baseline, GLSurfacePlotItem translucent via both `colors=` and `setColor()`, GLMeshItem translucent, plus controls) rendered clean translucent blends with **no inversion** — provided the item is given **`setGLOptions("translucent")`**. That call is **load-bearing**: without it pyqtgraph silently ignores the alpha and renders opaque (probe config B0), which is the most likely root of the 5.5 "inversion" — the 5.5 highlight set `alpha<1` but (almost certainly) never `glOptions("translucent")`, so the alpha was dropped and color workarounds layered on top read as inversion. **Conclusion retired: translucent `GLSurfacePlotItem` is confirmed WORKING.** The blessed construction (validated by the probe, now recorded in `comparison_view.py` since the probe script was deleted): `GLSurfacePlotItem(shader="shaded")` + per-vertex colors with `alpha<1` + `setGLOptions("translucent")` + `setDepthValue(1)` (so it draws after the opaque surface). **The Stage 5 Recovered Surface tab's translucent ground-truth overlay depends on this** — do not "restore" an alpha=1.0 workaround there. (The `stl_browser.py` FOV highlight legitimately stays `alpha=1.0`: it never sets `glOptions("translucent")` and only needs to mark a region, not show through.) Caveat from the probe: because the non-reproduction is itself unexplained (likely a Qt/driver delta since 5.5), re-validate on the target machine if the stack changes.
+**pyqtgraph 0.14.0 `GLSurfacePlotItem` alpha-rendering bug (Stage 4d sub-task 5.5)** — `alpha < 1.0` on a `GLSurfacePlotItem` produces inverted-complement colors in the rendered output, regardless of shader (`shaded`, `None`, or any other), regardless of color-input path (per-vertex `colors=` or uniform `setColor()`), regardless of sibling-item presence, regardless of `glOptions`. Empirical formula: `output_X ≈ 127 - 44 · input_X` for `alpha=0.5`. Six diagnostic experiments ran during sub-task 5.5 (single-item, white-on-white, pure-RGB inputs, shader=None, alpha=1.0) before isolating alpha as the trigger. Root cause undiagnosed analytically — would require Qt OpenGL driver source-level inspection. **Workaround: use `alpha=1.0` (opaque)** anywhere `GLSurfacePlotItem` color matters. Full diagnostic chain captured in the comment above `_FOV_HIGHLIGHT_COLOR_RGBA` in `stl_browser.py`. **Note for Stage 4d follow-up parking-lot item #2:** the proposed translucent ground-truth overlay on the new Recovered Surface tab will hit this bug if attempted with `alpha < 1.0`. The fallback is wireframe-mesh overlay (which arguably reads better as a reference cage anyway).
 
 **pyqtgraph 0.14.0 sibling `GLSurfacePlotItem` GL state hazard (Stage 4d sub-task 5.5)** — two `GLSurfacePlotItem`s in the same `GLViewWidget` using different `a_color` GL paths (one with constant-attribute `glVertexAttrib4f`, the other with buffer-backed `glVertexAttribPointer`) introduces unreliable GL state transitions. Discovered as a candidate hypothesis during the maroon-vs-cyan investigation (eventually superseded by the alpha-rendering finding above — but the hazard is real even after the alpha workaround). `SurfacePreview` works because it has one `GLSurfacePlotItem` per view. Browser Panel 1 has two, and both must now use the constant-attribute path via `setColor()` at construction. Documented in `stl_browser.py`'s `update_panel1_highlight` docstring.
 
 **Console mojibake dash in clip-detection messages (Stage 4d follow-up)** — `MSG_SURFACE_OUTSIDE_CONE` uses a Unicode em-dash that gets cp1252-mangled when the message is printed to stdout (e.g., during probe scripts or `print(state.messages)` debugging). The Qt banner renders the message correctly; only the console is affected. Cosmetic; non-blocking. Possible future fix: replace the em-dash with an ASCII hyphen in the constant string.
 
 **Load-time freeze for large STLs (Stage 4d follow-up)** — at the (500, 500, 120) absurd limit, rasterization can take 5-20 seconds for ~50k-triangle parts producing ~200 MB heightmaps. The GUI appears frozen during the load; no progress indicator currently exists. Flagged as a parking-lot item; not blocking.
+
+---
+
+### Stage 5 — Done (Lab-view + Recovered-Surface refactor, hardware-coordinate readout, cross-arm obstruction)
+
+**Goal achieved.** Stage 5 grew directly out of the Stage 4d follow-up parking lot. It split the "what the camera sees" (lab view) from "what the math produced vs. what it should have" (a new Recovered Surface tab), added a shared render core, anchored the projector lens geometry correctly, added a live hardware-coordinate readout (the instrument for hardware anchoring), and added a cross-arm optical-obstruction advisory. 11 commits, 271 tests passing at close.
+
+**Stage 5 sub-task table:**
+
+| # | Commit | What landed |
+|---|---|---|
+| 4d.2 | `68173e5` | **Lab-view ground-truth/recovered XOR toggle.** Two-radio exclusive selector in the Display Mode group; STL-mode scoped (disabled + resting on recovered in Flat/Gaussian); defaults to ground truth in STL ("honest by default"). Error overlay render-suppressed (not state-mutated) when ground truth is shown. +8 tests. |
+| 4d.3 | `9fa6266` | **Labeled XYZ mm coordinate grid component** (`src/gui/coordinate_grid.py`). Pure `compute_axis_ticks` (nice-step 1/2/5, headlessly tested) + thin `CoordinateGrid` GL-assembly class. Deterministic opaque labels for dark-bg legibility; adaptive Z tick density + lateral label offset for the short honest-scale Z axis. +27 tests. Smoke `scripts/stage5_grid_smoke.py` kept. |
+| 4d.4 | `cff19e3` | **`RecoveredComparisonView`** (`src/gui/comparison_view.py`) + **shared render core** (`src/gui/surface_render.py`: `centered_coords`, `apply_heightmap`, `error_colors`, `ERROR_COLORMAP`). Solid opaque recovered + translucent ground-truth over the grid, independent visibility toggles. The pyqtgraph alpha bug did NOT reproduce on pyqtgraph 0.14.0 / Qt 6.11.0 — §14 amended in this commit. `SurfacePreview` now calls the shared helper (byte-unchanged render). +14 tests. |
+| 4d.5 | `b385eb1` | **Wired the comparison view into the 4th "Recovered Surface" tab** (`RECOVERED_TAB_INDEX = 3`). `_build_recovered_surface_page` + tab-local recovered/ground-truth visibility checkboxes. New `_refresh_surface_preview` branch feeds the honest off-part=0 arrays. Rides the existing `currentChanged` refresh, no extra pipeline cost. +6 tests. |
+| 4d.6 | `eda7ec6` | **Error stats + colormap + colorbar migrated** off the left panel / 3D Scene tab onto the Recovered Surface tab. New "Color by error" mode (recolors recovered by signed error, render-suppresses the ground-truth overlay). `error_colors` + `ERROR_COLORMAP` factored into `surface_render`. `show_error_overlay` deleted from the 3D Scene tab. Error UI reparented to the tab page for structural cross-tab isolation. +7 tests. |
+| 4d.7 | `b6c6e2b` | **STL Browser panel swap.** Whole-STL context (with cyan FOV highlight) → big right; windowed slice → small bottom-left under the minimap. Layout-only; highlight stays bound to `_whole_stl_view`. (This is the REVERSE of parking-lot #5's wording — the user's actual preference.) +1 layout-lock test (asserts splitter structure). |
+| 4d.8 | `d42c29e` | **"Color by error" gated on "Recovered surface".** `_on_show_recovered_toggled`: enables color-by-error when recovered is shown; unticking recovered force-unchecks + disables it (one cascade refresh restores solid recovered / GT / hidden colorbar); re-ticking re-enables but leaves it off. +4 tests. |
+| 4d.9 | `b6e2bbd` | **Numeric entry on all sliders.** Extended `LabeledFloatSlider`: read-only value label replaced with an editable `QDoubleSpinBox`, bidirectionally synced (blockSignals-guarded, no feedback loop). No step/increment changes — spinbox matches each slider's existing precision; off-grid entry snaps to nearest step, out-of-range clamps, commit on Enter/focus-out. `value()/set_value()/valueChanged` contract preserved (zero external rewiring). +7 tests. |
+| 4d.10 | `26b2a7c` | **Projector lens center anchored at origin-when-vertical.** Added the missing face-vertical lens offset + a recess term; body shifts by the negative of the in-face offset so the LENS anchors on the optical axis (body hangs off-axis at (+6.5, +17.5)). `PROJECTOR_LENS_X_OFFSET_MM` promoted to a signed `ProjectorLensOffset(face_x=-6.5, face_vertical=17.5, recess=1.5)` NamedTuple (face-vertical sign flagged UNVERIFIED pending physical mount; backward-compat scalar alias kept). `cone_local_to_world_transform` gained `y_offset_mm` + `recess_mm` (defaulted, camera call unchanged). Visualization-layer only. Cone better-centered when vertical → coverage banner fires less. +4 tests, 3 updated. |
+| 4d.11 | `abfbb3e` | **Hardware coordinate readout.** Shared pure helper `arm_lens_front_world(...)` → `{camera, projector}` lens-center world (x,y,z) mm; extracted `_camera_cone_world` / `_projector_cone_world` so `update_pose` and the helper share one cone-placement source. New "Hardware Coordinates" GUI group after Geometry (live in `_on_pose_changed`). CLI `scripts/hardware_coords.py` reuses the helper. Projector reads (0,0,~throw), camera (0,0,WD) when vertical. +4 tests. |
+| 4d.12 | `a266c8c` | **Cross-arm optical-obstruction advisory.** Banner-only 6th check: camera assembly in projector cone / projector assembly in camera prism. Extracted bounded per-point predicates (`_points_in_prism` / `_points_in_cone` with `axial_max`); coverage functions now call them with `axial_max=inf` (behavior-preserving). Edge-sampling (7 pts × 12 box edges) catches a long box spearing a convex volume (the 200 mm camera lens). Axial bound (0..throw / 0..WD) excludes behind-lens / beyond-surface hardware. Cross-only pairing. +5 tests. |
+| 5 (close) | this commit | Docs update (PROJECT_CONTEXT.md + CONVERSATION_SUMMARY.md) + tag `stage-5-complete`. |
+
+**Key design decisions locked during Stage 5:**
+
+| Decision | Rationale |
+|---|---|
+| Lab view = ground-truth/recovered XOR (STL mode), defaults to ground truth | Recovered is a math output that changes with angles; defaulting to ground truth keeps lab view honest about "what the camera sees." Flat/Gaussian rest on recovered (toggle disabled — moot for those modes). |
+| Recovered Surface tab = solid recovered + translucent ground-truth over labeled grid | Translucent-over-solid reads divergence well for smooth parts; the migrated error colormap + stats are the quantitative readout for blocky parts where the stacked solids interpenetrate. The two are complementary, both available on the tab. |
+| Single shared render core (`surface_render.py`) | The pyqtgraph axis/colors transpose quirk + error-color normalization must not diverge between `SurfacePreview` and `RecoveredComparisonView`. One source of truth, dependency-light (no HardwareScene drag-in). |
+| Translucent ground-truth via `GLSurfacePlotItem` + `setGLOptions("translucent")` | A throwaway probe (sub-task 1) established the alpha bug does NOT reproduce on this stack; `setGLOptions("translucent")` is the load-bearing call. Built so the render style is swappable to wireframe if it ever inverts on other hardware. |
+| Projector lens CENTER anchored at origin-when-vertical (not body center) | The user's measured lens offset (face_x −6.5, face_vertical +17.5, recess) must place the lens — the optical reference — over (0,0). The body shift is the negative of the in-face offset. Visualization-only; the math reads slider angles, not mesh placement. |
+| `ProjectorLensOffset` parameterized triple | A projector swap (new unit, different/zero offsets) becomes a one-line constant edit, not a geometry rewrite. Face-vertical sign left UNVERIFIED for physical confirmation. |
+| Hardware coordinate readout shares one pure helper for GUI + CLI | `arm_lens_front_world` is the single source of truth; the CLI is tested to print the same numbers as the GUI panel. It is the cross-check instrument for the hardware-anchoring phase. |
+| Optical obstruction = banner-only advisory (not gray-out) | The rig is buildable; the measurement is obstructed — same category as coverage. Edge-sampling (not corner-only) is a correctness requirement, not a nicety: the 200 mm camera lens can spear the cone with all corners outside. The axial bound is what kills behind-lens / beyond-surface false positives. |
+| Numeric slider entry matches existing slider steps (no finer) | The user chose exact-landing within current granularity over sub-step precision. Spinbox precision = slider step; off-grid snaps to nearest. |
+
+**Architectural decisions worth carrying forward from Stage 5 (especially for the web port):**
+
+- **The 4-tab right pane is the reference UX:** 3D Scene (lab view) / Pipeline Stages / STL Browser / Recovered Surface. The web port must mirror this structure. Lab-view-vs-Recovered-Surface-tab is the deliberate split between live exploration and quantitative comparison (see §7.10).
+- **`surface_render.py` is the shared render core.** Any new surface-rendering code (web port included) follows the same heightmap→surface convention (centered coords, the transpose quirk, the error-color normalization) from this one source.
+- **The comparison-view pattern** — solid opaque recovered + translucent ground-truth over a labeled XYZ mm grid, with a "color by error" mode — is the validated quantitative-comparison UX. The translucent overlay reads well for smooth parts; the error colormap is the better tool for blocky/tall parts where the surfaces interpenetrate (a user-observed limitation, deliberately complemented rather than replaced).
+- **Visualization is decoupled from the math** (§7.11) — confirmed and relied on in 4d.10. The web port's 3D rendering can be rebuilt freely without touching the recovered-surface math.
+- **The hardware-coordinate readout** (`arm_lens_front_world` + panel + CLI) is the instrument for the upcoming hardware-anchoring phase. The web port should carry it forward.
+- **Diagnostic-before-decision held throughout Stage 5:** the translucent-primitive probe (settled the alpha-bug question before architecting around it), the projector-geometry recon (caught the missing face-vertical offset + confirmed the math-untouched blast radius before any edit), the obstruction-check recon (caught the corner-vs-edge sensitivity + the axial-bound false-positive before building). Each read-only recon prevented a wrong build.
+
+**Carry-forward flags for the hardware phase (Stages 6/7):**
+
+- **FACE-VERTICAL SIGN UNVERIFIED** (4d.10): confirm the projector lens's world-Y side against the real projector at mount time; flip the `ProjectorLensOffset.face_vertical` sign if needed. Magnitude and anchoring are correct regardless.
+- **World frame is a logical convention, not yet physically anchored.** The intended anchor: the point directly below a lens when its arm points straight down is world (0,0); z=0 is the stage. This becomes the physical anchor when the new projector arrives and the rig is finalized. The hardware-coordinate readout reports in this frame and is the tool to match the physical setup to it.
+- **Deferred mm-vs-pixel unit reconciliation** (still Stage 6/7, unchanged from §9): the math layer uses notebook pixel-space units; the info panel shows mm. Reconcile when real hardware arrives.
+- **`Camera` / `Projector` protocols + mocks** still deferred to Stage 6/7 (§7.3).
+- **Extreme-angle warning banner** deliberately parked (user's call during Stage 5); the >50° unwrap divergence is correct physics, not a bug — a future advisory would just flag the regime.
+
+### Web port (next phase, planned)
+
+Parking-lot #6: port the PyQt6 GUI to HTML/web for larger screens, shareability without a Python install, and more visual real estate. **The PyQt6 implementation is the reference implementation** — every UX target validated in PyQt6 (the 4-tab layout, the lab-view XOR toggle, the comparison view, the labeled grid, the hardware-coordinate readout, the clip/coverage/obstruction advisories) becomes a requirement for the web port. The math layer (pure NumPy) is reused as-is or reimplemented to match; the visualization layer is rebuilt for the browser (Three.js or similar — note the earlier "no Three.js embed inside PyQt6" rejection does NOT apply here; the web port is the appropriate venue for browser-based 3D). Hardware integration (Stages 6/7) follows the web port.
 
 ---
 

@@ -734,6 +734,83 @@ User's proposed resolution (refined across multiple turns):
 
 ---
 
+## 7i. Stage 5 — Execution history (Lab-view + Recovered-Surface refactor, hardware-coordinate readout, cross-arm obstruction)
+
+Tag: `stage-5-complete`. 271 tests passing. 11 commits (4d.2–4d.12) on `main`, plus the docs/tag close.
+
+Stage 5 grew directly out of the Stage 4d follow-up parking lot (§7h). The commits are prefixed `Stage 5 (4d.X)` — the `4d.` numbering is a historical continuation of the Stage 4d sub-task sequence, but the stage itself is **Stage 5**. Hardware familiarization/integration shifted to Stages 6/7. The two-role workflow held throughout: this strategy chat drafted prompts and reviewed diffs; Claude Code implemented/tested/committed; the user was the gatekeeper and the visual verifier (every GUI-affecting commit had a live-launch eyeball before commit).
+
+### Sub-task summary (commit by commit)
+
+| # | Commit | One-line summary |
+|---|---|---|
+| 4d.2 | `68173e5` | **Lab-view ground-truth/recovered XOR toggle.** Two-radio exclusive selector; STL-mode scoped (disabled in Flat/Gaussian); defaults to ground truth in STL ("honest by default"). Error overlay render-suppressed (not state-mutated) when GT shown. 250 tests. |
+| 4d.3 | `9fa6266` | **Labeled XYZ mm coordinate grid** (`coordinate_grid.py`). Pure `compute_axis_ticks` (nice-step 1/2/5) + thin `CoordinateGrid` GL class. Opaque dark-bg-legible labels; adaptive Z tick density + lateral offset for the short honest-scale Z axis. +27 tests. `scripts/stage5_grid_smoke.py`. |
+| 4d.4 | `cff19e3` | **`RecoveredComparisonView`** (`comparison_view.py`) + **shared render core** (`surface_render.py`: `centered_coords`, `apply_heightmap`, `error_colors`, `ERROR_COLORMAP`). Solid recovered + translucent ground-truth. The pyqtgraph alpha bug did NOT reproduce on 0.14.0 / Qt 6.11.0 — §14 amended. SurfacePreview now calls the shared helper. +14 tests. |
+| 4d.5 | `b385eb1` | **Wired comparison view into the 4th "Recovered Surface" tab** (`RECOVERED_TAB_INDEX=3`) + tab-local recovered/GT visibility checkboxes. Rides the existing `currentChanged` refresh. +6 tests. |
+| 4d.6 | `eda7ec6` | **Error stats + colormap + colorbar migrated** off the left panel / 3D Scene tab onto the Recovered Surface tab. "Color by error" mode (recolors recovered, render-suppresses GT). `show_error_overlay` deleted from the 3D Scene tab. Error UI reparented for cross-tab isolation. +7 tests. |
+| 4d.7 | `b6c6e2b` | **STL Browser panel swap.** Whole-STL+cyan-highlight → big right; windowed slice → small bottom-left. **REVERSE of parking-lot #5's wording** — the user's actual preference was whole-STL-context in the big panel. Layout-only; highlight stays bound to `_whole_stl_view`. +1 layout-lock test. |
+| 4d.8 | `d42c29e` | **"Color by error" gated on "Recovered surface".** Untick recovered → color-by-error force-OFF + disabled (one cascade refresh); re-tick → re-enabled but stays OFF. +4 tests. |
+| 4d.9 | `b6e2bbd` | **Numeric entry on all sliders.** Extended `LabeledFloatSlider`: read-only label → editable `QDoubleSpinBox`, bidirectional blockSignals-guarded sync. No step changes; off-grid snaps to nearest, out-of-range clamps, commit on Enter/focus-out. `value()/set_value()/valueChanged` contract preserved. +7 tests. |
+| 4d.10 | `26b2a7c` | **Projector lens center anchored at origin-when-vertical.** Added the missing face-vertical offset + recess; body shifts by negative of the in-face offset so the LENS anchors on-axis (body hangs at +6.5,+17.5). `PROJECTOR_LENS_X_OFFSET_MM` → signed `ProjectorLensOffset(face_x=-6.5, face_vertical=17.5, recess=1.5)` NamedTuple (face-vertical SIGN UNVERIFIED; scalar alias kept). Cone helper gained `y_offset_mm`+`recess_mm`. Visualization-only. +4 tests, 3 updated. |
+| 4d.11 | `abfbb3e` | **Hardware coordinate readout.** Pure `arm_lens_front_world(...)` → `{camera, projector}` lens-center world (x,y,z); extracted `_camera_cone_world`/`_projector_cone_world` (shared by `update_pose` + helper). "Hardware Coordinates" GUI group after Geometry (live in `_on_pose_changed`). CLI `scripts/hardware_coords.py`. Projector reads (0,0,~throw), camera (0,0,WD) vertical. +4 tests. |
+| 4d.12 | `a266c8c` | **Cross-arm optical-obstruction advisory.** Banner-only 6th check: camera-in-projector-cone / projector-in-camera-prism. Extracted bounded predicates `_points_in_prism`/`_points_in_cone` (axial_max); coverage funcs call with axial_max=inf (behavior-preserving). Edge-sampling (7 pts × 12 edges) catches the 200 mm camera lens spearing the cone. Axial bound (0..throw / 0..WD) excludes behind-lens/beyond-surface. Cross-only pairing. +5 tests. |
+| close | docs + tag `stage-5-complete` |  |
+
+**Test suite progression:** 242 → 250 → 277 → … → 266 → 271 (the grid component added the largest single jump at +27; the count reflects new tests minus none removed).
+
+### Stage 5 critical mid-execution discoveries
+
+**The lab-view / recovered-surface split (4d.2 + 4d.5) — "honest by default."** The seed was the Stage 4d-follow-up parking-lot insight: the lab view conflated "what the camera sees" with "what the math produced." The resolution split it cleanly — the lab view defaults to ground truth (recovered as opt-in in STL mode only), and a dedicated 4th tab owns quantitative comparison. The XOR toggle is scoped to STL mode because Flat/Gaussian have no separate "ground truth vs recovered" story worth toggling. The error overlay is render-suppressed (not state-mutated) when ground truth is shown, so toggling back doesn't lose the user's error-view state.
+
+**The translucent-primitive probe (4d.4) — settling the alpha bug before architecting around it.** The Stage 4d follow-up had flagged the pyqtgraph 0.14.0 alpha-rendering bug as a known landmine that might force a wireframe ground-truth overlay. Rather than design around the worst case, sub-task 1 ran a throwaway probe: a translucent `GLSurfacePlotItem` via `setGLOptions("translucent")` on the current stack (pyqtgraph 0.14.0 / Qt 6.11.0). **The bug did NOT reproduce** — `setGLOptions("translucent")` is the load-bearing call, distinct from the `alpha=0.5` color path that triggered the Stage 4d inversion. §14 was amended to record the non-reproduction. The comparison view was built so the render style is swappable to wireframe if the inversion ever returns on other hardware — but solid-translucent is the validated default.
+
+**The solid-recovered / translucent-ground-truth decision (4d.4 + 4d.6).** Translucent-over-solid reads divergence well for *smooth* parts. The user observed it interpenetrates confusingly for *blocky/tall* parts where the two surfaces cross. Rather than replace it, the migrated error colormap (4d.6, "Color by error") is the complementary quantitative tool for exactly those cases — recolors the recovered surface by signed error (CET-D1 blue=under / red=over) and render-suppresses the GT overlay so the color field is unobstructed. The two views are deliberately complementary, both on the tab.
+
+**The projector lens-offset correction (4d.10) — the missing face-vertical offset.** The headline geometry find of Stage 5. A read-only recon (run before any edit) established that the sim applied only the −6.5 mm face-X offset and was **missing the +17.5 mm face-vertical offset entirely** (the earlier recon found the projector lens-front landing at (−6.5, 0, throw) — note Y=0). The user's measured lens center on the Pico Genie's front face is 21 mm along face-X and 45 mm up face-vertical (recessed ~1.5 mm) — relative to the 55 mm face center, that's (−6.5, +17.5, 1.5). The correction anchored the LENS CENTER (not the body) over world (0,0) when vertical by shifting the body by the negative of the in-face offset.
+
+The recon settled three things before the build:
+- **Axis mapping.** At θ=0 the arm transform `T(0,0,d) @ R_x(π)` maps face-X → world +X, face-vertical → world **−Y**, optical → world −Z. The arm swings about world-Y (`R_y(θ)`), so the face-vertical offset stays purely in Y at every angle — anchoring at θ=0 anchors at all θ. (The user confirmed this live: the y-coordinate readout stays 0 as the arm swings.)
+- **The "is the frame physically anchored?" discussion.** The user clarified the world frame is a deliberate *logical* convention (lens-straight-down → (0,0), stage → z=0) that will *become* the physical anchor when the new projector arrives and the rig is finalized. So the readout reports in this convention now and is the instrument to match the physical setup to it later. The face-vertical SIGN is left UNVERIFIED (the +17.5 → world −Y mapping reflects the sim's current orientation; confirm against the real projector at mount time). The projector is being replaced, so the offset becomes a one-line constant edit — hence the parameterized `ProjectorLensOffset` triple.
+- **Blast radius — the user's worry that this would touch the recovered-object math.** The recon confirmed (and the user verified live) that the body/lens placement is **visualization-only**: the math pipeline reads slider angles, not mesh placement (`_build_geometry` builds `HybridGeometry` from `theta_*.value()`, never from the arm transforms). Moving the projector body 17.5 mm cannot change the recovered surface or pipeline stages. The only downstream effect is the projection cone re-centering (which makes the coverage banner fire *less*, an improvement).
+
+**The obstruction-check insight (4d.12) — the user's observation while positioning hardware.** The user noticed that the existing checks caught bodies *touching* and surface-outside-cone *coverage*, but NOT one arm's hardware sitting inside the *other* arm's optical volume — e.g. the camera body falling within the projection cone, blocking the beam before it reaches the surface (seen live, photographed). A distinct failure mode from collision. The recon settled three design points:
+- **Edge-sampling, not corner-only (correctness, not preference).** The 200 mm camera lens can spear the cone with all 8 corners outside but the middle inside — corner-only would silently miss the exact case the user observed. Edge-sampling (7 pts along each of the 12 box edges) catches it; both volumes are convex so interior edge samples are reliable. Cost ≈ the existing 121-pt coverage sample.
+- **The along-axis bound (the subtle false-positive the recon caught).** The coverage volumes are unbounded along-axis (prism infinite, cone diverges past throw). Reused as-is, the check would false-fire on hardware *behind the camera* or *below the surface* — laterally inside the volume but not actually between lens and surface. The fix bounds the test to 0 ≤ s ≤ WD (prism) / 0 ≤ s ≤ throw (cone). Implemented by extracting the per-point INSIDE mask into bounded predicates; the coverage checks call them with `axial_max=inf` (behavior-preserving, locked by the existing coverage tests staying green).
+- **Cross-only pairing.** Camera-vs-projector-volume and projector-vs-camera-volume, never an arm against its own volume (its own lens sits at the apex/origin and would always self-trigger).
+
+### Stage 5 design conversation — the web port and what carries forward
+
+The web port (parking-lot #6) is the next phase after stage close. The framing locked: **the PyQt6 GUI is the reference implementation.** Every UX target validated in PyQt6 across Stage 5 — the 4-tab layout (3D Scene / Pipeline Stages / STL Browser / Recovered Surface), the lab-view XOR toggle, the comparison view (solid recovered + translucent GT over a labeled grid + color-by-error mode), the hardware-coordinate readout, and the clip/coverage/obstruction advisories — becomes a requirement for the web port. The pure-NumPy math layer is reused or reimplemented to match; the visualization layer is rebuilt for the browser (Three.js or similar). Note the earlier "no Three.js embed inside PyQt6" rejection does NOT apply to the web port — the browser is the appropriate venue for browser-based 3D. Hardware integration (Stages 6/7) follows the web port.
+
+### Stage 5 architectural decisions worth carrying forward
+
+- **The 4-tab right pane is the reference UX** (3D Scene / Pipeline Stages / STL Browser / Recovered Surface). The lab-view-vs-Recovered-Surface split — live exploration vs quantitative comparison — is deliberate (PROJECT_CONTEXT §7.10). The lab view is honest-by-default (ground truth); the 4th tab is the home for "what the math produced vs what it should have."
+
+- **`surface_render.py` is the shared render core.** The pyqtgraph axis/colors transpose quirk and the error-color normalization live in ONE place; `SurfacePreview` and `RecoveredComparisonView` both call it. Any new surface rendering (web port included) follows the same convention from this source.
+
+- **The comparison-view pattern** (solid recovered + translucent GT over a labeled grid + color-by-error) is the validated quantitative-comparison UX. Translucent overlay for smooth parts; error colormap for blocky/tall parts where the surfaces interpenetrate — complementary, not either/or.
+
+- **Visualization is decoupled from the math** (PROJECT_CONTEXT §7.11), confirmed and relied on in 4d.10. The web port's 3D can be rebuilt freely without touching the recovered-surface math.
+
+- **The hardware-coordinate readout shares one pure helper for GUI + CLI** (`arm_lens_front_world`). It is the cross-check instrument for the hardware-anchoring phase. The CLI is tested to print the same numbers as the GUI panel — single source of truth.
+
+- **Diagnostic-before-decision held throughout** (matured from Stage 4d). The translucent-primitive probe, the projector-geometry recon, and the obstruction-check recon each ran read-only *before* the build and each caught something that would have been a wrong commit — the missing face-vertical offset, the corner-vs-edge sensitivity, the axial-bound false positive.
+
+- **The user's hands-on observation drove two of the four substantive Stage 5 features.** The hardware-coordinate readout and the obstruction check both came from the user actually positioning the hardware and noticing what the existing tooling didn't capture — the same pattern as the Stage 4d-follow-up parking lot. When the user is exercising the digital twin physically, the gaps they find are real.
+
+- **One commit per concept; visual verification before commit.** Every GUI-affecting Stage 5 commit had a live-launch eyeball by the user before it was committed.
+
+### Carry-forward flags for the hardware phase (Stages 6/7)
+
+- **FACE-VERTICAL SIGN UNVERIFIED** (4d.10): confirm the projector lens's world-Y side against the real projector at mount time; flip `ProjectorLensOffset.face_vertical` if needed. Magnitude (17.5) and the anchoring behavior are correct regardless.
+- **World frame = logical convention, physically anchored later.** Intended anchor: lens-straight-down → world (0,0), stage → z=0. Becomes physical when the new projector arrives and the rig is built. The hardware-coordinate readout reports in this frame and is the tool to match the physical setup to it.
+- **Deferred mm-vs-pixel unit reconciliation** (unchanged): math layer = notebook pixel units; info panel = mm. Reconcile when real hardware arrives.
+- **Camera/Projector protocols + mocks** still deferred to Stage 6/7.
+- **Extreme-angle warning banner** deliberately parked (user's call): the >50° unwrap divergence is correct physics; a future advisory would just flag the regime.
+
+---
+
 ## 8. Open Questions for Supervisor
 
 Non-blocking — proceed on best assumptions and ask in parallel.
@@ -816,6 +893,22 @@ Non-blocking — proceed on best assumptions and ask in parallel.
 
 ---
 
+### Additional insights added during Stage 5 execution
+
+- **The lab view conflated "what the camera sees" with "what the math produced."** The fix wasn't a bug fix — it was a UX split: lab view defaults to ground truth (honest-by-default), a dedicated 4th tab owns quantitative comparison. The recovered surface legitimately changes with angle because it's a measurement, not the object.
+
+- **A "known landmine" is worth a 10-minute probe before you architect around its worst case.** The pyqtgraph alpha bug was carried forward from Stage 4d as "may force wireframe." A throwaway translucent-primitive probe showed it does NOT reproduce via `setGLOptions("translucent")` on the current stack — so the solid-translucent comparison view was built directly, no wireframe fallback needed (kept swappable just in case).
+
+- **Visualization placement and the recovered-object math are fully decoupled.** Moving the projector body 17.5 mm to anchor its lens at the origin cannot touch the recovered surface — the math reads slider angles, not mesh placement. This decoupling is what made the projector-geometry correction safe, and it's the reason the web port can rebuild the 3D layer freely.
+
+- **A measured offset can be physically honest AND a frame mismatch at the same time — the user decides which.** The projector lens sits −6.5 mm off its body centerline; "projector straight down" landing at (−6.5, …) is physically correct for the Pico Genie. Whether the *frame* should redefine that to (0,0) is a mounting decision, not a code decision — and it's moot because the projector is being replaced. The readout reports the honest position; the constant changes when the hardware does.
+
+- **Bodies not touching ≠ optical paths clear.** The user caught (by positioning hardware and looking) that one arm can sit inside the other's optical cone/prism without any body collision — blocking the beam or line of sight. A distinct failure mode the collision and coverage checks both missed.
+
+- **Edge-sampling vs corner-only is a correctness question for long thin boxes.** A 200 mm lens can spear a convex volume with every corner outside but the middle inside. For an obstruction check this isn't a nicety — corner-only silently misses the exact case that motivated the feature.
+
+- **Reusing an unbounded volume test for a bounded question introduces false positives.** The coverage volumes extend infinitely along-axis; an obstruction check must bound to the lens→surface segment or it fires on hardware behind the camera / below the surface. Extracting a bounded predicate (and routing coverage through it with `axial_max=inf`) keeps one source of truth without changing coverage behavior.
+
 ## 10. Project Conversations Note
 
 - User had a friend building a separate **Three.js 3D simulation** of the lab geometry. The Three.js work is **complementary**, not duplicative. The user **explicitly rejected** embedding the Three.js work into the Stage 4 GUI.
@@ -887,9 +980,9 @@ The user also says when they don't understand something. When that happens, stra
 
 ---
 
-## 13. Working Model with Claude Code (Refined Through Stages 2, 3, 3.5, 4a, 4b, 4c, 4d, and 4d follow-up)
+## 13. Working Model with Claude Code (Refined Through Stages 2, 3, 3.5, 4a, 4b, 4c, 4d, 4d follow-up, and 5)
 
-The handoff pattern that worked across all stages (Stage 2's six tasks, Stage 3's two tasks, Stage 3.5, Stage 4a's seven tasks, Stage 4b's eight tasks including the reset, Stage 4c's four sub-tasks, Stage 4d's nine sub-tasks, and the five follow-up commits):
+The handoff pattern that worked across all stages (Stage 2's six tasks, Stage 3's two tasks, Stage 3.5, Stage 4a's seven tasks, Stage 4b's eight tasks including the reset, Stage 4c's four sub-tasks, Stage 4d's nine sub-tasks, the five follow-up commits, and Stage 5's eleven commits):
 
 1. **Strategy chat (this assistant) drafts the prompt.** Includes the architectural constraints, the exact tests to write, and the binding decisions Claude Code shouldn't relitigate. Prompts go in fenced ``` code blocks for the user's copy button.
 2. **User reviews and pastes into Claude Code (terminal).**
@@ -1069,3 +1162,11 @@ The docs commit (this one, sixth) lands first; then strategy chat presents the n
 ---
 
 *End of summary. For the structured project context, see PROJECT_CONTEXT.md.*
+
+### Stage 5 refinement: read-only recon before geometry-critical edits
+
+Stage 5 leaned on the diagnostic-before-decision discipline most heavily for the geometry-critical work. Two of the four substantive features (the projector lens-offset correction and the obstruction check) were each preceded by a dedicated read-only recon prompt — no code, answer specific questions, halt. The recons earned their keep: the projector recon caught the missing face-vertical offset (the sim had only the −6.5 face-X) and confirmed the math-untouched blast radius before any edit; the obstruction recon caught both the corner-vs-edge sampling sensitivity and the axial-bound false-positive before the build. The pattern: when an edit is geometry-critical or the user voices a worry about blast radius, spend a turn on a recon that answers the worry against the actual code, rather than reasoning from memory of how the code works.
+
+### Stage 5 refinement: the docs pass is strategy-chat's, the commit is Claude Code's
+
+The stage-close docs (PROJECT_CONTEXT.md, CONVERSATION_SUMMARY.md) are regenerated by THIS strategy chat as complete downloadable files (reading the current versions from the project, weaving in the stage, fixing stale claims), which the user pastes over the real files in VS Code. Claude Code's role at close is the small mechanical one: commit the pasted docs, tag, push. A drafted "Stage 5 CLOSE" prompt that told Claude Code to write the docs itself was discarded — writing the docs is strategy-chat's job, not Claude Code's.
