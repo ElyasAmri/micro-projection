@@ -190,10 +190,22 @@ def run_inverse_fpp(
     deltas : sequence of float, shape (N,)
         PSI phase shifts (same contract as `recover_object_height`).
     fill_factor : float or None, default None
-        Pixel-area sampling model for the OBJECT capture. `None` (default)
-        keeps point sampling — the existing behavior, byte-identical. A
-        positive float enables the contrast-fade envelope (A.2b only flips
-        this default; the structure is unchanged).
+        Pixel-area sampling model for the OBJECT capture, forwarded to
+        `synthesize_psi_stack`. `None` (default) keeps point sampling — the
+        existing behavior, byte-identical. A positive float enables the
+        contrast-fade envelope.
+
+        Noiseless transparency (Stage 6 A.2b): the envelope attenuates frame
+        CONTRAST (the B term), not the phase, and the attenuation is identical
+        across the N shifts, so `extract_phase`'s arctan2 divides it out
+        exactly for any env > 0 (phase_shifting.py:62-66). Enabling the
+        envelope therefore leaves the recovered height UNCHANGED on
+        well-sampled data — this is the correct noiseless behavior, not a bug.
+        It collapses only at env -> 0 (the 1-px sinc null): the degenerate
+        arctan2(0,0) regime, returning a defined-but-meaningless constant — a
+        hard singular point, not a gradual roll-off. The gradual beyond-Nyquist
+        wall (the B.3 claim) is an SNR effect that REQUIRES a noise model and
+        is DEFERRED to a dedicated noise step.
 
     Returns
     -------

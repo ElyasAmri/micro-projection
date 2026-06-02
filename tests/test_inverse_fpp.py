@@ -26,6 +26,7 @@ from pattern_generator import inverse_grating_phase
 from phase_shifting import extract_phase
 from pipeline import run_inverse_fpp
 from reconstruction import recover_object_height
+from sampling import contrast_envelope
 from synthetic_fringes import project, synthesize_psi_stack
 from unwrapping import unwrap_2d
 
@@ -131,3 +132,115 @@ def test_single_step_is_loop_wrappable(regression_data):
     # does not diverge — it stays on the object's scale, not orders above it.
     bound = 100.0 * (float(np.abs(H_obj).max()) + 1.0)
     assert float(np.abs(rec2).max()) < bound
+
+
+# ======================================================================
+# A.2b — sampling fade live through the loop.
+#
+# HONEST SCOPE (noiseless): the envelope attenuates frame CONTRAST, not phase,
+# identically across the N shifts, so extract_phase's arctan2 divides it out
+# for any env > 0. Therefore enabling the fade leaves recovery UNCHANGED on
+# well-sampled data (transparency — the correct noiseless behavior), and only
+# collapses at env -> 0 (the sinc null, arctan2(0,0)). The gradual
+# beyond-Nyquist wall (the B.3 claim) is an SNR effect that REQUIRES noise and
+# is DEFERRED. These tests assert ONLY the noiseless truths; none add noise.
+# ======================================================================
+def _steep_ramp_object(geom, slope=26.0) -> np.ndarray:
+    """Object heightmap with a flat left half and a steep ramp right half.
+
+    `slope` ~ 26 drives the right-half local fringe frequency to ~0.37 cyc/px
+    (env ~ 0.74) — a genuine contrast loss, but below 0.5 cyc/px so there is no
+    unwrap aliasing and transparency can be asserted cleanly.
+    """
+    H, W = geom.H, geom.W
+    obj = np.zeros((H, W), dtype=np.float64)
+    cols = np.arange(W)
+    right = cols >= W // 2
+    obj[:, right] = slope * (cols[right] - W // 2)
+    return obj
+
+
+def _loop_object_phase(geom, reference_h, object_h):
+    """Reconstruct the exact obj_phase run_inverse_fpp synthesizes (its step 3)."""
+    X = np.tile(np.arange(geom.W, dtype=np.float64), (geom.H, 1))
+    carrier = (2.0 * np.pi / geom.p) * X
+    ref_phase = project(carrier, geom) + geom.height_to_phase(reference_h)
+    phi_projected = inverse_grating_phase(ref_phase)
+    return project(phi_projected, geom) + geom.height_to_phase(object_h)
+
+
+def test_a2b_fill_factor_none_byte_identical(regression_data):
+    """The default path is unchanged: explicit None == default, == A.2 result."""
+    geom = SymmetricGeometry()
+    H_obj = regression_data["H_obj"]
+    ref = np.zeros_like(H_obj)
+
+    rec_default = run_inverse_fpp(ref, H_obj, geom, DELTAS)
+    rec_none = run_inverse_fpp(ref, H_obj, geom, DELTAS, fill_factor=None)
+    np.testing.assert_array_equal(rec_default, rec_none)
+    # And still the validated A.2 recovery.
+    np.testing.assert_allclose(rec_none, regression_data["H_rec0"], atol=ATOL_PIPELINE)
+
+
+def test_a2b_envelope_is_wired_into_loop_synthesis():
+    """The fade reaches the frames the loop builds, attenuating contrast per env.
+
+    run_inverse_fpp forwards fill_factor straight to synthesize_psi_stack
+    (pipeline.py step 4). Synthesizing the loop's exact obj_phase with the
+    envelope scales the per-pixel frame contrast by exactly `env`.
+    """
+    geom = SymmetricGeometry()
+    obj_phase = _loop_object_phase(geom, np.zeros((geom.H, geom.W)),
+                                   _steep_ramp_object(geom))
+    env = contrast_envelope(obj_phase, fill_factor=1.0)
+
+    stack_off = synthesize_psi_stack(obj_phase, DELTAS)
+    stack_on = synthesize_psi_stack(obj_phase, DELTAS, fill_factor=1.0)
+    c_off = stack_off.max(axis=-1) - stack_off.min(axis=-1)
+    c_on = stack_on.max(axis=-1) - stack_on.min(axis=-1)
+
+    # Frame contrast is attenuated by exactly the envelope (per pixel).
+    np.testing.assert_allclose(c_on, env * c_off, rtol=1e-10, atol=1e-12)
+    # The fade is non-trivial in the steep half and ~absent in the flat half.
+    W = geom.W
+    assert env[:, W // 2 + 2:].mean() < 0.9
+    assert env[:, : W // 2 - 2].mean() > 0.99
+
+
+def test_a2b_transparency_recovery_unchanged_with_fade():
+    """Noiseless truth: with the fade ON, recovery is unchanged on env>0 data.
+
+    Even on a genuinely faded object (steep half, env ~ 0.74), the recovered
+    height with fill_factor=1.0 matches the no-fade recovery — extract_phase's
+    arctan2 divides the contrast out. This is correct, NOT a bug; the fade
+    needs a noise model to bite (deferred).
+    """
+    geom = SymmetricGeometry()
+    obj = _steep_ramp_object(geom)
+    ref = np.zeros_like(obj)
+
+    rec_off = run_inverse_fpp(ref, obj, geom, DELTAS)
+    rec_on = run_inverse_fpp(ref, obj, geom, DELTAS, fill_factor=1.0)
+    np.testing.assert_allclose(rec_on, rec_off, atol=ATOL_PIPELINE)
+
+
+def test_a2b_zero_contrast_null_is_defined_collapse():
+    """env -> 0 (the sinc null) is a HARD singular collapse, not SNR roll-off.
+
+    Where contrast vanishes the frames carry no fringe; extract_phase hits the
+    degenerate arctan2(0,0) regime. With finite-precision deltas num and den
+    are the ~1e-16 float residuals of the delta sums, so it returns a finite,
+    defined-but-meaningless CONSTANT angle (no raise, no NaN) that is identical
+    everywhere and carries no spatial fringe information — it does NOT recover
+    the true phase. Labeled: contrast vanishes at the sinc null, not
+    signal-to-noise degradation.
+    """
+    geom = SymmetricGeometry()
+    A = 1.0
+    zero_contrast = np.full((geom.H, geom.W, len(DELTAS)), A, dtype=np.float64)
+    extracted = extract_phase(zero_contrast, DELTAS)
+
+    assert np.all(np.isfinite(extracted)), "collapse must be defined, not NaN/raise"
+    # Degenerate: the same residual-driven constant at every pixel — all spatial
+    # fringe information is gone (not the true phase, just a flat garbage value).
+    assert float(np.ptp(extracted)) < 1e-9
