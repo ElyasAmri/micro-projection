@@ -39,9 +39,10 @@ from typing import Union
 import numpy as np
 
 from calibration import fit_tilt_line_1d
+from pattern_generator import inverse_grating_phase
 from phase_shifting import extract_phase
 from reconstruction import recover_object_height
-from synthetic_fringes import synthesize_psi_stack
+from synthetic_fringes import project, synthesize_psi_stack
 from unwrapping import unwrap_2d
 
 
@@ -137,3 +138,101 @@ def run_pipeline(
         }
         return recovered, stages
     return recovered
+
+
+def run_inverse_fpp(
+    reference_heightmap: np.ndarray,
+    object_heightmap: np.ndarray,
+    geometry,
+    deltas,
+    fill_factor: Union[float, None] = None,
+) -> np.ndarray:
+    """One closed inverse-FPP pass: reference -> inverse grating -> project -> recover.
+
+    The single callable step of the inverse-FPP loop (Stage 6 A.2). Unlike
+    `run_pipeline` — which synthesizes the object directly from
+    `carrier + height_to_phase` with NO projector bias — this routes the
+    capture through the non-telecentric projector's perspective bias
+    (`synthetic_fringes.project`) and pre-corrects it with an inverse grating
+    derived from the reference (`pattern_generator.inverse_grating_phase`):
+
+        1. ref_phase  = project(carrier, geom) + height_to_phase(reference)
+        2. phi_proj   = inverse_grating_phase(ref_phase)        # = 2P - ref_phase
+        3. obj_phase  = project(phi_proj, geom) + height_to_phase(object)
+        4. recover obj_phase via the existing PSI + self-cal path
+        5. DC-align to object.mean()
+
+    Because `project` is affine in its phase argument (the bias is independent
+    of the phase, `synthetic_fringes.project`), step 3 cancels the bias
+    EXACTLY: `project(phi_proj) = 2P - carrier`, a purely linear term the
+    self-calibration removes. The inverse grating is therefore what makes
+    `project()`-on-the-object safe — without it, the quadratic bias residual
+    blows recovery up by ~6 orders (see tests/test_pipeline_synthetic.py
+    module docstring). The inverse grating is NON-identity whenever the
+    projector is biased; it reduces to the plain carrier only in the
+    telecentric (bias-free) limit.
+
+    Loop-wrappable by construction: height in, height out. A convergence loop
+    can feed the previous recovered height back as `reference_heightmap`
+    without any adapter — the closed-loop seam (deferred) wraps this step,
+    it does not rewrite it.
+
+    Parameters
+    ----------
+    reference_heightmap : (H, W) ndarray
+        Known reference surface. Flat (zeros) for A.2; a measured golden-part
+        heightmap later (B.2). Must match `object_heightmap`'s shape.
+    object_heightmap : (H, W) ndarray
+        Object surface to measure.
+    geometry : Geometry protocol
+        Provides `p`, the `project` bias params, and `height_to_phase` /
+        `phase_to_height` via `lambda_eq`.
+    deltas : sequence of float, shape (N,)
+        PSI phase shifts (same contract as `recover_object_height`).
+    fill_factor : float or None, default None
+        Pixel-area sampling model for the OBJECT capture. `None` (default)
+        keeps point sampling — the existing behavior, byte-identical. A
+        positive float enables the contrast-fade envelope (A.2b only flips
+        this default; the structure is unchanged).
+
+    Returns
+    -------
+    (H, W) ndarray, float64
+        Recovered object height, DC-aligned to `object_heightmap.mean()`.
+
+    Notes
+    -----
+    Tautology caveat: the same affine `project` model creates the capture and
+    is inverted by the inverse grating, so a passing closure proves CONSISTENCY
+    (composition, sign, unwrap, self-cal wired correctly), NOT physics. Physics
+    validation is D.3-vs-B.4 (a real projector whose bias is not the analytic
+    Taylor model).
+    """
+    reference_heightmap = np.asarray(reference_heightmap, dtype=np.float64)
+    object_heightmap = np.asarray(object_heightmap, dtype=np.float64)
+    H, W = object_heightmap.shape
+
+    x = np.arange(W, dtype=np.float64)
+    X = np.tile(x, (H, 1))
+    carrier = (2.0 * np.pi / geometry.p) * X
+
+    # 1-2. Reference capture (biased) -> inverse grating (non-identity).
+    ref_phase = project(carrier, geometry) + geometry.height_to_phase(
+        reference_heightmap
+    )
+    phi_projected = inverse_grating_phase(ref_phase)
+
+    # 3. Project the inverse pattern onto the object; the bias cancels exactly.
+    obj_phase = project(phi_projected, geometry) + geometry.height_to_phase(
+        object_heightmap
+    )
+
+    # 4. Existing PSI + self-cal recovery path (envelope off by default).
+    object_stack = synthesize_psi_stack(obj_phase, deltas, fill_factor=fill_factor)
+    object_wrapped = extract_phase(object_stack, deltas)
+    phi_unwrapped = unwrap_2d(object_wrapped)
+    phi_calibration, _ = fit_tilt_line_1d(phi_unwrapped)
+    h_rec = recover_object_height(object_stack, phi_calibration, deltas, geometry)
+
+    # 5. DC alignment to the object mean.
+    return h_rec - h_rec.mean() + object_heightmap.mean()
