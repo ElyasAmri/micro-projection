@@ -83,6 +83,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from calibration import fit_tilt_plane
 from geometry import HybridGeometry
 from pipeline import run_inverse_fpp, run_pipeline, run_straight_fringe
 from src.gui.comparison_view import RecoveredComparisonView
@@ -116,6 +117,22 @@ SURFACE_PIXEL_SIZE_MM: float = 0.1
 # Right-pane tab order (see _build_right_pane). Named so the dispatch in
 # _refresh_surface_preview doesn't carry bare magic indices.
 RECOVERED_TAB_INDEX = 3
+
+
+def _demo_defect(shape: tuple[int, int]) -> np.ndarray:
+    """A fixed, off-center Gaussian bump (mm) — the Stage 6 B.2 demo "defect".
+
+    Added onto the golden part to form the measured part so the deviation map
+    shows a defect popping out (the inverse-FPP-with-golden payoff). ONE
+    hardcoded feature, gated by a visible "Inject demo defect" checkbox; a
+    defect editor / golden-part library is deferred (B.3+).
+    """
+    H, W = shape
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
+    yc, xc = 0.40 * H, 0.62 * W
+    sigma = 0.05 * float(min(H, W))
+    amp_mm = 3.0
+    return amp_mm * np.exp(-(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma ** 2)))
 
 # Stage 4c sub-task 3: dropdown label for the STL import entry. The
 # three-dot ASCII ellipsis is intentional UI convention for "opens a
@@ -749,15 +766,22 @@ class MainWindow(QMainWindow):
         self.color_by_error_checkbox = QCheckBox("Color by error")
         self.color_by_error_checkbox.setChecked(False)
         # Stage 6 B.1: recovery mode. ON (default) = inverse-FPP, projector bias
-        # corrected via a flat-reference inverse grating; OFF = straight-fringe
-        # baseline (bias uncorrected), which fails in the biased region. Honest-
-        # by-default per PROJECT_CONTEXT §7.10 — open on the working method.
+        # corrected via the inverse grating; OFF = straight-fringe baseline (bias
+        # uncorrected), which fails in the biased region. Honest-by-default per
+        # PROJECT_CONTEXT §7.10 — open on the working method.
         self.inverse_fpp_checkbox = QCheckBox("Inverse-FPP correction")
         self.inverse_fpp_checkbox.setChecked(True)
+        # Stage 6 B.2: visible demo defect. ON (default) -> part = golden + a
+        # fixed bump, so the deviation (Color by error = recovered - golden)
+        # shows the defect; OFF -> part = golden, the deviation collapses to the
+        # null. Visible (not hidden) so the user always knows which they see.
+        self.inject_defect_checkbox = QCheckBox("Inject demo defect")
+        self.inject_defect_checkbox.setChecked(True)
         toggle_row.addWidget(self.show_recovered_checkbox)
         toggle_row.addWidget(self.show_ground_truth_checkbox)
         toggle_row.addWidget(self.color_by_error_checkbox)
         toggle_row.addWidget(self.inverse_fpp_checkbox)
+        toggle_row.addWidget(self.inject_defect_checkbox)
         toggle_row.addStretch(1)
         layout.addLayout(toggle_row)
 
@@ -789,6 +813,8 @@ class MainWindow(QMainWindow):
         # Inverse-FPP toggle re-runs the recovery for this tab (the recovered
         # array is produced in the refresh, like Color-by-error).
         self.inverse_fpp_checkbox.toggled.connect(self._refresh_surface_preview)
+        # Demo-defect toggle changes the part (golden + defect) -> rerun.
+        self.inject_defect_checkbox.toggled.connect(self._refresh_surface_preview)
         # Initial gate state (explicit — not relying on the QCheckBox default):
         # color-by-error is enabled iff the recovered surface is shown.
         self.color_by_error_checkbox.setEnabled(
@@ -1028,28 +1054,43 @@ class MainWindow(QMainWindow):
             return
 
         if self.right_pane_tabs.currentIndex() == RECOVERED_TAB_INDEX:
-            # Recovered Surface tab — the inverse-FPP before/after showcase
-            # (Stage 6 B.1). Unlike the other tabs (which render the bias-free
-            # `run_pipeline` output), this tab routes the capture through the
-            # projector bias and either CORRECTS it with a flat-reference
-            # inverse grating (checkbox ON, default) or leaves it UNCORRECTED
-            # (straight-fringe baseline, checkbox OFF). The error colormap +
-            # stats (Stage 5) do the quantitative before/after talking.
+            # Recovered Surface tab — the inverse-FPP showcase (Stage 6 B.1/B.2).
+            # The current surface is the GOLDEN (ideal) part; the measured part
+            # = golden + an optional visible demo defect. The capture is routed
+            # through the projector bias and either CORRECTED by a golden-
+            # reference inverse grating (inverse-FPP ON) or left UNCORRECTED
+            # (straight-fringe baseline, OFF).
             #
-            # Uses the same edge-extended `pipeline_input` + off-part mask as
-            # the other views, so the honest off-part = 0 contract holds.
+            # Contract preserved from Stage 5: the GROUND-TRUTH surface stays the
+            # golden (= heightmap), and "Color by error" = recovered - golden =
+            # the DEVIATION-FROM-GOLDEN (the defect). Inverse-FPP recovers only
+            # C[part - golden] (the deviation's CURVATURE; a linear tilt
+            # difference is not recovered — defect detection, not absolute
+            # metrology), so we reconstruct the displayed part as
+            # golden + recovered-deviation. The golden path uses the 2D
+            # fit_tilt_plane self-cal (removes the y-ramp leak a 2D golden would
+            # otherwise produce, per the B.2 recon); the straight-fringe baseline
+            # uses the same self-cal so the only difference is the inverse
+            # grating. Same edge-extended input + off-part mask as the other
+            # views, so the honest off-part = 0 contract holds.
             n = self.psi_steps.value()
             deltas = [2.0 * math.pi * k / n for k in range(n)]
+            golden = pipeline_input
+            if self.inject_defect_checkbox.isChecked():
+                part = golden + _demo_defect(golden.shape)
+            else:
+                part = golden
             if self.inverse_fpp_checkbox.isChecked():
-                # Flat reference for B.1 (corrects the object-independent
-                # projector bias). B.2 swaps this for a golden-part reference.
-                tab_recovered = run_inverse_fpp(
-                    np.zeros_like(pipeline_input), pipeline_input,
-                    geometry, deltas,
+                deviation = run_inverse_fpp(
+                    golden, part, geometry, deltas, selfcal_fit=fit_tilt_plane,
                 )
+                # run_inverse_fpp recovers the deviation DC-aligned to part.mean;
+                # re-center to 0 and add the known golden back to reconstruct the
+                # measured part surface for display.
+                tab_recovered = golden + (deviation - deviation.mean())
             else:
                 tab_recovered = run_straight_fringe(
-                    pipeline_input, geometry, deltas,
+                    part, geometry, deltas, selfcal_fit=fit_tilt_plane,
                 )
             if self._stl_is_browser_mode:
                 tab_recovered[self._browser_offpart_mask()] = 0.0

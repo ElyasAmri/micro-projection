@@ -1344,3 +1344,43 @@ def test_b1_inverse_fpp_toggle_changes_recovered_array(main_window):
     assert np.all(np.isfinite(rec_inv)) and np.all(np.isfinite(rec_str))
     assert rec_inv.shape == SURFACE_SHAPE and rec_str.shape == SURFACE_SHAPE
     assert not np.allclose(rec_inv, rec_str)  # straight-fringe bias contamination
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 B.2 — golden-part reference + visible demo-defect toggle.
+# ---------------------------------------------------------------------------
+def test_b2_inject_defect_defaults_on(main_window):
+    """The demo defect is on by default so the tab opens showing the payoff."""
+    assert main_window.inject_defect_checkbox.isChecked() is True
+
+
+def test_b2_defect_toggle_changes_deviation_ground_truth_is_golden(main_window):
+    """Golden mode: ground truth stays the golden (= current surface); toggling
+    the demo defect changes the recovered part, and the deviation
+    (recovered - golden) is larger with the defect than without (the null)."""
+    main_window.surface_combo.setCurrentText("Gaussian")
+    main_window.inverse_fpp_checkbox.setChecked(True)
+
+    captured = {}
+
+    def spy(recovered, ground_truth):
+        captured["rec"] = np.array(recovered)
+        captured["gt"] = np.array(ground_truth)
+
+    main_window.recovered_comparison_view.set_data = spy
+
+    main_window.inject_defect_checkbox.setChecked(True)
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    rec_defect = captured["rec"].copy()
+    golden = main_window._compute_current_heightmap()
+    # Ground truth is the golden surface, unchanged by the defect toggle.
+    np.testing.assert_array_equal(captured["gt"], golden)
+
+    main_window.inject_defect_checkbox.setChecked(False)  # -> refresh
+    rec_null = captured["rec"].copy()
+    np.testing.assert_array_equal(captured["gt"], golden)
+
+    assert np.all(np.isfinite(rec_defect)) and np.all(np.isfinite(rec_null))
+    assert not np.allclose(rec_defect, rec_null)
+    # Deviation = recovered - golden: bigger with the injected defect.
+    assert np.abs(rec_defect - golden).max() > np.abs(rec_null - golden).max()

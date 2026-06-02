@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 from conftest import ATOL_PIPELINE
-from calibration import fit_tilt_line_1d
+from calibration import fit_tilt_line_1d, fit_tilt_plane
 from geometry import SymmetricGeometry
 from pattern_generator import inverse_grating_phase
 from phase_shifting import extract_phase
@@ -439,3 +439,68 @@ def test_b1_straight_fringe_has_param_parity_with_inverse_fpp():
     r2 = run_straight_fringe(obj, geom, DELTAS, fill_factor=1.0,
                              noise_sigma=0.01, rng=np.random.default_rng(3))
     np.testing.assert_array_equal(r1, r2)
+
+
+# ======================================================================
+# B.2 — golden-part reference + 2D self-cal (deviation / defect detection).
+# ======================================================================
+def _dome(geom, xc, yc, amp, sig):
+    yy, xx = np.mgrid[0:geom.H, 0:geom.W]
+    return amp * np.exp(-(((xx-xc)**2 + (yy-yc)**2) / (2.0 * sig**2)))
+
+
+def test_b2_2d_matching_part_nulls_with_plane_selfcal():
+    """A matching 2D (off-center) golden nulls to ~machine precision with the
+    2D self-cal — the recon's 6.7e-13 result."""
+    geom = SymmetricGeometry()
+    golden = _dome(geom, geom.W/2, geom.H/2 + 120, 8.0, 90.0)  # off-center-y
+    rec = run_inverse_fpp(golden, golden, geom, DELTAS, selfcal_fit=fit_tilt_plane)
+    r = rec - rec.mean()
+    assert np.abs(r).max() < 1e-9
+
+
+def test_b2_default_selfcal_is_1d_and_fixture_preserved(regression_data):
+    """The default self-cal is fit_tilt_line_1d (308-preserving): default ==
+    explicit 1D == the H_rec0 fixture. The 4e-5 1D-vs-2D divergence stays on
+    the default, so the sealed fixture is never reopened."""
+    geom = SymmetricGeometry()
+    H_obj = regression_data["H_obj"]
+    rec_default = run_inverse_fpp(np.zeros_like(H_obj), H_obj, geom, DELTAS)
+    rec_1d = run_inverse_fpp(np.zeros_like(H_obj), H_obj, geom, DELTAS,
+                             selfcal_fit=fit_tilt_line_1d)
+    np.testing.assert_array_equal(rec_default, rec_1d)
+    np.testing.assert_allclose(rec_default, regression_data["H_rec0"],
+                               atol=ATOL_PIPELINE)
+
+
+def test_b2_defect_detection_against_2d_golden():
+    """Centered 2D golden + a localized bump: the defect is recovered at the
+    right place/magnitude and the background is near zero (recon ~25:1)."""
+    geom = SymmetricGeometry()
+    golden = _dome(geom, geom.W/2, geom.H/2, 8.0, 90.0)
+    bx, by = geom.W/2 + 150, geom.H/2 - 100
+    part = golden + _dome(geom, bx, by, 2.0, 25.0)   # true defect amp 2.0
+    rec = run_inverse_fpp(golden, part, geom, DELTAS, selfcal_fit=fit_tilt_plane)
+    dev = rec - rec.mean()
+
+    yy, xx = np.mgrid[0:geom.H, 0:geom.W]
+    dist = np.sqrt((xx-bx)**2 + (yy-by)**2)
+    inside, outside = dist < 40, dist > 120
+    assert np.abs(dev[inside]).max() > 1.5    # defect recovered (true 2.0)
+    assert np.sqrt((dev[outside]**2).mean()) < 0.2   # background near zero
+    # peak sits at the defect, not elsewhere
+    peak = np.unravel_index(np.argmax(np.abs(dev)), dev.shape)
+    assert dist[peak] < 40
+
+
+def test_b2_2d_selfcal_removes_the_1d_y_ramp_leak():
+    """Locks the fix: off-center golden matching null — 2D self-cal null is
+    orders below the 1D-self-cal null (the leaked y-ramp)."""
+    geom = SymmetricGeometry()
+    golden = _dome(geom, geom.W/2, geom.H/2 + 120, 8.0, 90.0)
+    rec_1d = run_inverse_fpp(golden, golden, geom, DELTAS, selfcal_fit=fit_tilt_line_1d)
+    rec_2d = run_inverse_fpp(golden, golden, geom, DELTAS, selfcal_fit=fit_tilt_plane)
+    leak_1d = float(np.abs(rec_1d - rec_1d.mean()).max())
+    leak_2d = float(np.abs(rec_2d - rec_2d.mean()).max())
+    assert leak_1d > 1.0                  # the 1D leak is a real y-ramp (~3 px)
+    assert leak_2d < 1e-6 * leak_1d       # 2D removes it

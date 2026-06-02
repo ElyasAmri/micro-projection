@@ -34,7 +34,7 @@ Architectural notes
 """
 from __future__ import annotations
 
-from typing import Union
+from typing import Callable, Union
 
 import numpy as np
 
@@ -148,6 +148,7 @@ def run_inverse_fpp(
     fill_factor: Union[float, None] = None,
     noise_sigma: float = 0.0,
     rng=None,
+    selfcal_fit: Callable = fit_tilt_line_1d,
 ) -> np.ndarray:
     """One closed inverse-FPP pass: reference -> inverse grating -> project -> recover.
 
@@ -218,11 +219,34 @@ def run_inverse_fpp(
     rng : numpy.random.Generator or None, default None
         Generator for the noise draw. Required when `noise_sigma > 0` (else
         ValueError), so a recorded seed reproduces the result exactly.
+    selfcal_fit : callable, default fit_tilt_line_1d
+        The tilt-fit used for object self-calibration: `phi -> (plane, coeffs)`.
+        Default `fit_tilt_line_1d` (1D row-mean; forces m_y = 0) preserves the
+        flat-reference / regression behavior byte-for-byte. For a GOLDEN-PART
+        reference with genuine 2D structure, pass `calibration.fit_tilt_plane`
+        (2D): the 1D fit cannot remove a y-tilt in the reference phase and leaks
+        a y-ramp into the deviation map (negligible for a centered/symmetric
+        golden, but large for an asymmetric one); the 2D plane fit removes it
+        (Stage 6 B.2 recon). For y-invariant data the two fits agree, so this
+        only matters when the reference carries real 2D structure.
 
     Returns
     -------
     (H, W) ndarray, float64
         Recovered object height, DC-aligned to `object_heightmap.mean()`.
+
+    Golden-part reference (Stage 6 B.2)
+    -----------------------------------
+    With `reference_heightmap` a measured GOLDEN part (not flat), the recovered
+    quantity is the DEVIATION of the object from the golden: it reduces to
+    `C[object - golden]` — the CURVATURE of the difference. A matching part
+    nulls to the carrier (recovered ~ flat); a defect shows as residual.
+
+    CAVEAT (defect detection, not absolute metrology): only the deviation's
+    CURVATURE is recovered. A purely LINEAR tilt difference between the part and
+    the golden is removed by the self-calibration and is NOT recovered. This is
+    the inherent single-carrier-FPP self-cal limitation — fine for local-defect
+    detection (bumps, dents, cracks), not for absolute global-tilt metrology.
 
     Notes
     -----
@@ -258,7 +282,7 @@ def run_inverse_fpp(
     )
     object_wrapped = extract_phase(object_stack, deltas)
     phi_unwrapped = unwrap_2d(object_wrapped)
-    phi_calibration, _ = fit_tilt_line_1d(phi_unwrapped)
+    phi_calibration, _ = selfcal_fit(phi_unwrapped)
     h_rec = recover_object_height(object_stack, phi_calibration, deltas, geometry)
 
     # 5. DC alignment to the object mean.
@@ -272,6 +296,7 @@ def run_straight_fringe(
     fill_factor: Union[float, None] = None,
     noise_sigma: float = 0.0,
     rng=None,
+    selfcal_fit: Callable = fit_tilt_line_1d,
 ) -> np.ndarray:
     """Straight-fringe (uncorrected) recovery: the failing "before" baseline.
 
@@ -299,8 +324,10 @@ def run_straight_fringe(
     ----------
     object_heightmap : (H, W) ndarray
         Object surface to measure.
-    geometry, deltas, fill_factor, noise_sigma, rng
-        As in `run_inverse_fpp`.
+    geometry, deltas, fill_factor, noise_sigma, rng, selfcal_fit
+        As in `run_inverse_fpp` (same self-cal contract, so a before/after
+        against `run_inverse_fpp` differs only in the inverse-grating
+        correction, not the self-cal choice).
 
     Returns
     -------
@@ -327,7 +354,7 @@ def run_straight_fringe(
     )
     object_wrapped = extract_phase(object_stack, deltas)
     phi_unwrapped = unwrap_2d(object_wrapped)
-    phi_calibration, _ = fit_tilt_line_1d(phi_unwrapped)
+    phi_calibration, _ = selfcal_fit(phi_unwrapped)
     h_rec = recover_object_height(object_stack, phi_calibration, deltas, geometry)
 
     return h_rec - h_rec.mean() + object_heightmap.mean()
