@@ -263,3 +263,71 @@ def run_inverse_fpp(
 
     # 5. DC alignment to the object mean.
     return h_rec - h_rec.mean() + object_heightmap.mean()
+
+
+def run_straight_fringe(
+    object_heightmap: np.ndarray,
+    geometry,
+    deltas,
+    fill_factor: Union[float, None] = None,
+    noise_sigma: float = 0.0,
+    rng=None,
+) -> np.ndarray:
+    """Straight-fringe (uncorrected) recovery: the failing "before" baseline.
+
+    The projector displays the plain straight carrier — NO inverse grating — so
+    the non-telecentric projector's perspective bias lands uncorrected on the
+    object:
+
+        obj_phase = project(carrier + height_to_phase(object))   # bias, no fix
+
+    then the same PSI + self-cal recovery as `run_inverse_fpp`. Because a 1D
+    tilt-fit self-calibration cannot remove the quadratic bias residual, the
+    recovered height is contaminated by orders of magnitude (the ~6-orders
+    blowup of tests/test_pipeline_synthetic.py's "naive project()" warning).
+    This is the genuine "straight-fringe fails in the biased region" baseline
+    for the inverse-FPP before/after showcase (Stage 6 B.1).
+
+    Parameter parity with `run_inverse_fpp`: identical `fill_factor`,
+    `noise_sigma`, `rng` so the before/after compares like-for-like (same fade,
+    same noise realization for a given seed) — the ONLY difference is the
+    absence of the inverse-grating correction. Pure composition of existing
+    functions; no new math. There is no `reference_heightmap`: a straight
+    fringe needs no reference.
+
+    Parameters
+    ----------
+    object_heightmap : (H, W) ndarray
+        Object surface to measure.
+    geometry, deltas, fill_factor, noise_sigma, rng
+        As in `run_inverse_fpp`.
+
+    Returns
+    -------
+    (H, W) ndarray, float64
+        Recovered object height, DC-aligned to `object_heightmap.mean()`.
+        Bias-contaminated by construction — that is the point.
+    """
+    object_heightmap = np.asarray(object_heightmap, dtype=np.float64)
+    H, W = object_heightmap.shape
+
+    x = np.arange(W, dtype=np.float64)
+    X = np.tile(x, (H, 1))
+    carrier = (2.0 * np.pi / geometry.p) * X
+
+    # Straight carrier + object height, projected through the bias, UNCORRECTED.
+    obj_phase = project(
+        carrier + geometry.height_to_phase(object_heightmap), geometry
+    )
+
+    # Same PSI + self-cal recovery path as run_inverse_fpp (like-for-like).
+    object_stack = synthesize_psi_stack(
+        obj_phase, deltas, fill_factor=fill_factor,
+        noise_sigma=noise_sigma, rng=rng,
+    )
+    object_wrapped = extract_phase(object_stack, deltas)
+    phi_unwrapped = unwrap_2d(object_wrapped)
+    phi_calibration, _ = fit_tilt_line_1d(phi_unwrapped)
+    h_rec = recover_object_height(object_stack, phi_calibration, deltas, geometry)
+
+    return h_rec - h_rec.mean() + object_heightmap.mean()

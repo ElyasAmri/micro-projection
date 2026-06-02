@@ -25,7 +25,7 @@ from calibration import fit_tilt_line_1d
 from geometry import SymmetricGeometry
 from pattern_generator import inverse_grating_phase
 from phase_shifting import extract_phase
-from pipeline import run_inverse_fpp
+from pipeline import run_inverse_fpp, run_straight_fringe
 from reconstruction import recover_object_height
 from sampling import contrast_envelope
 from synthetic_fringes import project, synthesize_psi_stack
@@ -399,3 +399,43 @@ def test_a4_more_frames_recover_further_into_fade(regression_data):
     err4 = float((noisy4 - clean4).std())
     err8 = float((noisy8 - clean8).std())
     assert err8 < 0.9 * err4  # expect ~0.71; assert comfortably below 1.0
+
+
+# ======================================================================
+# B.1 — straight-fringe (failing) vs inverse-FPP (corrected) before/after.
+# The two sibling producers the Recovered Surface tab selects between.
+# ======================================================================
+def test_b1_straight_fringe_fails_where_inverse_fpp_recovers(regression_data):
+    """The before/after is real: same object, same projector bias — only the
+    inverse-grating correction differs. Straight-fringe recovery is contaminated
+    by orders of magnitude; inverse-FPP meets the recovery bar."""
+    geom = SymmetricGeometry()
+    H_obj = regression_data["H_obj"]
+
+    rec_inv = run_inverse_fpp(np.zeros_like(H_obj), H_obj, geom, DELTAS)
+    rec_str = run_straight_fringe(H_obj, geom, DELTAS)
+
+    err_inv = float((rec_inv - H_obj).std())
+    err_str = float((rec_str - H_obj).std())
+
+    assert err_inv < 2.0 * BASELINE_STD, f"inverse-FPP too coarse: {err_inv}"
+    assert err_str > 1.0, f"straight-fringe should be blown up: {err_str}"
+    assert err_str > 1e3 * err_inv  # the before/after separation
+
+
+def test_b1_straight_fringe_has_param_parity_with_inverse_fpp():
+    """run_straight_fringe accepts the SAME fill_factor/noise_sigma/rng so the
+    before/after compares like-for-like (Stage 6 B.1 decision 2)."""
+    geom = SymmetricGeometry()
+    obj = np.zeros((geom.H, geom.W), dtype=np.float64)
+
+    # Parity: noise requires an explicit rng, same as run_inverse_fpp.
+    with pytest.raises(ValueError):
+        run_straight_fringe(obj, geom, DELTAS, noise_sigma=0.01, rng=None)
+
+    # Parity: fill_factor + seeded noise run and reproduce.
+    r1 = run_straight_fringe(obj, geom, DELTAS, fill_factor=1.0,
+                             noise_sigma=0.01, rng=np.random.default_rng(3))
+    r2 = run_straight_fringe(obj, geom, DELTAS, fill_factor=1.0,
+                             noise_sigma=0.01, rng=np.random.default_rng(3))
+    np.testing.assert_array_equal(r1, r2)

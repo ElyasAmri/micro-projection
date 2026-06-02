@@ -1309,3 +1309,38 @@ def test_reticking_recovered_reenables_color_by_error_but_leaves_it_off(main_win
     assert main_window.color_by_error_checkbox.isEnabled() is True
     assert main_window.color_by_error_checkbox.isChecked() is False  # stays OFF
     assert main_window.recovered_comparison_view._recovered_item.visible() is True
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 B.1 — inverse-FPP correction toggle (before/after on the tab).
+# ---------------------------------------------------------------------------
+def test_b1_inverse_fpp_checkbox_defaults_on(main_window):
+    """Honest-by-default (PROJECT_CONTEXT §7.10): the tab opens on the working
+    inverse-FPP method, not the failing straight-fringe baseline."""
+    assert main_window.inverse_fpp_checkbox.isChecked() is True
+
+
+def test_b1_inverse_fpp_toggle_changes_recovered_array(main_window):
+    """Both modes render without error, and the recovered array genuinely
+    differs between inverse-FPP (corrected) and straight-fringe (uncorrected)
+    — the before/after is real, not cosmetic."""
+    # Gaussian: real relief + projector bias to correct.
+    main_window.surface_combo.setCurrentText("Gaussian")
+
+    captured = {}
+
+    def spy(recovered, ground_truth):
+        captured["rec"] = np.array(recovered)
+
+    main_window.recovered_comparison_view.set_data = spy
+
+    main_window.inverse_fpp_checkbox.setChecked(True)
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    rec_inv = captured["rec"].copy()
+
+    main_window.inverse_fpp_checkbox.setChecked(False)  # -> refresh (tab current)
+    rec_str = captured["rec"].copy()
+
+    assert np.all(np.isfinite(rec_inv)) and np.all(np.isfinite(rec_str))
+    assert rec_inv.shape == SURFACE_SHAPE and rec_str.shape == SURFACE_SHAPE
+    assert not np.allclose(rec_inv, rec_str)  # straight-fringe bias contamination

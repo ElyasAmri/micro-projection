@@ -84,7 +84,7 @@ from PyQt6.QtWidgets import (
 )
 
 from geometry import HybridGeometry
-from pipeline import run_pipeline
+from pipeline import run_inverse_fpp, run_pipeline, run_straight_fringe
 from src.gui.comparison_view import RecoveredComparisonView
 from src.gui.hardware_scene import arm_lens_front_world
 from src.gui.stages_view import StagesView
@@ -748,9 +748,16 @@ class MainWindow(QMainWindow):
         self.show_ground_truth_checkbox.setChecked(True)
         self.color_by_error_checkbox = QCheckBox("Color by error")
         self.color_by_error_checkbox.setChecked(False)
+        # Stage 6 B.1: recovery mode. ON (default) = inverse-FPP, projector bias
+        # corrected via a flat-reference inverse grating; OFF = straight-fringe
+        # baseline (bias uncorrected), which fails in the biased region. Honest-
+        # by-default per PROJECT_CONTEXT §7.10 — open on the working method.
+        self.inverse_fpp_checkbox = QCheckBox("Inverse-FPP correction")
+        self.inverse_fpp_checkbox.setChecked(True)
         toggle_row.addWidget(self.show_recovered_checkbox)
         toggle_row.addWidget(self.show_ground_truth_checkbox)
         toggle_row.addWidget(self.color_by_error_checkbox)
+        toggle_row.addWidget(self.inverse_fpp_checkbox)
         toggle_row.addStretch(1)
         layout.addLayout(toggle_row)
 
@@ -779,6 +786,9 @@ class MainWindow(QMainWindow):
         self.color_by_error_checkbox.toggled.connect(
             self._refresh_surface_preview
         )
+        # Inverse-FPP toggle re-runs the recovery for this tab (the recovered
+        # array is produced in the refresh, like Color-by-error).
+        self.inverse_fpp_checkbox.toggled.connect(self._refresh_surface_preview)
         # Initial gate state (explicit — not relying on the QCheckBox default):
         # color-by-error is enabled iff the recovered surface is shown.
         self.color_by_error_checkbox.setEnabled(
@@ -1018,17 +1028,35 @@ class MainWindow(QMainWindow):
             return
 
         if self.right_pane_tabs.currentIndex() == RECOVERED_TAB_INDEX:
-            # Recovered Surface tab. Feed the comparison view the SAME
-            # physically-honest arrays the other views use — `recovered` post
-            # off-part mask and `heightmap` (off-part = 0), NOT the
-            # edge-extended pipeline_input. Error stats are ALWAYS shown here
-            # (the stats group is a child of this page, so Qt only shows it on
-            # this tab). "Color by error" recolors the recovered surface by
-            # signed error and render-suppresses the GT; the colorbar shows
-            # only in that mode.
-            error = recovered - heightmap
+            # Recovered Surface tab — the inverse-FPP before/after showcase
+            # (Stage 6 B.1). Unlike the other tabs (which render the bias-free
+            # `run_pipeline` output), this tab routes the capture through the
+            # projector bias and either CORRECTS it with a flat-reference
+            # inverse grating (checkbox ON, default) or leaves it UNCORRECTED
+            # (straight-fringe baseline, checkbox OFF). The error colormap +
+            # stats (Stage 5) do the quantitative before/after talking.
+            #
+            # Uses the same edge-extended `pipeline_input` + off-part mask as
+            # the other views, so the honest off-part = 0 contract holds.
+            n = self.psi_steps.value()
+            deltas = [2.0 * math.pi * k / n for k in range(n)]
+            if self.inverse_fpp_checkbox.isChecked():
+                # Flat reference for B.1 (corrects the object-independent
+                # projector bias). B.2 swaps this for a golden-part reference.
+                tab_recovered = run_inverse_fpp(
+                    np.zeros_like(pipeline_input), pipeline_input,
+                    geometry, deltas,
+                )
+            else:
+                tab_recovered = run_straight_fringe(
+                    pipeline_input, geometry, deltas,
+                )
+            if self._stl_is_browser_mode:
+                tab_recovered[self._browser_offpart_mask()] = 0.0
+
+            error = tab_recovered - heightmap
             abs_max = self._update_error_stats(error)
-            self.recovered_comparison_view.set_data(recovered, heightmap)
+            self.recovered_comparison_view.set_data(tab_recovered, heightmap)
             color_by_error = self.color_by_error_checkbox.isChecked()
             self.recovered_comparison_view.set_error_coloring(
                 error if color_by_error else None
