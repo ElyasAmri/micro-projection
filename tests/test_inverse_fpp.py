@@ -18,6 +18,7 @@ The substance of A.2 (beyond "recovered == object"):
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from conftest import ATOL_PIPELINE
 from calibration import fit_tilt_line_1d
@@ -244,3 +245,157 @@ def test_a2b_zero_contrast_null_is_defined_collapse():
     # Degenerate: the same residual-driven constant at every pixel — all spatial
     # fringe information is gone (not the true phase, just a flat garbage value).
     assert float(np.ptp(extracted)) < 1e-9
+
+
+# ======================================================================
+# A.4 — additive read noise: the sampling fade finally BITES.
+#
+# Read noise (fixed sigma) is added per-frame at the sensor stage, AFTER the
+# envelope. Because it is independent per frame while B*env is common to all
+# frames, it does NOT cancel in extract_phase's arctan2 (unlike env): low
+# contrast + fixed sigma = low SNR = phase error ~ sigma/(B*env*sqrt(N)). All
+# noisy assertions use a FIXED seed and a field statistic (RMS/std over a
+# region), never a single pixel, so pass/fail is reproducible, not flaky.
+# ======================================================================
+def _region_rms(field, mask):
+    """RMS of `field` over boolean column-`mask`, mean-removed (drop global tilt)."""
+    vals = field[:, mask]
+    return float(np.sqrt(((vals - vals.mean()) ** 2).mean()))
+
+
+def test_a4_noise_off_is_byte_identical(regression_data):
+    """noise_sigma=0.0 returns the existing arithmetic, untouched."""
+    geom = SymmetricGeometry()
+    H_obj = regression_data["H_obj"]
+    ref = np.zeros_like(H_obj)
+    X = np.tile(np.arange(geom.W, dtype=np.float64), (geom.H, 1))
+    phase = (2.0 * np.pi / geom.p) * X
+
+    # synthesize: sigma=0 ignores rng entirely (no RNG state touched).
+    np.testing.assert_array_equal(
+        synthesize_psi_stack(phase, DELTAS),
+        synthesize_psi_stack(phase, DELTAS, noise_sigma=0.0, rng=np.random.default_rng(0)),
+    )
+    # loop: sigma=0 == default.
+    np.testing.assert_array_equal(
+        run_inverse_fpp(ref, H_obj, geom, DELTAS),
+        run_inverse_fpp(ref, H_obj, geom, DELTAS, noise_sigma=0.0),
+    )
+
+
+def test_a4_noise_requires_explicit_rng():
+    """noise_sigma>0 without an rng raises (no silent default-seed)."""
+    geom = SymmetricGeometry()
+    phase = np.zeros((geom.H, geom.W))
+    obj = np.zeros((geom.H, geom.W))
+    with pytest.raises(ValueError):
+        synthesize_psi_stack(phase, DELTAS, noise_sigma=0.01, rng=None)
+    with pytest.raises(ValueError):
+        run_inverse_fpp(obj, obj, geom, DELTAS, noise_sigma=0.01, rng=None)
+
+
+def test_a4_reproducible_with_seed(regression_data):
+    """Same (object, sigma, seed) -> identical recovery; different seed -> different."""
+    geom = SymmetricGeometry()
+    H_obj = regression_data["H_obj"]
+    ref = np.zeros_like(H_obj)
+
+    r1 = run_inverse_fpp(ref, H_obj, geom, DELTAS, noise_sigma=0.01,
+                         rng=np.random.default_rng(42))
+    r2 = run_inverse_fpp(ref, H_obj, geom, DELTAS, noise_sigma=0.01,
+                         rng=np.random.default_rng(42))
+    np.testing.assert_array_equal(r1, r2)
+
+    r3 = run_inverse_fpp(ref, H_obj, geom, DELTAS, noise_sigma=0.01,
+                         rng=np.random.default_rng(7))
+    assert not np.allclose(r1, r3)
+
+
+def test_a4_per_frame_independence_is_required():
+    """Noise must be (H,W,N) per frame; an (H,W) map broadcast across k cancels.
+
+    Pins Q1: per-frame noise produces real phase error; the same-magnitude
+    noise as a k-common map cancels in arctan2 (Sum sin/cos delta ~ 0) and
+    leaves ~nothing. If the model ever drew (H,W) and broadcast, err_func would
+    collapse to err_kcommon and this fails.
+    """
+    geom = SymmetricGeometry()
+    # Non-wrapping phase (0..1 rad): avoids +-pi wrap boundaries, where a tiny
+    # perturbation would flip pixels by 2*pi and pollute the wrapped-phase diff.
+    X = np.tile(np.arange(geom.W, dtype=np.float64), (geom.H, 1))
+    phase = X / geom.W
+    clean = synthesize_psi_stack(phase, DELTAS)
+    phi_clean = extract_phase(clean, DELTAS)
+    sigma = 0.05
+
+    # The model's output (per-frame independent).
+    noisy = synthesize_psi_stack(phase, DELTAS, noise_sigma=sigma,
+                                 rng=np.random.default_rng(0))
+    err_func = float((extract_phase(noisy, DELTAS) - phi_clean).std())
+
+    # Counterfactual: the SAME-scale noise as one (H,W) map added to every frame.
+    n_map = np.random.default_rng(0).normal(scale=sigma, size=clean.shape[:2])
+    err_kcommon = float((extract_phase(clean + n_map[..., None], DELTAS) - phi_clean).std())
+
+    assert err_func > 1e-3, "per-frame noise must produce real phase error"
+    assert err_kcommon < 1e-9, "a k-common map must cancel in arctan2"
+
+
+def test_a4_wall_bites_faded_region_degrades(regression_data):
+    """THE A.4 PAYOFF: with noise on, the faded region degrades, the flat does not.
+
+    A steep ramp object drives the right half to ~0.4 cyc/px (alias-free, so the
+    relationship stays smooth) while the left half stays at the carrier (~0.025).
+    fill_factor=2.0 is a TEST construction that places the contrast roll-off
+    inside the alias-free band (env_right ~ 0.2, env_left ~ 1), isolating the
+    noise mechanism from unwrap aliasing. With fixed-sigma read noise, the
+    recovered-height error scales ~1/env, so the faded half degrades materially
+    more than the flat half. Fixed seed + region RMS -> reproducible.
+    """
+    geom = SymmetricGeometry()
+    obj = _steep_ramp_object(geom, slope=28.0)
+    ref = np.zeros_like(obj)
+    W = geom.W
+
+    # Document the operating point: roll-off lands in the alias-free band.
+    obj_phase = _loop_object_phase(geom, ref, obj)
+    env = contrast_envelope(obj_phase, fill_factor=2.0)
+    flat_mask = np.arange(W) < W // 2 - 3
+    faded_mask = np.arange(W) >= W // 2 + 3
+    assert env[:, faded_mask].mean() < 0.35
+    assert env[:, flat_mask].mean() > 0.9
+
+    rec_clean = run_inverse_fpp(ref, obj, geom, DELTAS, fill_factor=2.0)
+    rec_noisy = run_inverse_fpp(ref, obj, geom, DELTAS, fill_factor=2.0,
+                                noise_sigma=0.01, rng=np.random.default_rng(0))
+    err = rec_noisy - rec_clean  # isolates the noise-induced error
+
+    faded_rms = _region_rms(err, faded_mask)
+    flat_rms = _region_rms(err, flat_mask)
+    # Gradual wall: faded-region error is materially larger (expect ~4x; assert
+    # a comfortable >2.5x, well clear of a knife-edge).
+    assert faded_rms > 2.5 * flat_rms
+
+
+def test_a4_more_frames_recover_further_into_fade(regression_data):
+    """Finding #2: N=8 averages noise down vs N=4 (~1/sqrt(2)).
+
+    Flat object, env~1 everywhere, same sigma and seed: recovered-height noise
+    std scales ~1/sqrt(N), so N=8 < N=4. Field std over many pixels makes the
+    statistic stable for a single seed.
+    """
+    geom = SymmetricGeometry()
+    flat = np.zeros((geom.H, geom.W), dtype=np.float64)
+    deltas4 = [2.0 * np.pi * k / 4 for k in range(4)]
+    deltas8 = [2.0 * np.pi * k / 8 for k in range(8)]
+
+    clean4 = run_inverse_fpp(flat, flat, geom, deltas4, fill_factor=1.0)
+    clean8 = run_inverse_fpp(flat, flat, geom, deltas8, fill_factor=1.0)
+    noisy4 = run_inverse_fpp(flat, flat, geom, deltas4, fill_factor=1.0,
+                             noise_sigma=0.02, rng=np.random.default_rng(0))
+    noisy8 = run_inverse_fpp(flat, flat, geom, deltas8, fill_factor=1.0,
+                             noise_sigma=0.02, rng=np.random.default_rng(0))
+
+    err4 = float((noisy4 - clean4).std())
+    err8 = float((noisy8 - clean8).std())
+    assert err8 < 0.9 * err4  # expect ~0.71; assert comfortably below 1.0

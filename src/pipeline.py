@@ -146,6 +146,8 @@ def run_inverse_fpp(
     geometry,
     deltas,
     fill_factor: Union[float, None] = None,
+    noise_sigma: float = 0.0,
+    rng=None,
 ) -> np.ndarray:
     """One closed inverse-FPP pass: reference -> inverse grating -> project -> recover.
 
@@ -206,6 +208,16 @@ def run_inverse_fpp(
         hard singular point, not a gradual roll-off. The gradual beyond-Nyquist
         wall (the B.3 claim) is an SNR effect that REQUIRES a noise model and
         is DEFERRED to a dedicated noise step.
+    noise_sigma : float, default 0.0
+        Additive read-noise sigma (intensity units) for the OBJECT capture,
+        forwarded to `synthesize_psi_stack` (Stage 6 A.4). `0.0` (default) adds
+        no noise — byte-identical to the noiseless path. A positive value makes
+        the sampling fade BITE: low contrast (faded/steep region) + fixed sigma
+        = low SNR = recovered-height error that grows ~ sigma / (B*env*sqrt(N)),
+        the gradual beyond-Nyquist wall. Read noise only.
+    rng : numpy.random.Generator or None, default None
+        Generator for the noise draw. Required when `noise_sigma > 0` (else
+        ValueError), so a recorded seed reproduces the result exactly.
 
     Returns
     -------
@@ -239,8 +251,11 @@ def run_inverse_fpp(
         object_heightmap
     )
 
-    # 4. Existing PSI + self-cal recovery path (envelope off by default).
-    object_stack = synthesize_psi_stack(obj_phase, deltas, fill_factor=fill_factor)
+    # 4. Existing PSI + self-cal recovery path (envelope/noise off by default).
+    object_stack = synthesize_psi_stack(
+        obj_phase, deltas, fill_factor=fill_factor,
+        noise_sigma=noise_sigma, rng=rng,
+    )
     object_wrapped = extract_phase(object_stack, deltas)
     phi_unwrapped = unwrap_2d(object_wrapped)
     phi_calibration, _ = fit_tilt_line_1d(phi_unwrapped)

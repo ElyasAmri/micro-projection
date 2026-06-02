@@ -127,6 +127,8 @@ def synthesize_psi_stack(
     A: float = 1.0,
     B: float = 0.9,
     fill_factor: float | None = None,
+    noise_sigma: float = 0.0,
+    rng=None,
 ) -> np.ndarray:
     """Synthesize an N-step phase-shifted intensity stack.
 
@@ -164,6 +166,23 @@ def synthesize_psi_stack(
         point-sampled, un-attenuated synthesis byte-for-byte — the sealed-core
         regression path. A positive float enables the sampling envelope with
         that fill factor (1.0 -> first contrast null at a 1-px fringe period).
+    noise_sigma : float, default 0.0
+        Additive Gaussian read-noise standard deviation, in INTENSITY units
+        (same scale as `A`, `B`). `0.0` (default) adds no noise and returns the
+        clean stack byte-for-byte. A positive value adds sensor noise at the
+        intensity stage, AFTER the envelope (Stage 6 A.4): because the noise is
+        independent per frame while the `B*env` contrast is common to all
+        frames, it does NOT cancel in `extract_phase`'s arctan2 — so low
+        contrast (faded region) + fixed sigma = low SNR = phase error. This is
+        what turns the sampling fade into a gradual beyond-Nyquist wall. Read
+        noise only; shot noise (sigma ~ sqrt(I)) would attach at this same
+        post-envelope site if added later.
+    rng : numpy.random.Generator or None, default None
+        Generator for the noise draw. Required when `noise_sigma > 0` (raises
+        ValueError otherwise) so the noise is reproducible from a recorded
+        seed — `np.random.default_rng(seed)`; the caller serializes `seed`, not
+        the generator. Untouched (never constructed or sampled) when
+        `noise_sigma <= 0`.
 
     Returns
     -------
@@ -174,6 +193,23 @@ def synthesize_psi_stack(
     deltas_arr = np.asarray(deltas, dtype=np.float64)
     # Broadcast: (H, W, 1) + (N,) -> (H, W, N)
     if fill_factor is None:
-        return A + B * np.cos(phase_arr[..., None] + deltas_arr)
-    env = contrast_envelope(phase_arr, fill_factor)
-    return A + B * env[..., None] * np.cos(phase_arr[..., None] + deltas_arr)
+        signal = A + B * np.cos(phase_arr[..., None] + deltas_arr)
+    else:
+        env = contrast_envelope(phase_arr, fill_factor)
+        signal = A + B * env[..., None] * np.cos(phase_arr[..., None] + deltas_arr)
+
+    # Additive read noise at the sensor stage, AFTER the envelope. Gated off
+    # (sigma <= 0) -> the clean signal above is returned unchanged, so the
+    # no-noise path is byte-identical and no RNG state is touched.
+    if noise_sigma <= 0.0:
+        return signal
+    if rng is None:
+        raise ValueError(
+            "noise_sigma > 0 requires an explicit np.random.Generator `rng` "
+            "so the noise is reproducible from a recorded seed (B4 reference "
+            "requirement); refusing to silently default-seed."
+        )
+    # size=signal.shape -> (H, W, N): INDEPENDENT per frame. An (H, W) map
+    # broadcast across the N shifts would cancel in extract_phase like the
+    # common B*env factor does, silently defeating the SNR mechanism.
+    return signal + rng.normal(loc=0.0, scale=noise_sigma, size=signal.shape)
