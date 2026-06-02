@@ -113,3 +113,53 @@ def make_gaussian(
     """
     X, Y = _centered_grid_mm(shape, pixel_size_mm)
     return amplitude_mm * np.exp(-(X * X + Y * Y) / (2.0 * sigma_mm * sigma_mm))
+
+
+def make_steep_dome(
+    shape: Tuple[int, int],
+    pixel_size_mm: float,
+    amplitude_px: float = 6000.0,
+    sigma_px: float = 60.0,
+) -> np.ndarray:
+    """Centered steep dome in the MATH-PIXEL convention (Stage 6 B.3a).
+
+    h(i, j) = amplitude_px * exp(-((j-jc)**2 + (i-ic)**2) / (2 * sigma_px**2))
+
+    UNIT CONVENTION — deliberately different from the other generators.
+    `make_flat`/`make_gaussian` build in mm; this one builds on the PIXEL grid
+    with amplitude and sigma in pixel / equivalent-wavelength units (the same
+    convention `geometry.p` and `lambda_eq` use). That is the only convention in
+    which a golden's flanks can push the camera-observed fringe frequency past
+    the ~0.5 cyc/px Nyquist wall: the pipeline reads heightmap VALUES through
+    `lambda_eq` (px) and the carrier on the pixel grid, while mm heights at
+    0.1 mm/px scale per-pixel gradients down 10x — a steep dome in mm would
+    need a multi-metre amplitude. The defaults (amp 6000, sigma 60 px) give a
+    max per-pixel gradient ~60.6, i.e. a steep flank at f ~0.7-0.83 cyc/px
+    (well past Nyquist) over ~11% of the frame, the B.3a beyond-Nyquist regime.
+
+    `pixel_size_mm` is accepted for signature uniformity with the other
+    generators but is NOT used (the dome lives on the pixel grid). The 3D view
+    will render the values at face value (Z ~ amplitude_px); the showcase's
+    headline is the error map + the convention-agnostic dynamic-range ratios,
+    not the absolute Z scale.
+
+    Parameters
+    ----------
+    shape : (H, W)
+    pixel_size_mm : float
+        Accepted for signature uniformity; unused (pixel-grid dome).
+    amplitude_px : float
+        Peak height in the math-pixel / lambda_eq convention.
+    sigma_px : float
+        Gaussian standard deviation in pixel indices.
+
+    Returns
+    -------
+    ndarray of shape (H, W), dtype float64, in the math-pixel convention.
+    """
+    H, W = shape
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
+    yc, xc = (H - 1) / 2.0, (W - 1) / 2.0
+    return amplitude_px * np.exp(
+        -(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma_px * sigma_px))
+    )

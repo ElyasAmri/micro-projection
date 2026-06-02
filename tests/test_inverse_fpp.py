@@ -29,6 +29,7 @@ from pipeline import run_inverse_fpp, run_straight_fringe
 from reconstruction import recover_object_height
 from sampling import contrast_envelope
 from synthetic_fringes import project, synthesize_psi_stack
+from test_surfaces import make_steep_dome
 from unwrapping import unwrap_2d
 
 BASELINE_STD = 1.7645046580428724e-05  # notebook cell 20 recovery-quality bar
@@ -504,3 +505,91 @@ def test_b2_2d_selfcal_removes_the_1d_y_ramp_leak():
     leak_2d = float(np.abs(rec_2d - rec_2d.mean()).max())
     assert leak_1d > 1.0                  # the 1D leak is a real y-ramp (~3 px)
     assert leak_2d < 1e-6 * leak_1d       # 2D removes it
+
+
+# ======================================================================
+# B.3a — beyond-Nyquist headline: steep golden, noise on, inverse-FPP un-crushes.
+# ======================================================================
+def _steep_setup():
+    geom = SymmetricGeometry()
+    golden = make_steep_dome((geom.H, geom.W), 0.1)   # amp 6000, sigma 60 (px)
+    X = np.tile(np.arange(geom.W, dtype=np.float64), (geom.H, 1))
+    carrier = (2.0 * np.pi / geom.p) * X
+    h_g = geom.height_to_phase(golden)
+    def lf(p):
+        gy, gx = np.gradient(p); return np.hypot(gx, gy) / (2.0 * np.pi)
+    f_straight = lf(project(carrier, geom) + h_g)
+    steep = f_straight > 0.5
+    return geom, golden, carrier, h_g, lf, f_straight, steep
+
+
+def test_b3a_steep_region_exists_and_decouples():
+    """The steep golden crosses Nyquist for straight-fringe; inverse-FPP pulls
+    the matching observed frequency far below the wall (recon's 42x)."""
+    geom, golden, carrier, h_g, lf, f_straight, steep = _steep_setup()
+    assert steep.any(), "steep dome must produce a region with f_straight>0.5"
+    cam_inv = project(inverse_grating_phase(project(carrier, geom) + h_g), geom) + h_g
+    f_inv = lf(cam_inv)
+    assert f_straight[steep].mean() > 10.0 * f_inv[steep].mean()   # decoupling >10x
+
+
+def test_b3a_inverse_recovers_steep_shape_straight_fails():
+    """THE HEADLINE: matching steep golden, noise on, fixed seed — inverse-FPP
+    steep-region RMS error << straight-fringe (recon ~21,000x; assert >100x)."""
+    geom, golden, carrier, h_g, lf, f_straight, steep = _steep_setup()
+    s = 0.01
+    rec_s = run_straight_fringe(golden, geom, DELTAS, fill_factor=1.0,
+                                noise_sigma=s, rng=np.random.default_rng(0))
+    dev_i = run_inverse_fpp(golden, golden, geom, DELTAS, fill_factor=1.0,
+                            noise_sigma=s, rng=np.random.default_rng(0),
+                            selfcal_fit=fit_tilt_plane)
+    rec_i = golden + (dev_i - dev_i.mean())
+    def rms(a): v = a[steep]; return float(np.sqrt(((v-v.mean())**2).mean()))
+    es, ei = rms(rec_s - golden), rms(rec_i - golden)
+    assert es > 100.0 * ei
+
+
+def test_b3a_gentle_defect_on_steep_survives():
+    """A gentle (sub-Nyquist own-gradient) defect on the steep flank is
+    recovered, with a near-zero steep-region background — the golden's
+    steepness is cancelled, leaving only the defect's own low frequency."""
+    geom, golden, carrier, h_g, lf, f_straight, steep = _steep_setup()
+    H, W = geom.H, geom.W
+    yy, xx = np.mgrid[0:H, 0:W]
+    bx, by = W/2 + 70, H/2
+    defect = 30.0 * np.exp(-(((xx-bx)**2 + (yy-by)**2) / (2.0 * 15.0**2)))
+    din = np.sqrt((xx-bx)**2 + (yy-by)**2) < 22
+    assert f_straight[din].mean() > 0.5, "defect must sit on the steep region"
+    s = 0.01
+    rec_i = run_inverse_fpp(golden, golden + defect, geom, DELTAS, fill_factor=1.0,
+                            noise_sigma=s, rng=np.random.default_rng(0),
+                            selfcal_fit=fit_tilt_plane)
+    dev = rec_i - rec_i.mean()
+    assert np.abs(dev[din]).max() > 0.66 * defect.max()    # defect recovered
+    bg = steep & (np.sqrt((xx-bx)**2 + (yy-by)**2) > 40)
+    assert float(np.sqrt((dev[bg]**2).mean())) < 1.0       # clean steep background
+
+
+def test_b3a_beyond_nyquist_defect_degrades():
+    """The honest bound: a defect whose OWN gradient exceeds Nyquist is NOT
+    fully recovered (recon 61%)."""
+    geom, golden, carrier, h_g, lf, f_straight, steep = _steep_setup()
+    H, W = geom.H, geom.W
+    yy, xx = np.mgrid[0:H, 0:W]
+    bx, by = W/2 + 70, H/2
+    steepdef = 600.0 * np.exp(-(((xx-bx)**2 + (yy-by)**2) / (2.0 * 6.0**2)))
+    din = np.sqrt((xx-bx)**2 + (yy-by)**2) < 22
+    rec_i = run_inverse_fpp(golden, golden + steepdef, geom, DELTAS, fill_factor=1.0,
+                            noise_sigma=0.01, rng=np.random.default_rng(0),
+                            selfcal_fit=fit_tilt_plane)
+    dev = rec_i - rec_i.mean()
+    assert np.abs(dev[din]).max() < 0.8 * steepdef.max()   # degraded, not full
+
+
+def test_b3a_reproducible_with_seed():
+    """Fixed seed -> identical headline recovery two runs."""
+    geom, golden, *_ = _steep_setup()
+    kw = dict(fill_factor=1.0, noise_sigma=0.01, selfcal_fit=fit_tilt_plane)
+    r1 = run_inverse_fpp(golden, golden, geom, DELTAS, rng=np.random.default_rng(0), **kw)
+    r2 = run_inverse_fpp(golden, golden, geom, DELTAS, rng=np.random.default_rng(0), **kw)
+    np.testing.assert_array_equal(r1, r2)

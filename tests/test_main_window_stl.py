@@ -26,7 +26,12 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from gui.main_window import MainWindow, STL_LABEL, SURFACE_SHAPE  # noqa: E402
+from gui.main_window import (  # noqa: E402
+    MainWindow,
+    STEEP_DOME_LABEL,
+    STL_LABEL,
+    SURFACE_SHAPE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -122,12 +127,15 @@ def _patch_warning(monkeypatch) -> list:
 # ---------------------------------------------------------------------------
 # Tests.
 # ---------------------------------------------------------------------------
-def test_dropdown_has_three_entries(main_window):
+def test_dropdown_lists_surfaces(main_window):
     labels = [
         main_window.surface_combo.itemText(i)
         for i in range(main_window.surface_combo.count())
     ]
-    assert labels == ["Flat", "Gaussian", "STL file..."]
+    # Stage 6 B.3a added the beyond-Nyquist steep dome as the 4th surface.
+    assert labels == [
+        "Flat", "Gaussian", "STL file...", STEEP_DOME_LABEL,
+    ]
 
     tabs = main_window.right_pane_tabs
     assert [tabs.tabText(i) for i in range(tabs.count())] == [
@@ -1384,3 +1392,37 @@ def test_b2_defect_toggle_changes_deviation_ground_truth_is_golden(main_window):
     assert not np.allclose(rec_defect, rec_null)
     # Deviation = recovered - golden: bigger with the injected defect.
     assert np.abs(rec_defect - golden).max() > np.abs(rec_null - golden).max()
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 B.3a — steep-dome golden, sensor noise, dynamic-range readout.
+# ---------------------------------------------------------------------------
+def test_b3a_sensor_noise_defaults_off(main_window):
+    """Noise off by default so non-showcase interaction is byte-identical."""
+    assert main_window.sensor_noise_checkbox.isChecked() is False
+
+
+def test_b3a_steep_dome_renders_and_shows_dynamic_range(main_window):
+    """Steep-dome golden + noise on: the tab renders finite and the readout
+    shows both the decoupling factor and the steep-region error ratio."""
+    main_window.surface_combo.setCurrentText(STEEP_DOME_LABEL)
+    main_window.sensor_noise_checkbox.setChecked(True)
+
+    captured = {}
+
+    def spy(recovered, ground_truth):
+        captured["rec"] = np.array(recovered)
+
+    main_window.recovered_comparison_view.set_data = spy
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+
+    assert np.all(np.isfinite(captured["rec"]))
+    txt = main_window.dynamic_range_label.text()
+    assert "decoupling" in txt and "error ratio" in txt
+
+
+def test_b3a_dynamic_range_dash_for_gentle_gaussian(main_window):
+    """A gentle Gaussian has no beyond-Nyquist region -> readout shows '—'."""
+    main_window.surface_combo.setCurrentText("Gaussian")
+    main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
+    assert "—" in main_window.dynamic_range_label.text()

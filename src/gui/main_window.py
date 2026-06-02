@@ -85,7 +85,9 @@ from PyQt6.QtWidgets import (
 
 from calibration import fit_tilt_plane
 from geometry import HybridGeometry
+from pattern_generator import inverse_grating_phase
 from pipeline import run_inverse_fpp, run_pipeline, run_straight_fringe
+from synthetic_fringes import project
 from src.gui.comparison_view import RecoveredComparisonView
 from src.gui.hardware_scene import arm_lens_front_world
 from src.gui.stages_view import StagesView
@@ -99,6 +101,7 @@ from src.stl_loader import (
 from src.test_surfaces import (
     make_flat,
     make_gaussian,
+    make_steep_dome,
 )
 
 
@@ -119,26 +122,52 @@ SURFACE_PIXEL_SIZE_MM: float = 0.1
 RECOVERED_TAB_INDEX = 3
 
 
-def _demo_defect(shape: tuple[int, int]) -> np.ndarray:
-    """A fixed, off-center Gaussian bump (mm) — the Stage 6 B.2 demo "defect".
+def _demo_defect(
+    shape: tuple[int, int],
+    amplitude: float = 3.0,
+    sigma_px: float | None = None,
+) -> np.ndarray:
+    """A fixed, off-center Gaussian bump — the Stage 6 B.2/B.3a demo "defect".
 
-    Added onto the golden part to form the measured part so the deviation map
-    shows a defect popping out (the inverse-FPP-with-golden payoff). ONE
-    hardcoded feature, gated by a visible "Inject demo defect" checkbox; a
-    defect editor / golden-part library is deferred (B.3+).
+    Added onto the golden to form the measured part so the deviation map shows a
+    defect popping out (the inverse-FPP-with-golden payoff). ONE hardcoded
+    feature, gated by a visible "Inject demo defect" checkbox; a defect editor /
+    golden-part library is deferred (B.3+).
+
+    Convention: `amplitude` is in the SAME convention as the golden it's added
+    to — the mm default (3.0, sigma ~0.05*min(H,W) px) suits the mm `make_gaussian`
+    golden; for the math-pixel `make_steep_dome` golden the caller passes the
+    pixel-convention values (STEEP_DEFECT_AMP_PX / STEEP_DEFECT_SIGMA_PX), gentle
+    enough that the defect's OWN gradient stays sub-Nyquist (so it survives the
+    un-crushing — see the B.3a recon). Do not cross the two.
     """
     H, W = shape
+    if sigma_px is None:
+        sigma_px = 0.05 * float(min(H, W))
     yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
     yc, xc = 0.40 * H, 0.62 * W
-    sigma = 0.05 * float(min(H, W))
-    amp_mm = 3.0
-    return amp_mm * np.exp(-(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma ** 2)))
+    return amplitude * np.exp(
+        -(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma_px * sigma_px))
+    )
 
 # Stage 4c sub-task 3: dropdown label for the STL import entry. The
 # three-dot ASCII ellipsis is intentional UI convention for "opens a
 # dialog". Kept as a module constant so dispatch / tests / smoke script
 # reference one source of truth.
 STL_LABEL: str = "STL file..."
+# Stage 6 B.3a: the beyond-Nyquist headline golden. A steep dome (math-pixel
+# convention, see test_surfaces.make_steep_dome) whose flanks push straight-
+# fringe past the sampling wall.
+STEEP_DOME_LABEL: str = "Steep dome (beyond-Nyquist)"
+# Fixed sensor-noise regime for the B.3a showcase (reproducible / B4): a fixed
+# read-noise sigma and seed, applied identically to both producers.
+NOISE_SIGMA: float = 0.01
+NOISE_SEED: int = 0
+# Pixel-convention demo defect for the steep dome (gentle, sub-Nyquist own
+# gradient so it survives the un-crushing). Distinct from the mm-scaled
+# _demo_defect used for the Gaussian golden — see _demo_defect.
+STEEP_DEFECT_AMP_PX: float = 30.0
+STEEP_DEFECT_SIGMA_PX: float = 15.0
 
 # Bbox classification thresholds for STL import (Stage 4d sub-task 2).
 # Three-way branch on the part's XY/Z extent, evaluated by
@@ -481,7 +510,9 @@ class MainWindow(QMainWindow):
         # order (Flat=0, Gaussian=1, STL=2) — the currentIndexChanged
         # -> setCurrentIndex wiring is index-based while dispatch is
         # currentText()-based.
-        self.surface_combo.addItems(["Flat", "Gaussian", STL_LABEL])
+        self.surface_combo.addItems(
+            ["Flat", "Gaussian", STL_LABEL, STEEP_DOME_LABEL]
+        )
         # Spec: Gaussian is the launch default.
         self.surface_combo.setCurrentText("Gaussian")
         layout.addWidget(self.surface_combo)
@@ -490,6 +521,7 @@ class MainWindow(QMainWindow):
         self.surface_pages.addWidget(self._build_flat_page())
         self.surface_pages.addWidget(self._build_gaussian_page())
         self.surface_pages.addWidget(self._build_stl_page())
+        self.surface_pages.addWidget(self._build_steep_dome_page())
         self.surface_pages.setCurrentIndex(self.surface_combo.currentIndex())
         layout.addWidget(self.surface_pages)
 
@@ -512,6 +544,18 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.addWidget(QLabel("No parameters"))
+        return page
+
+    def _build_steep_dome_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        label = QLabel(
+            "Beyond-Nyquist golden (fixed). Steep flanks push straight-fringe\n"
+            "past the sampling wall; inverse-FPP nulls the steepness. See the\n"
+            "Recovered Surface tab's dynamic-range readout."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
         return page
 
     def _build_gaussian_page(self) -> QWidget:
@@ -777,11 +821,19 @@ class MainWindow(QMainWindow):
         # null. Visible (not hidden) so the user always knows which they see.
         self.inject_defect_checkbox = QCheckBox("Inject demo defect")
         self.inject_defect_checkbox.setChecked(True)
+        # Stage 6 B.3a: sensor read noise (fixed sigma + seed). OFF by default
+        # so existing behavior is byte-identical; ON makes the beyond-Nyquist
+        # wall physical (the steep-dome showcase regime). Threaded identically
+        # to BOTH producers so the before/after differs only by the inverse
+        # grating, not the noise draw.
+        self.sensor_noise_checkbox = QCheckBox("Sensor noise")
+        self.sensor_noise_checkbox.setChecked(False)
         toggle_row.addWidget(self.show_recovered_checkbox)
         toggle_row.addWidget(self.show_ground_truth_checkbox)
         toggle_row.addWidget(self.color_by_error_checkbox)
         toggle_row.addWidget(self.inverse_fpp_checkbox)
         toggle_row.addWidget(self.inject_defect_checkbox)
+        toggle_row.addWidget(self.sensor_noise_checkbox)
         toggle_row.addStretch(1)
         layout.addLayout(toggle_row)
 
@@ -795,6 +847,20 @@ class MainWindow(QMainWindow):
         self.error_colorbar.setVisible(False)
         layout.addWidget(self.error_colorbar)
         layout.addWidget(self._build_error_stats_group())
+
+        # Stage 6 B.3a: beyond-Nyquist dynamic-range readout. Two convention-
+        # agnostic RATIOS over the steep (f>0.5) region: the decoupling factor
+        # (how far the null pulls the observed frequency below the wall) and the
+        # steep-region recovery-error ratio (straight / inverse-FPP). Shows "—"
+        # when there is no steep region. Tooltip carries the honest bound.
+        self.dynamic_range_label = QLabel("Steep-region: —")
+        self.dynamic_range_label.setToolTip(
+            "Inverse-FPP decouples the golden's surface gradient from the "
+            "sampling wall (the matching shape can be arbitrarily steep). "
+            "A defect is recovered only if the DEFECT's own gradient is "
+            "sub-Nyquist; a defect that is itself beyond-Nyquist degrades."
+        )
+        layout.addWidget(self.dynamic_range_label)
 
         # Recovered visibility toggle ALSO gates "Color by error" (sub-task
         # 4d.8) — error coloring only makes sense when the recovered surface
@@ -815,6 +881,8 @@ class MainWindow(QMainWindow):
         self.inverse_fpp_checkbox.toggled.connect(self._refresh_surface_preview)
         # Demo-defect toggle changes the part (golden + defect) -> rerun.
         self.inject_defect_checkbox.toggled.connect(self._refresh_surface_preview)
+        # Sensor-noise toggle re-runs the recovery with/without noise.
+        self.sensor_noise_checkbox.toggled.connect(self._refresh_surface_preview)
         # Initial gate state (explicit — not relying on the QCheckBox default):
         # color-by-error is enabled iff the recovered surface is shown.
         self.color_by_error_checkbox.setEnabled(
@@ -1076,24 +1144,59 @@ class MainWindow(QMainWindow):
             n = self.psi_steps.value()
             deltas = [2.0 * math.pi * k / n for k in range(n)]
             golden = pipeline_input
+            is_steep = self.surface_combo.currentText() == STEEP_DOME_LABEL
+
+            # Demo defect, sized to the GOLDEN's convention (B.3a): pixel-units
+            # for the steep dome, mm for the Gaussian golden. Don't cross them.
             if self.inject_defect_checkbox.isChecked():
-                part = golden + _demo_defect(golden.shape)
+                if is_steep:
+                    defect = _demo_defect(
+                        golden.shape, amplitude=STEEP_DEFECT_AMP_PX,
+                        sigma_px=STEEP_DEFECT_SIGMA_PX,
+                    )
+                else:
+                    defect = _demo_defect(golden.shape)
+                part = golden + defect
             else:
                 part = golden
-            if self.inverse_fpp_checkbox.isChecked():
+
+            # Sensor noise threaded identically to both producers: a FRESH
+            # default_rng(seed) per call so both see the SAME draws (the
+            # before/after differs only by the inverse grating).
+            def _noise_kwargs():
+                if self.sensor_noise_checkbox.isChecked():
+                    return {"noise_sigma": NOISE_SIGMA,
+                            "rng": np.random.default_rng(NOISE_SEED)}
+                return {}
+
+            def _inverse_part():
                 deviation = run_inverse_fpp(
-                    golden, part, geometry, deltas, selfcal_fit=fit_tilt_plane,
+                    golden, part, geometry, deltas,
+                    selfcal_fit=fit_tilt_plane, **_noise_kwargs(),
                 )
-                # run_inverse_fpp recovers the deviation DC-aligned to part.mean;
-                # re-center to 0 and add the known golden back to reconstruct the
-                # measured part surface for display.
-                tab_recovered = golden + (deviation - deviation.mean())
+                # Recovers C[part-golden] DC-aligned to part.mean; re-center to 0
+                # and add the known golden back to reconstruct the measured part.
+                return golden + (deviation - deviation.mean())
+
+            def _straight_part():
+                return run_straight_fringe(
+                    part, geometry, deltas,
+                    selfcal_fit=fit_tilt_plane, **_noise_kwargs(),
+                )
+
+            if self.inverse_fpp_checkbox.isChecked():
+                tab_recovered = _inverse_part()
             else:
-                tab_recovered = run_straight_fringe(
-                    part, geometry, deltas, selfcal_fit=fit_tilt_plane,
-                )
+                tab_recovered = _straight_part()
             if self._stl_is_browser_mode:
                 tab_recovered[self._browser_offpart_mask()] = 0.0
+
+            # Beyond-Nyquist dynamic-range readout (B.3a). Uses the MATCHING
+            # shape (golden vs golden), so the ratios report steep-SHAPE
+            # recovery and are independent of the demo-defect toggle.
+            self._update_dynamic_range_readout(
+                golden, geometry, deltas, is_steep, _noise_kwargs
+            )
 
             error = tab_recovered - heightmap
             abs_max = self._update_error_stats(error)
@@ -1234,6 +1337,74 @@ class MainWindow(QMainWindow):
         self.stat_rms.setText(self._format_error_value(rms))
         return max_abs if np.isfinite(max_abs) else 0.0
 
+    def _update_dynamic_range_readout(
+        self, golden, geometry, deltas, is_steep, noise_kwargs_fn
+    ) -> None:
+        """Beyond-Nyquist dynamic-range readout (Stage 6 B.3a).
+
+        Two convention-agnostic RATIOS over the steep (f>0.5) region of the
+        MATCHING golden:
+        - decoupling = mean f_straight / mean f_inverse (how far the inverse
+          grating pulls the observed frequency below the wall) — phase-only,
+          cheap, shown whenever a steep region exists.
+        - error ratio = steep-region RMS recovery error, straight / inverse-FPP
+          — needs both recoveries, so it is GATED to the steep-dome golden
+          (Decision 1); for other surfaces only the decoupling shows.
+
+        The error ratio uses the matching shape (golden vs golden), so it
+        reports steep-SHAPE recovery and is independent of the demo defect.
+        """
+        H, W = golden.shape
+        X = np.tile(np.arange(W, dtype=np.float64), (H, 1))
+        carrier = (2.0 * np.pi / geometry.p) * X
+        h_g = geometry.height_to_phase(golden)
+        cam_straight = project(carrier, geometry) + h_g
+
+        def _lf(phase):
+            gy, gx = np.gradient(phase)
+            return np.hypot(gx, gy) / (2.0 * np.pi)
+
+        f_straight = _lf(cam_straight)
+        steep = f_straight > 0.5
+        if not steep.any():
+            self.dynamic_range_label.setText(
+                "Steep-region: — (no region beyond Nyquist)"
+            )
+            return
+
+        cam_inverse = project(
+            inverse_grating_phase(project(carrier, geometry) + h_g), geometry
+        ) + h_g
+        f_inverse = _lf(cam_inverse)
+        decoupling = float(f_straight[steep].mean() / f_inverse[steep].mean())
+
+        if not is_steep:
+            self.dynamic_range_label.setText(
+                f"Steep-region: decoupling {decoupling:.0f}x"
+            )
+            return
+
+        # Dual-run (gated to the steep-dome showcase): matching-shape recovery.
+        rec_s = run_straight_fringe(
+            golden, geometry, deltas, selfcal_fit=fit_tilt_plane,
+            **noise_kwargs_fn(),
+        )
+        dev_i = run_inverse_fpp(
+            golden, golden, geometry, deltas, selfcal_fit=fit_tilt_plane,
+            **noise_kwargs_fn(),
+        )
+        rec_i = golden + (dev_i - dev_i.mean())
+
+        def _rms(a):
+            v = a[steep]
+            return float(np.sqrt(((v - v.mean()) ** 2).mean()))
+
+        rms_s, rms_i = _rms(rec_s - golden), _rms(rec_i - golden)
+        ratio = rms_s / rms_i if rms_i > 0 else float("inf")
+        self.dynamic_range_label.setText(
+            f"Steep-region: decoupling {decoupling:.0f}x, error ratio {ratio:.0f}x"
+        )
+
     @staticmethod
     def _format_error_value(value: float) -> str:
         """Auto-format: scientific notation for sub-precision values.
@@ -1288,6 +1459,9 @@ class MainWindow(QMainWindow):
                 # _refresh_surface_preview can finish without raising.
                 return make_flat(shape, ps)
             return self._stl_heightmap
+        if name == STEEP_DOME_LABEL:
+            # Math-pixel convention (NOT mm) — see make_steep_dome.
+            return make_steep_dome(shape, ps)
         raise RuntimeError(f"unknown surface name: {name!r}")
 
     # ------------------------------------------------------------------
