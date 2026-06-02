@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from sampling import contrast_envelope
+
 
 def project(
     input_phase: np.ndarray,
@@ -124,6 +126,7 @@ def synthesize_psi_stack(
     deltas,
     A: float = 1.0,
     B: float = 0.9,
+    fill_factor: float | None = None,
 ) -> np.ndarray:
     """Synthesize an N-step phase-shifted intensity stack.
 
@@ -133,6 +136,16 @@ def synthesize_psi_stack(
         I_k(x, y) = A + B * cos(phase(x, y) + delta_k),
 
     and stacks the frames along the last axis.
+
+    With `fill_factor` set, a pixel-area sampling envelope locally attenuates
+    the fringe contrast where the LOCAL phase gradient pushes the observed
+    fringe frequency toward the sampling limit (Stage 6 A.0.2):
+
+        I_k(x, y) = A + B * env(x, y) * cos(phase(x, y) + delta_k),
+
+    where `env = sampling.contrast_envelope(phase, fill_factor)` keys off
+    `|grad(phase)| / (2*pi)` in cycles/pixel. Steep/tall object regions fade;
+    flat regions stay full-contrast.
 
     Parameters
     ----------
@@ -146,6 +159,11 @@ def synthesize_psi_stack(
         Average intensity (notebook default).
     B : float, default 0.9
         Fringe modulation amplitude (notebook default).
+    fill_factor : float or None, default None
+        Pixel-area sampling model. `None` (default) reproduces the original
+        point-sampled, un-attenuated synthesis byte-for-byte — the sealed-core
+        regression path. A positive float enables the sampling envelope with
+        that fill factor (1.0 -> first contrast null at a 1-px fringe period).
 
     Returns
     -------
@@ -155,4 +173,7 @@ def synthesize_psi_stack(
     phase_arr = np.asarray(phase, dtype=np.float64)
     deltas_arr = np.asarray(deltas, dtype=np.float64)
     # Broadcast: (H, W, 1) + (N,) -> (H, W, N)
-    return A + B * np.cos(phase_arr[..., None] + deltas_arr)
+    if fill_factor is None:
+        return A + B * np.cos(phase_arr[..., None] + deltas_arr)
+    env = contrast_envelope(phase_arr, fill_factor)
+    return A + B * env[..., None] * np.cos(phase_arr[..., None] + deltas_arr)
