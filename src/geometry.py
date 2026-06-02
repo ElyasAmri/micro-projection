@@ -83,6 +83,27 @@ from typing import Optional, Protocol, Tuple
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# Object-space scale bridge (Stage 6 A.0.1) — LABELING ONLY.
+#
+# These three constants convert pixel counts to physical microns for HUMAN
+# DISPLAY (e.g. "the ~2-pixel sampling wall sits at ~107 µm object-space").
+# They MUST NOT be read by any math path — not the carrier, not lambda_eq,
+# not synthetic_fringes.project(), not synthesize_psi_stack(). The simulation
+# core is sealed in pixel-space (p, M, a, the carrier, X=arange(W) are all
+# pixel-unit); these constants are an additive labeling layer on top.
+#
+# CAMERA_MAGNIFICATION is the real imaging magnification (0.09× modern
+# convention, Edmund Optics #58-259). It is deliberately kept SEPARATE from
+# the geometries' `M` field: the operational pipeline runs M=1.0 in sealed
+# pixel-space (see main_window.GEOMETRY_M), so the real 0.09× lives only here
+# as a display fact and is NOT cross-wired into lambda_eq.
+# ---------------------------------------------------------------------------
+CAMERA_PIXEL_PITCH_UM: float = 4.8
+CAMERA_MAGNIFICATION: float = 0.09
+OBJECT_SPACE_UM_PER_PIXEL: float = CAMERA_PIXEL_PITCH_UM / CAMERA_MAGNIFICATION
+
+
 class Geometry(Protocol):
     """Abstract geometry interface (PROJECT_CONTEXT.md §7.1).
 
@@ -194,9 +215,10 @@ class HybridGeometry:
     # Default simulation grid; tests can override via constructor.
     H: int = 480
     W: int = 640
-    # Pixel pitch on the test surface (µm). From PROJECT_CONTEXT.md §2:
-    # camera pitch 4.8 µm / M = 0.09 -> ~53 µm/pixel on the surface.
-    pixel_pitch_um: float = 53.0
+    # Pixel pitch on the test surface (µm). LABELING-ONLY display value,
+    # sourced from the single canonical scale-bridge constant so the number
+    # cannot drift (Stage 6 A.0.1). Read by nothing in the math path.
+    pixel_pitch_um: float = OBJECT_SPACE_UM_PER_PIXEL
     # Optional empirical lambda_eq (pixels). When set, equivalent_wavelength()
     # returns this instead of computing from M, p, theta. Ch.4 §4.3.1.
     lambda_eq_override: Optional[float] = None
@@ -350,7 +372,9 @@ class SymmetricGeometry:
     theta_camera: Optional[float] = None
     H: int = 480
     W: int = 640
-    pixel_pitch_um: float = 53.0
+    # LABELING-ONLY display value, sourced from the canonical scale-bridge
+    # constant (Stage 6 A.0.1). Read by nothing in the math path.
+    pixel_pitch_um: float = OBJECT_SPACE_UM_PER_PIXEL
     lambda_eq_override: Optional[float] = None
 
     def __post_init__(self) -> None:
