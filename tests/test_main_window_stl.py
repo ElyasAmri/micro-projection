@@ -13,6 +13,7 @@ two lines below add it.
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 from pathlib import Path
@@ -31,6 +32,11 @@ from gui.main_window import (  # noqa: E402
     STEEP_DOME_LABEL,
     STL_LABEL,
     SURFACE_SHAPE,
+)
+from gui.stl_browser import (  # noqa: E402
+    _MINIMAP_MAX_PX,
+    _WHOLE_STL_MAX_VERTS,
+    _display_stride,
 )
 
 
@@ -540,6 +546,106 @@ def test_update_whole_stl_resets_camera_distance(main_window, tmp_path):
     # 1.5 * max(W*ps, H*ps): small=1.5*50=75, big=1.5*250=375.
     assert d_small == 75.0
     assert d_big == 375.0
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 B.3b-perf.2: display-only downsample of the whole-STL surface +
+# minimap. The full-res cache stays the data source (untested here — see the
+# _extract_fov_slice tests); these pin only that the DISPLAY arrays get strided
+# below budget on large parts, stay full-res on small parts, and that camera
+# distance + minimap mm-extent are computed from the full-res shape (so the
+# existing camera-distance and ROI position/size tests hold unchanged).
+# ---------------------------------------------------------------------------
+def test_display_stride_budget():
+    """Sub-budget -> stride 1 (no-op); over-budget -> a stride that brings the
+    strided element count under the budget."""
+    # 800x1600 = 1.28M verts < 1.5M -> no downsample.
+    assert _display_stride(800, 1600, _WHOLE_STL_MAX_VERTS) == 1
+    # Exactly at budget stays stride 1.
+    assert _display_stride(1000, 1000, 1_000_000) == 1
+    # 4500x4501 ~ 20.25M >> 1.5M -> stride brings it under budget.
+    s = _display_stride(4500, 4501, _WHOLE_STL_MAX_VERTS)
+    assert s >= 2
+    strided_verts = math.ceil(4500 / s) * math.ceil(4501 / s)
+    assert strided_verts <= _WHOLE_STL_MAX_VERTS
+
+
+def test_update_whole_stl_downsamples_large_surface_for_display(main_window):
+    """A ~20M-vertex surface is strided below the vertex budget before setData,
+    while camera distance still uses the FULL-res mm extent."""
+    browser = main_window.stl_browser
+    browser.update_whole_stl(np.zeros((10, 10), dtype=np.float64), 0.1)  # create item
+
+    captured = {}
+    orig = browser._whole_stl_item.setData
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return orig(**kwargs)
+
+    browser._whole_stl_item.setData = spy
+    browser.update_whole_stl(np.zeros((4500, 4501), dtype=np.float64), 0.1)
+
+    # Display array strided below the full-res vertex count and the budget.
+    assert captured["z"].size < 4500 * 4501
+    assert captured["z"].size <= _WHOLE_STL_MAX_VERTS
+    # x/y axes were strided to match z (z is (W_d, H_d) after transpose).
+    assert captured["z"].shape == (captured["x"].size, captured["y"].size)
+    # Camera distance from FULL-res extent: 1.5 * max(4501*0.1, 4500*0.1).
+    dist = browser._whole_stl_view.cameraParams()["distance"]
+    assert dist == pytest.approx(1.5 * 4501 * 0.1)
+
+
+def test_update_whole_stl_small_surface_rendered_full_res(main_window, monkeypatch):
+    """A sub-budget surface is handed to setData at full res (stride 1) —
+    byte-identical to the pre-downsample behavior."""
+    browser = main_window.stl_browser
+    browser.update_whole_stl(np.zeros((10, 10), dtype=np.float64), 0.1)  # create item
+
+    small = np.arange(400 * 500, dtype=np.float64).reshape(400, 500)  # 200k < budget
+    captured = {}
+    monkeypatch.setattr(
+        browser._whole_stl_item, "setData", lambda **k: captured.update(k)
+    )
+    browser.update_whole_stl(small, 0.1)
+
+    # Full-res transpose, bit-for-bit (no striding).
+    assert captured["z"].shape == (500, 400)
+    assert np.array_equal(captured["z"], small.T)
+    assert captured["x"].size == 500 and captured["y"].size == 400
+
+
+def test_update_minimap_downsamples_large_image_keeps_mm_extent(
+    main_window, monkeypatch,
+):
+    """A ~20M-pixel minimap image is strided below the pixel budget before
+    setImage, while setRect keeps the FULL mm extent so the FOV ROI (mm coords)
+    does not shift."""
+    browser = main_window.stl_browser
+    # First call (small) creates the ImageItem + ROI.
+    browser.update_minimap(
+        np.zeros((10, 10), dtype=np.float64), (0.0, 0.0), 0.1, (0.0, 0.0), (550, 680),
+    )
+
+    cap = {}
+    rects = []
+    monkeypatch.setattr(
+        browser._minimap_image_item, "setImage", lambda img, *a, **k: cap.update(img=img)
+    )
+    monkeypatch.setattr(
+        browser._minimap_image_item, "setRect", lambda rect: rects.append(rect)
+    )
+    browser.update_minimap(
+        np.zeros((4500, 4501), dtype=np.float64), (0.0, 0.0), 0.1, (0.0, 0.0), (550, 680),
+    )
+
+    # Image strided below the full-res pixel count and the budget.
+    assert cap["img"].size < 4500 * 4501
+    assert cap["img"].size <= _MINIMAP_MAX_PX
+    # setRect kept the FULL mm extent (W_full*ps, H_full*ps) -> ROI unshifted.
+    r = rects[-1]
+    assert r.width() == pytest.approx(4501 * 0.1)
+    assert r.height() == pytest.approx(4500 * 0.1)
 
 
 def test_update_windowed_slice_preserves_camera_pose(main_window, tmp_path):

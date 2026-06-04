@@ -27,6 +27,7 @@ is sufficient for "show the shape."
 """
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -65,6 +66,33 @@ _WINDOWED_CAMERA = dict(distance=200, elevation=20, azimuth=45)
 _WHOLE_STL_ELEVATION = 30
 _WHOLE_STL_AZIMUTH = 45
 _WHOLE_STL_DISTANCE_FACTOR = 1.5  # distance = 1.5 * max(bbox XY)
+
+# Display-only resolution budgets (Stage 6 B.3b-perf.2). The whole-STL GL
+# surface and the minimap image are strided down to these caps before being
+# handed to setData / setImage, so a 4500x4501 (~20 M-vertex) part stays
+# interactive during FOV drag. DISPLAY ONLY: the full-res _stl_full_heightmap
+# stays the source of truth for FOV slicing; nothing reads these back. GL
+# vertices and 2D image pixels have different cost curves, so they get separate
+# budgets. _WHOLE_STL_MAX_VERTS is the perceptual knob — 1.5 M keeps a
+# 20 M-vertex part at stride 4 (~1.27 M verts) while leaving sub-budget parts
+# (e.g. 800x1600 ~ 1.28 M) at stride 1 (rendered exactly as before). Tune it
+# down if drag still feels heavy: one-line change, no redesign.
+_WHOLE_STL_MAX_VERTS = 1_500_000
+_MINIMAP_MAX_PX = 4_000_000
+
+
+def _display_stride(h: int, w: int, max_elems: int) -> int:
+    """Integer stride to bring an (h, w) array under `max_elems` for display.
+
+    Returns ``max(1, ceil(sqrt(h*w / max_elems)))`` — a uniform ``[::s, ::s]``
+    stride. Sub-budget arrays return 1 (no-op, byte-identical to no
+    downsampling). DISPLAY ONLY: the strided array is a visual approximation;
+    the data path always uses the full-res cache.
+    """
+    if h * w <= max_elems:
+        return 1
+    return int(math.ceil(math.sqrt((h * w) / max_elems)))
+
 
 # FOV rectangle visual style. Bright cyan against the grayscale
 # minimap stands out without conflicting with the lab view's
@@ -322,17 +350,30 @@ class STLBrowser(QWidget):
         x = (np.arange(W, dtype=np.float64) - (W - 1) / 2.0) * pixel_size_mm
         y = (np.arange(H, dtype=np.float64) - (H - 1) / 2.0) * pixel_size_mm
 
+        # Display-only downsample: stride the surface AND its matching x/y axes
+        # the same way down to the vertex budget so a ~20 M-vertex part stays
+        # interactive during FOV drag. The full-res heightmap is untouched in
+        # the caller's cache; this thins only what the GL item renders. The
+        # camera distance below still uses the full-res W/H, so the pose is
+        # identical to no downsampling (stride 1 is a byte-identical no-op for
+        # sub-budget parts).
+        s = _display_stride(H, W, _WHOLE_STL_MAX_VERTS)
+        x_d = x[::s]
+        y_d = y[::s]
+        z_d = heightmap[::s, ::s]
+
         if self._whole_stl_item is None:
             self._whole_stl_item = gl.GLSurfacePlotItem(
                 shader="shaded", smooth=False, drawEdges=False,
             )
             self._whole_stl_view.addItem(self._whole_stl_item)
         # pyqtgraph wants z[x_idx, y_idx] -> transpose our (H, W) to (W, H).
-        self._whole_stl_item.setData(x=x, y=y, z=heightmap.T)
+        self._whole_stl_item.setData(x=x_d, y=y_d, z=z_d.T)
 
         # Scale camera distance to the part bbox so the part fills the
         # frame. Camera angles are reset to the isometric default so
-        # repeated loads start from a known pose.
+        # repeated loads start from a known pose. Uses the FULL-res W/H
+        # (not the strided display arrays) so the pose is downsample-invariant.
         part_w_mm = W * pixel_size_mm
         part_h_mm = H * pixel_size_mm
         distance = max(part_w_mm, part_h_mm) * _WHOLE_STL_DISTANCE_FACTOR
@@ -413,7 +454,12 @@ class STLBrowser(QWidget):
             self._minimap_image_item = pg.ImageItem(axisOrder="row-major")
             self._minimap_plot.addItem(self._minimap_image_item)
 
-        self._minimap_image_item.setImage(full_heightmap)
+        # Display-only downsample: stride the image to the pixel budget before
+        # setImage so the minimap stays cheap on huge parts. setRect keeps the
+        # FULL mm extent below, so the strided image maps onto the same
+        # part-local rectangle and the mm-based FOV ROI does not shift.
+        s = _display_stride(H_full, W_full, _MINIMAP_MAX_PX)
+        self._minimap_image_item.setImage(full_heightmap[::s, ::s])
         self._minimap_image_item.setRect(
             QRectF(
                 x_min, y_min,
