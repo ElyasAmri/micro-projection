@@ -1,13 +1,13 @@
-"""Projector control panel: DLPC350 USB control + pattern-sequence capture.
+"""Projector control panel: DLPC350 USB control + HDMI synced-capture trigger.
 
-First-class UI for the PRO4500 integration. The projector is driven purely over
-USB (DLPC350 / pycrafter4500) — there is no HDMI extended-display path. Exposes
-device detection, power control, pattern-sequence parameters, and a
-pattern-sequence capture action. The panel only *emits intent* — MainWindow owns
-the controller, camera, and pipeline and does the orchestration.
+First-class UI for the PRO4500 integration. Exposes device detection, power and
+display-mode control over USB (DLPC350 / pycrafter4500), pattern-sequence
+parameters, and the HDMI synced-capture action. The panel only *emits intent* —
+MainWindow owns the controller, camera, and pipeline and does the orchestration.
 
-Every control needs the USB link, so all controls disable themselves when
-pycrafter4500 is unavailable.
+USB controls disable themselves when pycrafter4500 is unavailable; the HDMI
+synced-capture path stays usable regardless (it drives the on-screen projector
+window, not the USB link).
 """
 from __future__ import annotations
 
@@ -29,14 +29,15 @@ from microprojection.core import paper_specs
 
 
 class ProjectorPanel(QWidget):
-    """Controls for the PRO4500 projector (USB control + pattern capture)."""
+    """Controls for the PRO4500 projector (USB control + HDMI capture)."""
 
     detectRequested = Signal()
     powerUpRequested = Signal()
     powerDownRequested = Signal()
+    videoModeRequested = Signal()
     patternModeRequested = Signal(dict)   # {fps, bit_depth, led_color}
     stopSequenceRequested = Signal()
-    captureRequested = Signal(dict)       # {fps, bit_depth, led_color, settle_ms}
+    captureRequested = Signal(dict)       # {settle_ms}
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -49,20 +50,22 @@ class ProjectorPanel(QWidget):
         self._device_combo = QComboBox()
         self._device_combo.addItem("No projector detected")
         self._refresh_btn = QPushButton("Detect")
-        self._refresh_btn.clicked.connect(lambda: self.detectRequested.emit())
+        self._refresh_btn.clicked.connect(self._on_detect)
         row.addWidget(self._device_combo, stretch=1)
         row.addWidget(self._refresh_btn)
         device_layout.addLayout(row)
 
-        # -- Power ----------------------------------------------------------
-        power_group = QGroupBox("Power")
+        # -- Power / mode ---------------------------------------------------
+        power_group = QGroupBox("Power / display mode")
         power_layout = QHBoxLayout(power_group)
         self._power_up_btn = QPushButton("Power Up")
         self._power_down_btn = QPushButton("Power Down")
+        self._video_btn = QPushButton("Video Mode")
         self._power_up_btn.clicked.connect(lambda: self.powerUpRequested.emit())
         self._power_down_btn.clicked.connect(lambda: self.powerDownRequested.emit())
-        power_layout.addWidget(self._power_up_btn)
-        power_layout.addWidget(self._power_down_btn)
+        self._video_btn.clicked.connect(lambda: self.videoModeRequested.emit())
+        for b in (self._power_up_btn, self._power_down_btn, self._video_btn):
+            power_layout.addWidget(b)
 
         # -- Pattern sequence ----------------------------------------------
         pattern_group = QGroupBox("Pattern sequence (USB, high-speed)")
@@ -99,14 +102,14 @@ class ProjectorPanel(QWidget):
         seq_btns.addWidget(self._stop_btn)
         pattern_layout.addRow(seq_btns)
 
-        # -- Pattern-sequence capture --------------------------------------
-        capture_group = QGroupBox("Pattern-sequence capture")
+        # -- HDMI synced capture -------------------------------------------
+        capture_group = QGroupBox("HDMI synced capture")
         capture_layout = QFormLayout(capture_group)
         self._settle = QSpinBox()
         self._settle.setRange(20, 5000)
         self._settle.setValue(200)
         self._settle.setSuffix(" ms")
-        capture_layout.addRow("Frame interval:", self._settle)
+        capture_layout.addRow("Settle per step:", self._settle)
         self._capture_btn = QPushButton("Run Projector Capture")
         self._capture_btn.clicked.connect(self._on_capture)
         capture_layout.addRow(self._capture_btn)
@@ -125,18 +128,17 @@ class ProjectorPanel(QWidget):
         layout.addWidget(self._status)
         layout.addStretch()
 
-        # Everything here needs the USB link.
         self._usb_widgets = [
-            self._power_up_btn, self._power_down_btn,
+            self._power_up_btn, self._power_down_btn, self._video_btn,
             self._fps, self._bit_depth, self._led_r, self._led_g, self._led_b,
-            self._pattern_btn, self._stop_btn, self._capture_btn,
+            self._pattern_btn, self._stop_btn,
         ]
         if not getattr(controller, "available", False):
             for w in self._usb_widgets:
                 w.setEnabled(False)
             self.set_status(
-                "pycrafter4500 not installed — USB projector control disabled. "
-                "Install: pip install -e .[hardware] (plus a libusb backend)."
+                "pycrafter4500 not installed — USB control disabled. "
+                "HDMI synced capture still works. Install: pip install -e .[hardware]"
             )
 
     # -- public API used by MainWindow -------------------------------------
@@ -154,8 +156,8 @@ class ProjectorPanel(QWidget):
 
     def set_busy(self, busy: bool) -> None:
         """Disable action buttons while a capture is running."""
+        self._capture_btn.setEnabled(not busy)
         if getattr(self._controller, "available", False):
-            self._capture_btn.setEnabled(not busy)
             self._pattern_btn.setEnabled(not busy)
 
     def led_color(self) -> int:
@@ -165,17 +167,19 @@ class ProjectorPanel(QWidget):
             | (4 if self._led_b.isChecked() else 0)
         )
 
-    def _params(self) -> dict:
-        return {
-            "fps": float(self._fps.value()),
-            "bit_depth": int(self._bit_depth.value()),
-            "led_color": self.led_color(),
-        }
-
     # -- internal slots ----------------------------------------------------
 
+    def _on_detect(self) -> None:
+        self.detectRequested.emit()
+
     def _on_pattern_mode(self) -> None:
-        self.patternModeRequested.emit(self._params())
+        self.patternModeRequested.emit(
+            {
+                "fps": float(self._fps.value()),
+                "bit_depth": int(self._bit_depth.value()),
+                "led_color": self.led_color(),
+            }
+        )
 
     def _on_capture(self) -> None:
-        self.captureRequested.emit({**self._params(), "settle_ms": int(self._settle.value())})
+        self.captureRequested.emit({"settle_ms": int(self._settle.value())})

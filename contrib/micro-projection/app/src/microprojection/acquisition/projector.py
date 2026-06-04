@@ -1,14 +1,17 @@
 """USB control of the Wintech PRO4500 (TI DLP LightCrafter 4500 / DLPC350).
 
-The app drives the PRO4500 **purely over USB** (DLPC350): power management,
-display-mode switching, and high-speed pattern sequencing with hardware camera
-triggers. There is no HDMI extended-display path — the projector is treated as a
-USB-controlled device, not as a second monitor.
+The PRO4500 exposes two interfaces:
+
+* **mini-HDMI** carries the image data and is driven by ``ProjectorWindow`` as a
+  normal extended display.
+* **USB** drives the DLPC350 controller for power management, display-mode
+  switching, and high-speed pattern sequencing with hardware camera triggers.
 
 This module wraps the unofficial ``pycrafter4500`` library (USB-HID over ``pyusb``
-with a libusb backend). In pattern mode the DLPC350 sequences its patterns at up
-to kHz rates and fires a trigger-out pulse per pattern so the camera can capture
-in lock-step.
+with a libusb backend) to put the projector into *video pattern mode*: the GUI
+keeps streaming fringe images over HDMI while the DLPC350 splits each frame into
+bit-planes emitted at up to kHz rates, firing a trigger-out pulse per pattern so
+the camera captures in lock-step.
 
 Install the hardware extras and a libusb backend before use::
 
