@@ -1,0 +1,18 @@
+Optics Express Target Abstract: 
+
+Title: Adaptive Digital Nulling via Real-Time Inverse Fringe Projection for High-Resolution In-Situ Metrology in Additive Manufacturing 
+
+Abstract: High-precision optical metrology for Additive Manufacturing (AM) faces a fundamental trade-off between lateral dynamic range and 
+vertical resolution. While laser and white-light interferometry offer sub-nanometer sensitivity, they are critically limited by fringe density saturation
+on the high-slope geometries and high-frequency textures typical of laser powder bed fusion (LPBF) parts. Conversely, macro-scale 3D methods such as 
+stereovision provide robust tracking but lack the axial resolution required for surface roughness characterization. This paper proposes a real-time, 
+adaptive "digital nulling" methodology using a high-speed Digital Light Processing (DLP) projector to overcome these constraints. By projecting 
+object-adapted, pre-deformed fringes, the system optically filters low-frequency surface form (waviness) in real time. This "optical flattening" 
+enables the projection of high-frequency gratings that would otherwise exceed the Nyquist limit of the imaging sensor, effectively decoupling the measurement 
+of micro-scale roughness from macro-scale topography. Unlike traditional null optics, our approach requires no prior CAD data or precise system calibration,
+generating inverse patterns dynamically from an initial "golden part" reference. Experimental results on an AM-simulated platform demonstrate a significant 
+enhancement in vertical sensitivity and slope-handling capacity compared to classical fringe projection. This flexible, DLP-driven architecture provides a 
+high-throughput solution for in-situ quality assurance of complex microstructures and layer-wise surface finish monitoring in advanced manufacturing 
+environments. 
+
+ 
