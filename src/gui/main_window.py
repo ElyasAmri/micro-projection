@@ -1145,6 +1145,7 @@ class MainWindow(QMainWindow):
             deltas = [2.0 * math.pi * k / n for k in range(n)]
             golden = pipeline_input
             is_steep = self.surface_combo.currentText() == STEEP_DOME_LABEL
+            is_stl = self.surface_combo.currentText() == STL_LABEL
 
             # Demo defect, sized to the GOLDEN's convention (B.3a): pixel-units
             # for the steep dome, mm for the Gaussian golden. Don't cross them.
@@ -1195,7 +1196,7 @@ class MainWindow(QMainWindow):
             # shape (golden vs golden), so the ratios report steep-SHAPE
             # recovery and are independent of the demo-defect toggle.
             self._update_dynamic_range_readout(
-                golden, geometry, deltas, is_steep, _noise_kwargs
+                golden, geometry, deltas, is_steep, is_stl, _noise_kwargs
             )
 
             error = tab_recovered - heightmap
@@ -1346,7 +1347,7 @@ class MainWindow(QMainWindow):
         return max_abs if np.isfinite(max_abs) else 0.0
 
     def _update_dynamic_range_readout(
-        self, golden, geometry, deltas, is_steep, noise_kwargs_fn
+        self, golden, geometry, deltas, is_steep, is_stl, noise_kwargs_fn
     ) -> None:
         """Beyond-Nyquist dynamic-range readout (Stage 6 B.3a).
 
@@ -1361,7 +1362,23 @@ class MainWindow(QMainWindow):
 
         The error ratio uses the matching shape (golden vs golden), so it
         reports steep-SHAPE recovery and is independent of the demo defect.
+
+        STL parts (B.3b) are the DEFECT-DETECTION story, not this beyond-Nyquist
+        dynamic-range showcase: a real mm part is sub-Nyquist by design, and the
+        sliver of f>0.5 from sharp machined edges (part B ~0.72% of frame) is an
+        edge artifact, not a dynamic-range result. `is_stl` short-circuits the
+        readout BEFORE any compute so an STL part never prints the decoupling /
+        error-ratio headline — the Error Statistics panel is its relevant
+        metric. This sits ahead of all `is_steep` logic so every dome / Flat /
+        Gaussian path is byte-identical.
         """
+        if is_stl:
+            self.dynamic_range_label.setText(
+                "Surface deviation — see Error Statistics "
+                "(dynamic-range decoupling: steep-dome showcase only)"
+            )
+            return
+
         H, W = golden.shape
         X = np.tile(np.arange(W, dtype=np.float64), (H, 1))
         carrier = (2.0 * np.pi / geometry.p) * X

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -1532,6 +1533,38 @@ def test_b3a_dynamic_range_dash_for_gentle_gaussian(main_window):
     main_window.surface_combo.setCurrentText("Gaussian")
     main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
     assert "—" in main_window.dynamic_range_label.text()
+
+
+def test_b3b_stl_suppresses_dynamic_range_readout(main_window):
+    """Stage 6 B.3b: an STL part is the DEFECT-DETECTION story, so the
+    beyond-Nyquist dynamic-range readout is gated OFF — even when a steep
+    (f>0.5) region exists (part B's sharp machined edges). The label shows the
+    surface-deviation text, never the 'decoupling'/'error ratio' headline."""
+    geom = main_window._build_geometry()
+    n = main_window.psi_steps.value()
+    deltas = [2.0 * math.pi * k / n for k in range(n)]
+
+    # Golden with a genuinely steep mm step -> f_straight would cross Nyquist
+    # at the edge if computed (the part-B case). is_stl must suppress it anyway.
+    golden = np.zeros(SURFACE_SHAPE, dtype=np.float64)
+    golden[:, golden.shape[1] // 2:] = 50.0
+
+    main_window._update_dynamic_range_readout(
+        golden, geom, deltas, is_steep=False, is_stl=True,
+        noise_kwargs_fn=lambda: {},
+    )
+
+    txt = main_window.dynamic_range_label.text()
+    # No beyond-Nyquist HEADLINE: neither the "decoupling Nx" line nor the
+    # "error ratio Nx" dual-run. (The label may mention the word "decoupling"
+    # in its explanatory pointer — what must be absent is the NUMERIC claim.)
+    assert not re.search(r"decoupling\s+\d+x", txt)
+    assert not re.search(r"error ratio\s+\d+x", txt)
+    # None of the dome readout strings (all prefixed "Steep-region:") appear.
+    assert "Steep-region" not in txt
+    # The defect-detection label is shown instead.
+    assert "Surface deviation" in txt
+    assert "Error Statistics" in txt
 
 
 # ---------------------------------------------------------------------------
