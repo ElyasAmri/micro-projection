@@ -209,6 +209,46 @@ def _rasterize_triangles(
     return out
 
 
+def _lift_to_zero(acc: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+    """Lift a rasterizer envelope so its lowest camera-visible point is z = 0.
+
+    Shared by both loaders (Stage 6 B.3b-perf.1b). `acc` is the
+    `_rasterize_triangles` output: finite max-z on covered pixels, `-inf` on
+    never-covered (bare-stage) pixels. Returns an (H, W) mm heightmap whose
+    minimum covered height is 0 and whose bare-stage pixels are 0.
+
+    Byte-identical to the prior `out = zeros; out[finite] = acc[finite] - zmin`
+    form (pinned by tests/test_rasterizer_fixture.py, the cube's ~1.78e-15
+    residual included), but done IN PLACE on `acc` to drop the ~160 MB
+    boolean-index copies and the separate output allocation. `acc` is the
+    rasterizer's private array and is dead in both callers after this returns,
+    so mutating it is safe.
+
+    Two invariants the perf.0 gate guards exactly:
+    - Finite pixels end at `acc[finite] - z_min_visible` (same per-element
+      subtract; `np.min(..., where=finite)` selects the SAME minimum value as
+      `acc[finite].min()` — min is pure selection, no arithmetic).
+    - Non-finite (`-inf`) pixels MUST be explicitly zeroed. The masked subtract
+      (`where=finite`) leaves them bit-unchanged at `-inf`; the
+      `acc[~finite] = 0.0` write turns them into the 0.0 bare stage. A
+      whole-array `acc -= zmin` would leave `-inf` and leak — never do that.
+    """
+    finite = np.isfinite(acc)
+    if not finite.any():
+        # Nothing covered any pixel (all-degenerate or footprint off-grid):
+        # bare stage everywhere.
+        return np.zeros(shape, dtype=np.float64)
+
+    # Lift by the lowest camera-VISIBLE point: the minimum of the max-z upper
+    # envelope, not the global mesh minimum. FPP only measures the visible top
+    # surface, so the visible base (not the discarded bottom shell of a closed
+    # solid) defines z = 0.
+    z_min_visible = np.min(acc, where=finite, initial=np.inf)
+    np.subtract(acc, z_min_visible, out=acc, where=finite)
+    acc[~finite] = 0.0
+    return acc
+
+
 def load_stl_heightmap(
     path: PathLike,
     shape: Tuple[int, int],
@@ -273,21 +313,8 @@ def load_stl_heightmap(
     tris[:, :, 1] -= (y_min + y_max) / 2.0
 
     acc = _rasterize_triangles(tris, shape, pixel_size_mm)
-
-    finite = np.isfinite(acc)
-    if not finite.any():
-        # Non-empty mesh, but nothing covered any pixel (all-degenerate
-        # or footprint entirely off-grid). Bare stage everywhere.
-        return np.zeros(shape, dtype=np.float64)
-
-    # Lift by the lowest camera-VISIBLE point: the minimum of the max-z
-    # upper envelope, not the global mesh minimum. FPP only measures the
-    # visible top surface, so the visible base (not the discarded bottom
-    # shell of a closed solid) defines z = 0.
-    z_min_visible = acc[finite].min()
-    out = np.zeros(shape, dtype=np.float64)
-    out[finite] = acc[finite] - z_min_visible
-    return out
+    # Lift the visible base to z = 0 (shared, in-place; see _lift_to_zero).
+    return _lift_to_zero(acc, shape)
 
 
 def load_stl_heightmap_full_scale(
@@ -347,15 +374,8 @@ def load_stl_heightmap_full_scale(
     tris[:, :, 1] -= (y_min + y_max) / 2.0
 
     acc = _rasterize_triangles(tris, (H, W), pixel_size_mm)
-
-    finite = np.isfinite(acc)
-    if not finite.any():
-        return np.zeros((H, W), dtype=np.float64), (x_min, y_min)
-
-    z_min_visible = float(acc[finite].min())
-    out = np.zeros((H, W), dtype=np.float64)
-    out[finite] = acc[finite] - z_min_visible
-    return out, (x_min, y_min)
+    # Lift the visible base to z = 0 (shared, in-place; see _lift_to_zero).
+    return _lift_to_zero(acc, (H, W)), (x_min, y_min)
 
 
 def get_stl_bbox_mm(path: PathLike) -> Tuple[float, float, float]:
