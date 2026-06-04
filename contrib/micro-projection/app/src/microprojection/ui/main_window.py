@@ -3,7 +3,6 @@ import time
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QApplication,
     QLabel,
     QMainWindow,
     QSplitter,
@@ -25,7 +24,6 @@ from microprojection.export import save_report
 from microprojection.processing.pipeline import PipelineThread
 from microprojection.ui.panels.parameter_panel import ParameterPanel
 from microprojection.ui.panels.results_panel import ResultsPanel
-from microprojection.ui.projector_window import ProjectorWindow
 from microprojection.ui.tabs.calibration_tab import CalibrationTab
 from microprojection.ui.views.camera_view import CameraView
 from microprojection.ui.views.projection_view import ProjectionView
@@ -38,8 +36,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MicroProjection - Fringe Projection Profilometry")
         self.resize(1280, 800)
 
-        # -- Projector --
-        self._projector_window = None        # HDMI fringe display
+        # -- Projector (USB only; no HDMI extended-display path) --
         self._projector_ctl = ProjectorController()  # DLPC350 over USB
 
         # -- Widgets --
@@ -123,7 +120,6 @@ class MainWindow(QMainWindow):
         self._projector_panel.detectRequested.connect(self._projector_connect)
         self._projector_panel.powerUpRequested.connect(self._projector_power_up)
         self._projector_panel.powerDownRequested.connect(self._projector_power_down)
-        self._projector_panel.videoModeRequested.connect(self._projector_video_mode)
         self._projector_panel.patternModeRequested.connect(self._projector_pattern_mode_panel)
         self._projector_panel.stopSequenceRequested.connect(self._projector_stop_sequence)
         self._projector_panel.captureRequested.connect(self._on_capture_requested)
@@ -152,27 +148,16 @@ class MainWindow(QMainWindow):
 
         self._refresh_devices()
 
+        # DLPC350 USB control (Wintech PRO4500). The projector is USB-only —
+        # no HDMI extended-display path.
         projector_menu = menu_bar.addMenu("&Projector")
-        self._screen_menu = projector_menu.addMenu("Select &Screen")
+        projector_menu.addAction("&Connect / Detect", self._projector_connect)
         projector_menu.addSeparator()
-        projector_menu.addAction("&Show", self._show_projector)
-        projector_menu.addAction("&Hide", self._hide_projector)
+        projector_menu.addAction("Power &Up", self._projector_power_up)
+        projector_menu.addAction("Power &Down", self._projector_power_down)
         projector_menu.addSeparator()
-        projector_menu.addAction("&Refresh Screens", self._refresh_screens)
-
-        # DLPC350 USB control (Wintech PRO4500). HDMI carries the image; USB
-        # drives power, display mode, and high-speed triggered sequencing.
-        usb_menu = projector_menu.addMenu("&USB Control (PRO4500)")
-        usb_menu.addAction("&Connect / Detect", self._projector_connect)
-        usb_menu.addSeparator()
-        usb_menu.addAction("Power &Up", self._projector_power_up)
-        usb_menu.addAction("Power &Down", self._projector_power_down)
-        usb_menu.addSeparator()
-        usb_menu.addAction("&Video Mode", self._projector_video_mode)
-        usb_menu.addAction("&Pattern Sequence Mode", self._projector_pattern_mode)
-        usb_menu.addAction("&Stop Sequence", self._projector_stop_sequence)
-
-        self._refresh_screens()
+        projector_menu.addAction("&Pattern Sequence Mode", self._projector_pattern_mode)
+        projector_menu.addAction("&Stop Sequence", self._projector_stop_sequence)
 
     def _refresh_devices(self):
         self._device_menu.clear()
@@ -211,48 +196,6 @@ class MainWindow(QMainWindow):
         self._camera_thread.frame_ready.connect(self._on_camera_frame)
         self._camera_thread.fps_updated.connect(self._on_fps_updated)
         self._camera_thread.error.connect(self._on_camera_error)
-
-    def _refresh_screens(self):
-        self._screen_menu.clear()
-        screens = QApplication.screens()
-        for i, screen in enumerate(screens):
-            geo = screen.geometry()
-            name = screen.name()
-            label = f"{name} ({geo.width()}x{geo.height()})"
-            # Mark the primary screen
-            if screen == QApplication.primaryScreen():
-                label += " [primary]"
-            action = self._screen_menu.addAction(label)
-            action.triggered.connect(
-                lambda checked, s=screen: self._select_projector_screen(s)
-            )
-
-    def _select_projector_screen(self, screen):
-        if self._projector_window is None:
-            self._projector_window = ProjectorWindow()
-        self._projector_window.move_to_screen(screen)
-        self._update_fringe_pattern()
-        self.statusBar().showMessage(f"Projector on {screen.name()}", 3000)
-
-    def _show_projector(self):
-        if self._projector_window is None:
-            # Default to first non-primary screen, or primary if only one
-            screens = QApplication.screens()
-            target = None
-            for s in screens:
-                if s != QApplication.primaryScreen():
-                    target = s
-                    break
-            if target is None:
-                target = screens[0]
-            self._select_projector_screen(target)
-        else:
-            self._projector_window.showFullScreen()
-        self._update_fringe_pattern()
-
-    def _hide_projector(self):
-        if self._projector_window is not None:
-            self._projector_window.hide()
 
     # -- DLPC350 USB control (PRO4500) -------------------------------------
 
@@ -309,9 +252,6 @@ class MainWindow(QMainWindow):
     def _projector_power_down(self):
         self._projector_usb(self._projector_ctl.power_down, "Projector in standby")
 
-    def _projector_video_mode(self):
-        self._projector_usb(self._projector_ctl.video_mode, "Projector in video mode")
-
     def _projector_pattern_mode(self):
         params = self._parameter_panel.get_params()
         n_steps = int(params.get("n_steps", 4))
@@ -327,7 +267,7 @@ class MainWindow(QMainWindow):
     def _projector_stop_sequence(self):
         self._projector_usb(self._projector_ctl.stop_sequence, "Pattern sequence stopped")
 
-    # -- HDMI synced capture loop ------------------------------------------
+    # -- Pattern-sequence capture (USB) ------------------------------------
 
     def _on_camera_frame(self, frame):
         """Store the latest frame; forward to the live pipeline unless capturing."""
@@ -342,20 +282,23 @@ class MainWindow(QMainWindow):
             return arr[..., :3].mean(axis=2)
         return arr
 
-    def _project_step(self, step: int):
-        """Display the phase-shifted fringe for `step` on the in-app view + HDMI."""
-        params = dict(self._cap_params)
-        params["current_step"] = step
-        pattern = self._generate_fringe(params)
-        self._projection_view.update_pattern(pattern)
-        if self._projector_window is not None and self._projector_window.isVisible():
-            self._projector_window.update_pattern(pattern)
-        # Force the next grabbed frame to be one captured AFTER this pattern shows.
-        self._latest_capture_frame = None
-        self._cap_wait_ticks = 0
-
     def _on_capture_requested(self, opts: dict):
+        """Engage the USB pattern sequence and collect one frame per phase step.
+
+        The projector cycles its n patterns over USB; we collect n camera frames
+        spaced by the configured interval and feed the stack to the N-step PSA
+        pipeline. Per-pattern hardware sync (camera trigger-in <- projector
+        trigger-out) is the future hardware path; this is the software-timed
+        collection until that line is wired.
+        """
         if self._capturing:
+            return
+        ctl = self._projector_ctl
+        if not ctl.available:
+            msg = ("USB projector control required for capture - "
+                   "install: pip install -e .[hardware] and connect the PRO4500.")
+            self.statusBar().showMessage(msg, 6000)
+            self._projector_panel.set_status(msg)
             return
         if self._camera_thread is None or not self._camera_thread.isRunning():
             self.statusBar().showMessage(
@@ -363,31 +306,30 @@ class MainWindow(QMainWindow):
             )
             self._projector_panel.set_status("Capture needs a running camera.")
             return
-        params = self._parameter_panel.get_params()
-        n = int(params.get("n_steps", 4))
+        n = int(self._parameter_panel.get_params().get("n_steps", 4))
         if n < 3:
             self.statusBar().showMessage("Need >= 3 phase steps to reconstruct.", 5000)
             return
-        # Plain HDMI video so the projector shows each frame 1:1 (best effort).
-        if self._projector_ctl.available and self._projector_ctl.in_pattern_mode:
-            try:
-                self._projector_ctl.video_mode()
-            except Exception:  # noqa: BLE001
-                pass
-        if self._projector_window is None or not self._projector_window.isVisible():
-            self._projector_panel.set_status(
-                "No HDMI projector window visible - capturing against the in-app "
-                "preview only (use Projector > Show for a real capture)."
-            )
+        started = self._projector_usb(
+            lambda: ctl.pattern_mode(
+                num_pats=n,
+                fps=float(opts.get("fps", paper_specs.PROJECTOR_HDMI_GRAYSCALE_FPS)),
+                bit_depth=int(opts.get("bit_depth", 8)),
+                led_color=int(opts.get("led_color", 0b111)),
+            ),
+            f"Pattern sequence started ({n} patterns)",
+        )
+        if not started:
+            return
 
         self._capturing = True
         self._cap_frames = []
         self._cap_step = 0
         self._cap_n = n
-        self._cap_params = dict(params)
+        self._latest_capture_frame = None
+        self._cap_wait_ticks = 0
         self._projector_panel.set_busy(True)
-        self._projector_panel.set_status(f"Capturing {n} phase steps...")
-        self._project_step(0)
+        self._projector_panel.set_status(f"Capturing {n} frames from the pattern sequence...")
         self._cap_timer.start(int(opts.get("settle_ms", 200)))
 
     def _on_capture_tick(self):
@@ -396,28 +338,36 @@ class MainWindow(QMainWindow):
             return
         frame = self._latest_capture_frame
         if frame is None:
-            # No fresh frame since the pattern changed; wait, with a timeout.
             self._cap_wait_ticks += 1
             if self._cap_wait_ticks > 40:
                 self._abort_capture("camera stopped delivering frames")
             return
         self._cap_frames.append(self._to_gray(frame.image))
+        self._latest_capture_frame = None  # force a fresh frame for the next step
+        self._cap_wait_ticks = 0
         self._cap_step += 1
-        if self._cap_step < self._cap_n:
-            self._project_step(self._cap_step)
-        else:
+        if self._cap_step >= self._cap_n:
             self._cap_timer.stop()
             self._finish_capture()
+
+    def _stop_sequence_safe(self):
+        if self._projector_ctl.available:
+            try:
+                self._projector_ctl.stop_sequence()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _abort_capture(self, reason: str):
         self._cap_timer.stop()
         self._capturing = False
+        self._stop_sequence_safe()
         self._projector_panel.set_busy(False)
         self.statusBar().showMessage(f"Capture aborted: {reason}", 6000)
         self._projector_panel.set_status(f"Capture aborted: {reason}")
 
     def _finish_capture(self):
         self._capturing = False
+        self._stop_sequence_safe()
         self._projector_panel.set_busy(False)
         frames = self._cap_frames
         shapes = {f.shape for f in frames}
@@ -430,16 +380,13 @@ class MainWindow(QMainWindow):
         self._pipeline_thread.submit_frame(
             CaptureFrame(image=stack, timestamp=time.time())
         )
-        msg = f"Captured {len(frames)} patterns -> reconstructing"
+        msg = f"Captured {len(frames)} frames -> reconstructing"
         self.statusBar().showMessage(msg, 4000)
         self._projector_panel.set_status(msg)
 
     def _generate_fringe(self, params: dict) -> np.ndarray:
-        """Generate a sinusoidal fringe pattern from current parameters."""
-        if self._projector_window is not None and hasattr(self._projector_window, '_screen_size'):
-            w, h = self._projector_window._screen_size
-        else:
-            w, h = 640, 480
+        """Reference sinusoidal fringe for the in-app preview (not projected)."""
+        w, h = 640, 480
         period = params.get("period", 16.0)
         n_steps = params.get("n_steps", 4)
         step = params.get("current_step", 0)
@@ -456,8 +403,6 @@ class MainWindow(QMainWindow):
             params = self._parameter_panel.get_params()
         pattern = self._generate_fringe(params)
         self._projection_view.update_pattern(pattern)
-        if self._projector_window is not None and self._projector_window.isVisible():
-            self._projector_window.update_pattern(pattern)
 
     def _start_camera(self):
         if self._camera_thread is None:
@@ -531,14 +476,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._cap_timer.stop()
         self._capturing = False
-        # Leave the projector in plain video mode so it isn't stuck mid-sequence.
+        # Don't leave the projector stuck mid-sequence.
         if self._projector_ctl.available and self._projector_ctl.in_pattern_mode:
-            try:
-                self._projector_ctl.video_mode()
-            except Exception:  # noqa: BLE001 - best effort on shutdown
-                pass
-        if self._projector_window is not None:
-            self._projector_window.close()
+            self._stop_sequence_safe()
         if self._camera_thread is not None:
             self._camera_thread.stop()
         self._pipeline_thread.stop()
