@@ -64,8 +64,16 @@ class CalibrationTab(QWidget):
             f'optical axis height {s["optical_axis_height_cm"]:.1f} cm'
         ))
         form.addRow("Projector:", QLabel(
-            f'throw ratio {s["projector_throw_ratio"]:.2f}, '
-            f'image aspect {s["projector_image_aspect"]:.3f}'
+            f'{s["projector_model"]} / {s["projector_controller"]}'
+        ))
+        form.addRow("Projector DMD:", QLabel(
+            f'{s["projector_dmd_px"][0]} x {s["projector_dmd_px"][1]} px, '
+            f'{s["projector_led_nm"]} nm LED'
+        ))
+        form.addRow("Projector field:", QLabel(
+            f'{s["projector_fov_mm"][0]:.0f} x {s["projector_fov_mm"][1]:.0f} mm '
+            f'@ {s["projector_working_distance_mm"]:.0f} mm, '
+            f'{s["projector_pixel_size_mm"] * 1000:.0f} um/px on plane'
         ))
         return group
 

@@ -37,6 +37,42 @@ PROJECTOR_LENS_WINDOW_WIDTH_CM = 1.4
 PROJECTOR_LENS_WINDOW_HEIGHT_CM = 1.0
 
 # ---------------------------------------------------------------------------
+# Projector hardware: Wintech PRO4500 (TI DLP LightCrafter 4500 / DLPC350)
+# Numbers from the PRO4500 brochure (.local/PRO4500_Brochure.pdf), 3D-measurement
+# configuration (700 mm working-distance lens).
+# ---------------------------------------------------------------------------
+PROJECTOR_MODEL = "Wintech PRO4500"
+PROJECTOR_OPTICAL_ENGINE = "TI DLP LightCrafter 4500"
+PROJECTOR_CONTROLLER = "TI DLPC350"
+PROJECTOR_USB_VID = 0x0451          # DLPC350 USB descriptor
+PROJECTOR_USB_PID = 0x6401
+
+# 0.45" WXGA diamond-pixel DMD.
+PROJECTOR_DMD_WIDTH_PX = 912
+PROJECTOR_DMD_HEIGHT_PX = 1140
+PROJECTOR_DMD_DIAGONAL_IN = 0.45
+
+# All-glass 0% offset optics; coatings optimized for this band.
+PROJECTOR_OPTICS_BAND_NM = (381, 650)
+# Dominant LED wavelength selected for 3D measurement (blue, within coating band).
+PROJECTOR_LED_WAVELENGTH_NM = 460
+
+# Measurement lens (700 mm working distance) field on the plane.
+PROJECTOR_WORKING_DISTANCE_MM = 700.0
+PROJECTOR_FOV_WIDTH_MM = 400.0
+PROJECTOR_FOV_HEIGHT_MM = 250.0
+PROJECTOR_PROJECTED_PIXEL_SIZE_UM = 305.0   # projected DMD pixel on the plane
+PROJECTOR_DISTORTION_PCT = 0.5
+
+# Streaming rates (DLPC350): HDMI grayscale vs. HDMI/flash binary.
+PROJECTOR_HDMI_GRAYSCALE_FPS = 120
+PROJECTOR_HDMI_BINARY_FPS = 2880
+PROJECTOR_FLASH_BINARY_FPS = 4255
+
+# Projected pixel pitch on the measurement plane, in mm.
+PROJECTOR_PIXEL_SIZE_MM = PROJECTOR_PROJECTED_PIXEL_SIZE_UM / 1000.0
+
+# ---------------------------------------------------------------------------
 # Rig geometry
 # ---------------------------------------------------------------------------
 DEFAULT_DEVICE_SPACING_CM = 12.0   # projector-camera baseline along the rig
@@ -61,4 +97,11 @@ def summary() -> dict[str, object]:
         "optical_axis_height_cm": OPTICAL_AXIS_HEIGHT_CM,
         "projector_throw_ratio": PROJECTOR_THROW_RATIO,
         "projector_image_aspect": PROJECTOR_IMAGE_ASPECT,
+        "projector_model": f"{PROJECTOR_MODEL} ({PROJECTOR_OPTICAL_ENGINE})",
+        "projector_controller": PROJECTOR_CONTROLLER,
+        "projector_dmd_px": (PROJECTOR_DMD_WIDTH_PX, PROJECTOR_DMD_HEIGHT_PX),
+        "projector_led_nm": PROJECTOR_LED_WAVELENGTH_NM,
+        "projector_working_distance_mm": PROJECTOR_WORKING_DISTANCE_MM,
+        "projector_fov_mm": (PROJECTOR_FOV_WIDTH_MM, PROJECTOR_FOV_HEIGHT_MM),
+        "projector_pixel_size_mm": PROJECTOR_PIXEL_SIZE_MM,
     }

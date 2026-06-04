@@ -13,6 +13,15 @@ dependencies = [
     "numpy>=1.26,<3",
 ]
 
+[project.optional-dependencies]
+# USB control of the Wintech PRO4500 (TI DLP LightCrafter 4500 / DLPC350).
+# pyusb additionally needs a libusb backend at runtime; on Windows bind
+# WinUSB/libusb-win32 to the device once with Zadig.
+hardware = [
+    "pycrafter4500>=0.5",
+    "pyusb>=1.2",
+]
+
 [project.scripts]
 microprojection = "microprojection.app:main"
 
