@@ -80,6 +80,16 @@ def _grid_axes_mm(
     return x_mm, y_mm
 
 
+# Row-band pixel cap for the rasterizer's vectorized inner block. A triangle
+# whose clamped pixel bbox exceeds this many pixels is processed in horizontal
+# row-bands so the transient 2D arrays stay bounded — a single 450 mm baseplate
+# triangle would otherwise build full-grid (4500x4501 ~ 20 M-pixel) temporaries
+# at once (the ~610 MB peak). Banding is byte-identical to a single block: the
+# per-pixel arithmetic is unchanged and the max-z envelope is order-independent
+# across bands, so only peak memory changes, never the output.
+_RASTER_BAND_PX = 1_000_000
+
+
 def _rasterize_triangles(
     triangles: np.ndarray,
     shape: Tuple[int, int],
@@ -97,51 +107,104 @@ def _rasterize_triangles(
     Returns
     -------
     (H, W) float64 with -inf in never-covered pixels (the caller lifts).
+
+    Implementation note (Stage 6 B.3b-perf.1)
+    -----------------------------------------
+    Vectorized + row-banded rewrite of the original per-triangle Python loop,
+    BYTE-IDENTICAL to it (pinned by tests/test_rasterizer_fixture.py against the
+    perf.0 baseline, including the cube's ~1.78e-15 sub-ULP residual). Three
+    changes, none of which alter per-pixel arithmetic:
+
+    1. Per-triangle setup (`den`, the floor/ceil/clamp pixel bbox, the
+       degenerate + off-grid skip masks) is computed for all triangles at once;
+       the loop runs only over survivors. The two coordinate paths stay separate
+       exactly as before — bbox via `coord * inv_ps + offset`, inside-test via
+       the `x_mm`/`y_mm` pixel CENTERS — because unifying them drifts by ULPs.
+    2. The inside-test uses the SEPARABLE barycentric form: `l1`/`l2` are affine,
+       so `((y2-y3)*(gx-x3) + (x3-x2)*(gy-y3)) * inv_den` factors into
+       `(tx[col] + ty[row]) * inv_den` via one broadcast-add. Each element is a
+       single IEEE add of the SAME two operands the fused 2D form adds (no
+       regrouping, so non-associativity cannot bite) — proven equal by the
+       perf.0 gate. This drops the `meshgrid` and the two 2D coordinate-diff
+       products.
+    3. Triangles whose bbox exceeds `_RASTER_BAND_PX` are processed in row-bands
+       to cap transient memory.
     """
     H, W = shape
     x_mm, y_mm = _grid_axes_mm(shape, pixel_size_mm)
     out = np.full((H, W), -np.inf, dtype=np.float64)
 
+    tris = np.asarray(triangles, dtype=np.float64)
+    if tris.shape[0] == 0:
+        return out
+
     inv_ps = 1.0 / pixel_size_mm
     col_off = (W - 1) / 2.0
     row_off = (H - 1) / 2.0
 
-    for tri in triangles:
-        x1, y1, z1 = tri[0]
-        x2, y2, z2 = tri[1]
-        x3, y3, z3 = tri[2]
+    # --- Per-triangle setup, vectorized (byte-identical scalars; no per-tri
+    # Python-loop overhead for the skip tests + bbox arithmetic). ---
+    x1 = tris[:, 0, 0]; y1 = tris[:, 0, 1]; z1 = tris[:, 0, 2]
+    x2 = tris[:, 1, 0]; y2 = tris[:, 1, 1]; z2 = tris[:, 1, 2]
+    x3 = tris[:, 2, 0]; y3 = tris[:, 2, 1]; z3 = tris[:, 2, 2]
 
-        den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
-        if abs(den) < _DEGENERATE_DEN:
-            continue  # vertical-wall / collinear projection: no contribution
+    # Signed projected-area denominator, same form as the scalar code.
+    den = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
 
-        # Pixel-index bbox of the triangle, clamped to the image.
-        cols_f = (np.array([x1, x2, x3]) * inv_ps) + col_off
-        rows_f = (np.array([y1, y2, y3]) * inv_ps) + row_off
-        j0 = max(0, int(np.floor(cols_f.min())))
-        j1 = min(W - 1, int(np.ceil(cols_f.max())))
-        i0 = max(0, int(np.floor(rows_f.min())))
-        i1 = min(H - 1, int(np.ceil(rows_f.max())))
-        if j0 > j1 or i0 > i1:
-            continue  # triangle's footprint is entirely off-grid
+    # Pixel-index bbox per triangle (same floor/ceil/clamp arithmetic).
+    cols_f = np.stack((x1, x2, x3), axis=1) * inv_ps + col_off
+    rows_f = np.stack((y1, y2, y3), axis=1) * inv_ps + row_off
+    j0 = np.maximum(0, np.floor(cols_f.min(axis=1)).astype(np.int64))
+    j1 = np.minimum(W - 1, np.ceil(cols_f.max(axis=1)).astype(np.int64))
+    i0 = np.maximum(0, np.floor(rows_f.min(axis=1)).astype(np.int64))
+    i1 = np.minimum(H - 1, np.ceil(rows_f.max(axis=1)).astype(np.int64))
 
-        # Pixel-center world coords for the block (vectorized fill).
-        bx = x_mm[j0 : j1 + 1]              # (bw,)
-        by = y_mm[i0 : i1 + 1]              # (bh,)
-        gx, gy = np.meshgrid(bx, by)       # (bh, bw)
+    # Skip the same triangles the scalar code skips: degenerate projection
+    # (|den| < tol) and footprint entirely off-grid. Survivors run in ascending
+    # index order (the max-z envelope is order-independent regardless).
+    active = np.nonzero(
+        (np.abs(den) >= _DEGENERATE_DEN) & (j0 <= j1) & (i0 <= i1)
+    )[0]
 
-        inv_den = 1.0 / den
-        l1 = ((y2 - y3) * (gx - x3) + (x3 - x2) * (gy - y3)) * inv_den
-        l2 = ((y3 - y1) * (gx - x3) + (x1 - x3) * (gy - y3)) * inv_den
-        l3 = 1.0 - l1 - l2
+    for t in active:
+        inv_den = 1.0 / den[t]
+        jj0 = int(j0[t]); jj1 = int(j1[t])
+        ii0 = int(i0[t]); ii1 = int(i1[t])
 
-        inside = (l1 >= -_BARY_EPS) & (l2 >= -_BARY_EPS) & (l3 >= -_BARY_EPS)
-        if not inside.any():
-            continue
+        bx = x_mm[jj0:jj1 + 1]            # (bw,) pixel-center X
+        by_full = y_mm[ii0:ii1 + 1]      # (bh,) pixel-center Y
+        bw = bx.shape[0]
+        bh = by_full.shape[0]
 
-        z_interp = l1 * z1 + l2 * z2 + l3 * z3
-        block = out[i0 : i1 + 1, j0 : j1 + 1]
-        np.maximum(block, np.where(inside, z_interp, -np.inf), out=block)
+        x3t = x3[t]; y3t = y3[t]
+        z1t = z1[t]; z2t = z2[t]; z3t = z3[t]
+
+        # Separable column terms (row-independent) — reused across bands. These
+        # equal the fused form's (y2-y3)*(gx-x3) / (y3-y1)*(gx-x3) row-for-row.
+        dxx = bx - x3t
+        tx1 = (y2[t] - y3t) * dxx
+        tx2 = (y3t - y1[t]) * dxx
+
+        rows_per_band = max(1, _RASTER_BAND_PX // bw)
+        for rs in range(0, bh, rows_per_band):
+            by = by_full[rs:rs + rows_per_band]
+            dyy = by - y3t
+            ty1 = (x3t - x2[t]) * dyy
+            ty2 = (x1[t] - x3t) * dyy
+
+            # Barycentric coords (separable broadcast-add == fused 2D add of the
+            # same two operands, bit-for-bit; see the docstring note).
+            l1 = (tx1[None, :] + ty1[:, None]) * inv_den
+            l2 = (tx2[None, :] + ty2[:, None]) * inv_den
+            l3 = 1.0 - l1 - l2
+
+            inside = (l1 >= -_BARY_EPS) & (l2 >= -_BARY_EPS) & (l3 >= -_BARY_EPS)
+            if not inside.any():
+                continue
+
+            z_interp = l1 * z1t + l2 * z2t + l3 * z3t
+            block = out[ii0 + rs:ii0 + rs + by.shape[0], jj0:jj1 + 1]
+            np.maximum(block, np.where(inside, z_interp, -np.inf), out=block)
 
     return out
 
