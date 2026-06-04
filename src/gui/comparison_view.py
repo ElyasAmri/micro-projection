@@ -106,6 +106,7 @@ class RecoveredComparisonView(gl.GLViewWidget):
         self,
         recovered_mm: np.ndarray,
         ground_truth_mm: np.ndarray,
+        z_max_percentile: Optional[float] = None,
     ) -> None:
         """Render both surfaces and fit the grid's Z axis to their combined
         height range. Both arrays are (H, W) float64 mm on the same grid.
@@ -113,6 +114,15 @@ class RecoveredComparisonView(gl.GLViewWidget):
         The recovered surface is colored per the current error-coloring mode
         (solid blue, or by signed error if `set_error_coloring` is active);
         the ground truth is amber, render-suppressed in error mode.
+
+        `z_max_percentile` (Stage 6 B.3 polish) shapes ONLY the grid's view
+        bounds, never the data. `None` (default) fits z_max to the raw combined
+        max — the historical behavior, byte-identical for all existing callers.
+        A float P fits z_max to the P-th percentile of the COMBINED displayed
+        arrays instead, so a single extreme peak (the steep-dome center) sits
+        outside the box rather than crushing all other detail flat. The arrays
+        themselves are passed to the render untouched (honest scale, z=1.0); the
+        peak simply exceeds the box. z_min is always the raw combined min.
         """
         recovered_mm = np.asarray(recovered_mm, dtype=np.float64)
         ground_truth_mm = np.asarray(ground_truth_mm, dtype=np.float64)
@@ -127,9 +137,18 @@ class RecoveredComparisonView(gl.GLViewWidget):
         )
         self._apply_gt_visibility()
 
-        # Z axis spans whatever either surface reaches.
+        # Z axis spans whatever either surface reaches. z_min is always the raw
+        # combined min; z_max is the raw combined max (default) or the requested
+        # percentile of the combined displayed arrays (view-bounds only — the
+        # data is unchanged).
         z_min = min(float(recovered_mm.min()), float(ground_truth_mm.min()))
-        z_max = max(float(recovered_mm.max()), float(ground_truth_mm.max()))
+        if z_max_percentile is None:
+            z_max = max(float(recovered_mm.max()), float(ground_truth_mm.max()))
+        else:
+            combined = np.concatenate(
+                (recovered_mm.ravel(), ground_truth_mm.ravel())
+            )
+            z_max = float(np.percentile(combined, z_max_percentile))
         self._grid.set_z_extent(z_min, z_max)
 
     def set_error_coloring(self, error_mm: Optional[np.ndarray]) -> None:

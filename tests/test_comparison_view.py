@@ -129,3 +129,52 @@ def test_grid_is_embedded_in_view(qapp):
     # Every CoordinateGrid item is a child of the view.
     for item in v._grid.items():
         assert item in v.items
+
+
+def _capture_z_extent(monkeypatch, view):
+    """Capture the exact (z_min, z_max) set_data hands to the grid."""
+    captured = {}
+    monkeypatch.setattr(
+        view._grid,
+        "set_z_extent",
+        lambda lo, hi: captured.update(lo=lo, hi=hi),
+    )
+    return captured
+
+
+def test_steep_dome_z_extent_uses_p99_not_raw_max(qapp, monkeypatch):
+    """Stage 6 B.3 polish: with z_max_percentile, the view's z_max is the p99
+    of the combined displayed arrays (so the spike sits outside the box), while
+    z_min stays the raw combined min. The DATA is unchanged — view bounds only.
+    """
+    v = RecoveredComparisonView()
+    captured = _capture_z_extent(monkeypatch, v)
+
+    # Gentle bulk (0..100) plus one crushing central peak, the steep-dome shape.
+    rec = np.linspace(0.0, 100.0, int(np.prod(SHAPE))).reshape(SHAPE)
+    rec[0, 0] = 6000.0
+    gt = rec.copy()
+    combined = np.concatenate((rec.ravel(), gt.ravel()))
+
+    v.set_data(rec, gt, z_max_percentile=99.0)
+
+    assert captured["hi"] == pytest.approx(float(np.percentile(combined, 99.0)))
+    assert captured["hi"] < float(combined.max())          # peak excluded
+    assert captured["lo"] == pytest.approx(float(combined.min()))  # raw min
+
+
+def test_non_steep_z_extent_uses_raw_min_max(qapp, monkeypatch):
+    """Default (z_max_percentile=None) keeps the historical raw combined
+    min/max extent byte-identical — non-steep surfaces are unaffected."""
+    v = RecoveredComparisonView()
+    captured = _capture_z_extent(monkeypatch, v)
+
+    rec = np.zeros(SHAPE, dtype=np.float64)
+    rec[100, 100] = 3.0
+    gt = np.zeros(SHAPE, dtype=np.float64)
+    gt[200, 200] = 7.0  # combined max comes from ground truth
+
+    v.set_data(rec, gt)  # default: no percentile
+
+    assert captured["hi"] == pytest.approx(7.0)  # raw combined max
+    assert captured["lo"] == pytest.approx(0.0)  # raw combined min

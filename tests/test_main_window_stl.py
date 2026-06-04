@@ -1151,7 +1151,7 @@ def test_switch_to_recovered_tab_calls_set_data_with_heightmap(main_window):
     arrays. Ground truth is exactly `_compute_current_heightmap()`."""
     captured = {}
 
-    def spy(recovered, ground_truth):
+    def spy(recovered, ground_truth, z_max_percentile=None):
         captured["rec"] = recovered
         captured["gt"] = ground_truth
 
@@ -1184,7 +1184,7 @@ def test_recovered_tab_feeds_honest_offpart_arrays(main_window):
 
     captured = {}
 
-    def spy(recovered, ground_truth):
+    def spy(recovered, ground_truth, z_max_percentile=None):
         captured["rec"] = recovered
         captured["gt"] = ground_truth
 
@@ -1337,7 +1337,7 @@ def test_b1_inverse_fpp_toggle_changes_recovered_array(main_window):
 
     captured = {}
 
-    def spy(recovered, ground_truth):
+    def spy(recovered, ground_truth, z_max_percentile=None):
         captured["rec"] = np.array(recovered)
 
     main_window.recovered_comparison_view.set_data = spy
@@ -1371,7 +1371,7 @@ def test_b2_defect_toggle_changes_deviation_ground_truth_is_golden(main_window):
 
     captured = {}
 
-    def spy(recovered, ground_truth):
+    def spy(recovered, ground_truth, z_max_percentile=None):
         captured["rec"] = np.array(recovered)
         captured["gt"] = np.array(ground_truth)
 
@@ -1410,7 +1410,7 @@ def test_b3a_steep_dome_renders_and_shows_dynamic_range(main_window):
 
     captured = {}
 
-    def spy(recovered, ground_truth):
+    def spy(recovered, ground_truth, z_max_percentile=None):
         captured["rec"] = np.array(recovered)
 
     main_window.recovered_comparison_view.set_data = spy
@@ -1426,3 +1426,73 @@ def test_b3a_dynamic_range_dash_for_gentle_gaussian(main_window):
     main_window.surface_combo.setCurrentText("Gaussian")
     main_window.right_pane_tabs.setCurrentIndex(RECOVERED_TAB)
     assert "—" in main_window.dynamic_range_label.text()
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 B.3 polish — auto Color-by-error default on surface entry.
+# ---------------------------------------------------------------------------
+def test_color_by_error_default_on_for_steep_dome(main_window):
+    """Entering the steep-dome showcase opens it in error-view: the
+    Color-by-error checkbox is forced checked on entry. (Launch default is
+    Gaussian with the box unchecked, so this is a real state change.)"""
+    assert main_window.color_by_error_checkbox.isChecked() is False  # Gaussian
+
+    main_window.surface_combo.setCurrentText(STEEP_DOME_LABEL)
+
+    assert main_window.color_by_error_checkbox.isChecked() is True
+
+
+def test_color_by_error_default_off_for_non_steep(main_window):
+    """Entering any non-steep surface opens it in geometry-view: the box is
+    forced unchecked on entry, even when it was left ON by a prior steep-dome
+    visit. Symmetric with the steep-dome case."""
+    main_window.surface_combo.setCurrentText(STEEP_DOME_LABEL)
+    assert main_window.color_by_error_checkbox.isChecked() is True
+
+    main_window.surface_combo.setCurrentText("Flat")
+
+    assert main_window.color_by_error_checkbox.isChecked() is False
+
+
+def test_color_by_error_default_is_one_shot_not_reforced_by_refresh(
+    main_window,
+):
+    """The default applies ONCE on surface entry, not on every refresh. After
+    entering the steep dome (box auto-ON), a manual untoggle must survive a
+    plain geometry refresh (slider move) — the refresh path never re-forces
+    the box back to checked."""
+    main_window.surface_combo.setCurrentText(STEEP_DOME_LABEL)
+    assert main_window.color_by_error_checkbox.isChecked() is True
+
+    # User flips it back OFF.
+    main_window.color_by_error_checkbox.setChecked(False)
+
+    # A geometry slider move -> _refresh_surface_preview, NOT a surface entry.
+    main_window.theta_projector.set_value(
+        main_window.theta_projector.value() + 5.0
+    )
+
+    assert main_window.color_by_error_checkbox.isChecked() is False
+
+
+def test_color_by_error_default_reapplied_on_stl_cancel_revert(
+    main_window, monkeypatch,
+):
+    """The STL-cancel revert path re-applies the default for the reverted
+    surface. The blocked-signal revert in `_revert_stl_dropdown` skips
+    `_on_surface_combo_changed`, so the re-apply is an explicit call there.
+
+    Scenario: sit on the steep dome (box auto-ON), manually flip it OFF, then
+    open STL (no cache) and cancel. The revert restores the steep dome, and
+    the explicit re-apply forces the box back ON to match it."""
+    main_window.surface_combo.setCurrentText(STEEP_DOME_LABEL)
+    main_window.color_by_error_checkbox.setChecked(False)
+
+    _patch_file_dialog(monkeypatch, return_path="")  # user cancels
+    _patch_warning(monkeypatch)
+
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+
+    # Reverted to the steep dome, and the default was re-applied to match.
+    assert main_window.surface_combo.currentText() == STEEP_DOME_LABEL
+    assert main_window.color_by_error_checkbox.isChecked() is True

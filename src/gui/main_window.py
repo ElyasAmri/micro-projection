@@ -1200,7 +1200,15 @@ class MainWindow(QMainWindow):
 
             error = tab_recovered - heightmap
             abs_max = self._update_error_stats(error)
-            self.recovered_comparison_view.set_data(tab_recovered, heightmap)
+            # Steep-dome showcase (B.3 polish): fit the view's z_max to the p99
+            # of the displayed Z so the ~6000-unit central peak stops crushing
+            # all other detail flat. View-bounds only — tab_recovered/heightmap
+            # are passed untouched (honest scale). Non-steep: raw max (None).
+            self.recovered_comparison_view.set_data(
+                tab_recovered,
+                heightmap,
+                z_max_percentile=99.0 if is_steep else None,
+            )
             color_by_error = self.color_by_error_checkbox.isChecked()
             self.recovered_comparison_view.set_error_coloring(
                 error if color_by_error else None
@@ -1482,6 +1490,8 @@ class MainWindow(QMainWindow):
         # elsewhere). Done before the early-return branches so it applies
         # on every mode change, including the STL-without-cache dialog path.
         self._sync_labview_for_mode()
+        # Stage 6 B.3 polish: one-shot per-surface Color-by-error default.
+        self._apply_color_by_error_default(name)
         if name == STL_LABEL:
             # Keep the STL page's inner state in sync with cache state
             # (placeholder vs filename row).
@@ -1493,6 +1503,19 @@ class MainWindow(QMainWindow):
                 return
             # Cache present: nothing to do; refresh slot will render it.
         self._previous_surface_index = new_index
+
+    def _apply_color_by_error_default(self, name: str) -> None:
+        """One-shot per-surface Color-by-error default (Stage 6 B.3 polish).
+
+        Mental model: the steep-dome showcase opens in error-view (Color-by-
+        error ON), every other surface opens in geometry-view (OFF). Symmetric
+        and one-shot on surface ENTRY only — `setChecked` emits `toggled` only
+        on an actual state change, so this never re-forces the toggle on the
+        many other refresh paths (sliders, tab switch), and the user is free to
+        flip it back afterward. Called on combo change and (signals being
+        blocked there) re-applied explicitly on the STL-cancel revert.
+        """
+        self.color_by_error_checkbox.setChecked(name == STEEP_DOME_LABEL)
 
     def _change_stl_clicked(self) -> None:
         """Slot for the [Change...] button on the loaded-STL page."""
@@ -1878,5 +1901,7 @@ class MainWindow(QMainWindow):
         # The blocked-signal revert above skips _on_surface_combo_changed,
         # so re-sync the lab-view toggle to the reverted (non-STL) mode
         # explicitly — otherwise it would stay enabled/ground-truth from
-        # the cancelled STL selection.
+        # the cancelled STL selection. Re-apply the Color-by-error default
+        # for the reverted surface for the same reason (B.3 polish).
         self._sync_labview_for_mode()
+        self._apply_color_by_error_default(self.surface_combo.currentText())
