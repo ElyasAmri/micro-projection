@@ -1,0 +1,17 @@
+.omc
+.archive/
+.idea/
+FringeProjection-Method.pdf
+method summary.md
+docs/timesheet-*.md
+venv
+videos/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
+spinnaker_python-*/
+*.jpg
+*.pdf

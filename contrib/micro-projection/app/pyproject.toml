@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microprojection"
+version = "0.1.0"
+description = "Fringe projection profilometry instrument GUI"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6,<7",
+    "opencv-python>=4.9,<5",
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+# USB control of the Wintech PRO4500 (TI DLP LightCrafter 4500 / DLPC350).
+# pyusb additionally needs a libusb backend at runtime; on Windows bind
+# WinUSB/libusb-win32 to the device once with Zadig.
+hardware = [
+    "pycrafter4500>=0.5",
+    "pyusb>=1.2",
+]
+
+[project.scripts]
+microprojection = "microprojection.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["microprojection"]
+known_third_party = ["PySide6", "numpy", "cv2"]
