@@ -27,6 +27,10 @@ data/captures/
 # against — keep it tracked even though *.npz is otherwise ignored.
 !tests/regression_data.npz
 
+# Byte-exact rasterizer baseline (Stage 6 B.3b-perf.0): the frozen current
+# output _rasterize_triangles must reproduce. Committed for the same reason.
+!tests/fixtures/rasterizer/rasterizer_baseline.npz
+
 # Copyrighted thesis chapters — kept locally for reference,
 # never tracked, never pushed.
 FPP Thesis/
