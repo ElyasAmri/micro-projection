@@ -8,14 +8,14 @@
 
 A **fringe projection 3D measurement system** being built in a research lab. The goal is to recover the height profile of test objects by projecting sinusoidal fringe patterns onto a surface, capturing phase-shifted images with a camera, and processing the captured fringes to extract a height map.
 
-The project is based on **Chapter 2 (theory)** and **Chapter 4 (practical implementation)** of a thesis by the thesis author. The thesis lives in the `reference/` folder.
+The project is based on **Chapter 2 (theory)** and **Chapter 4 (practical implementation)** of a thesis by Ayman Samara. The thesis lives in the `reference/` folder.
 
 The user's deliverables:
 1. A **Python user interface (UI)** that controls the experiment end-to-end (pattern generation, projection, capture, calibration, processing, visualization).
 2. The **math/processing core** behind the UI.
 3. Eventually: **integration with real hardware** in the lab.
 
-The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 4d (plus five follow-up commits, see Section 12) have been completed. The notebook is the starting point for refactoring, not a thing to start over.
+The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.ipynb`) that implements an end-to-end synthetic simulation. **It works** — recovers a Gaussian bump from simulated fringes with mean error ~10⁻⁵ after DC alignment. Stages 1 through 5, plus **Stage 6 Phase A→B.3a** (the inverse-FPP reconstruction pipeline + the physical beyond-Nyquist wall + the headline dynamic-range showcase, see Section 12), have been completed. The notebook is the starting point for refactoring, not a thing to start over.
 
 ---
 
@@ -80,6 +80,35 @@ Body frame: origin at front-bottom-left corner of cube; +X right, +Y into body, 
 
 - **Optimal projector throw distance:** ~82 mm (computed: `68 mm camera FOV width × 1.2 throw ratio`). At this distance the projected pattern matches the camera FOV exactly.
 - This is a GUI default, not a hard hardware constraint — Stage 4's GUI exposes throw distance as a slider so the user can model coverage trade-offs.
+
+### Incoming projector — Wintech PRO4500 (specs captured; integration is Stage 7)
+
+The upgraded projector (long-awaited) is the **Wintech PRO4500 Production Ready Optical Engine** — a TI DLP LightCrafter 4500-based industrial DLP projector. The physical unit is in the lab (lab-room access pending). The spec brochure (`docs/Wintech_PRO4500_Brochure.pdf`) + the TI DMD datasheet (DLPS028) give us the optical parameters; the swap replaces the Pico Genie's optical specs in the model. **This is Stage 7 work — captured now so nothing is lost; NOT acted on until after Phase B (B.3b/B.4). User input edit: This is a task user will be relaying to teammate Ilyas. since project is in GIT and he has access to the project as well.**
+
+**Solid specs (ready to use at swap):**
+- **DMD:** TI DLP4500, 0.45" WXGA, **912 × 1140 micromirrors**, **7.6 µm micromirror pitch**, ±12° mirror tilt, **92% fill factor**, optics optimized 381–650 nm.
+- **0% offset optics** — the optical axis is centered (NO throw offset). This *replaces* the Pico Genie's ~12° horizontal-offset guess and **simplifies** the projector-arm geometry (no keystone-inducing offset to model).
+- **Field-swappable lenses** with a discrete working-distance → FOV → projected-pixel-size table (460 nm / 3D-measurement column):
+
+  | Working distance | Field of view | Projected pixel size |
+  |---|---|---|
+  | 92 mm | 65.6 × 41 mm | 50 µm |
+  | 184 mm | 131.2 × 82 mm | 100 µm |
+  | 700 mm | 400 × 250 mm | 305 µm |
+
+  Throw is *derivable per lens* (FOV width / WD) — better than a single nominal throw ratio.
+- **Pattern rates:** 2,880 Hz binary / 120 Hz 8-bit grayscale streaming (mini-HDMI); up to 4,255 Hz binary from 32 MB onboard memory. Relevant to the **real-time closed-loop** framing (the paper's "Real-Time / Adaptive" novelty, Stage 7).
+- **Body dimensions:** 210 × 84 × 54 mm.
+
+**RESOLVED — diamond-pixel layout is a non-issue for fringe projection.** The "diamond pixel" array means the columns of each odd row are offset by half a pixel from the even rows (a brick-laid / quincunx stagger), whole array diagonally oriented (TI DLPS028, DLPU011). This stagger is **sub-pixel (½ of 7.6 µm at the DMD)** and matters only for single-pixel-width hard lines (vertical/horizontal/diagonal). A fringe pattern is a smooth low-frequency sinusoid spanning many DMD pixels per cycle, so the half-pixel row stagger **averages out completely** in the projected sinusoid. **Model the PRO4500 as a plain 912 × 1140 rectangular grid** — the diamond stagger does NOT need modelling for fringe projection.
+
+**The swap is mostly MATH-LAYER, not a rewrite (the key realization).** The projector's measurement role is driven by `theta_projector` (the sweep slider — a free GUI parameter, NOT a physical-mount measurement) + the optical specs above. So the optics swap keeps the existing sweep working with no mount data. The swap likely **reparameterizes** the projector controls: the current free `projector_throw_mm` slider becomes a **lens selector** (or a throw constrained to the chosen lens's WD), since the PRO4500 expresses naturally as "pick a lens → that fixes the WD/FOV/pixel triple." Removing the free-throw slider and adding a lens selector is the expected, clean kind of reparameterization the §7.11 (parameters-not-mesh) architecture is built for — "remove what doesn't apply, add new adjustable parameters."
+
+**Two open items — both provisional-now / refine-later, NEITHER blocks the swap:**
+1. **Lens choice** — which of the three lenses to run. A *decision* (depends on specimen size / standoff), not a measurement. At swap: pick a sensible provisional default (e.g. 184 mm / 131×82 mm); refine to the final choice with a one-parameter edit whenever decided. The measurement works the whole time; only the FOV/throw/`p` numbers shift on re-pick.
+2. **Mount geometry (body-frame lens-center offsets)** — **cosmetic only** (§7.11: where the projector body + cone render in the 3D scene; provably cannot change recovered output). At swap: placeholder body position → sweeps and measures correctly; refine to the real position from a lab measurement (unit in hand, lab-room access pending). Non-blocking.
+
+**TENTATIVE mounting plan (NOT finalized) — projector at 0°, camera at the angle.** The likely physical arrangement inverts the current sim: **projector directly above the surface at 0°** (minimizes projection-arm perspective curvature → less to correct) with the **telecentric camera arm carrying the triangulation angle**. ⚠️ **Flag for the swap chat:** the entire inverse-FPP/nulling story (§7.14) is premised on the *projector* carrying the bias the inverse grating corrects. If the projector goes to 0° and the camera carries the angle, the bias-source shifts arms — re-examine whether/how the inverse-grating correction still applies (it may simplify, or move). Revisit when the placement is finalized; do not lock the model to either arrangement before then.
 
 ---
 
@@ -193,9 +222,11 @@ Fringe_Projection_Project_Phase1/
 │   ├── unwrapping.py
 │   ├── calibration.py
 │   ├── reconstruction.py
-│   ├── pipeline.py                # Stage 4a — end-to-end pipeline composition
+│   ├── pattern_generator.py        # Stage 6 A.1 — inverse_grating_phase (reuses calibration.compute_inverse_phase, the fixture-locked tilt-flip). No longer a stub.
+│   ├── sampling.py                 # Stage 6 A.0.2 — pixel-area sampling model: contrast_envelope(phase, fill_factor) → sinc fade on local |∇φ|/2π (cycles/pixel). Pure NumPy.
+│   ├── pipeline.py                # Stage 4a — end-to-end pipeline composition; Stage 6 added run_inverse_fpp (A.2) + run_straight_fringe (B.1), selfcal_fit param (B.2), noise_sigma/rng (A.4)
 │   ├── io_utils.py
-│   ├── test_surfaces.py           # Stage 4a — heightmap generators
+│   ├── test_surfaces.py           # Stage 4a — heightmap generators; Stage 6 B.3a added make_steep_dome (math-pixel convention, crosses Nyquist)
 │   ├── scene.py                   # Stage 4b — mesh + wireframe builders (pure NumPy)
 │   ├── scene_compose.py           # Stage 4b — pose composition layer (arm transforms); Stage 5 (4d.10) added y_offset_mm + recess_mm to cone_local_to_world_transform
 │   ├── stl_loader.py              # Stage 4c — STL → heightmap loader (pure NumPy, peer of test_surfaces.py)
@@ -268,11 +299,15 @@ The detailed roadmap is in `docs/Fringe_Projection_Roadmap.pdf`. Stages summary:
 | **4d** | **STL Browser for full-scale specimens: windowed FOV selection on oversized parts via minimap + draggable cyan FOV rectangle; live windowed-slice preview; Commit FOV; QTabWidget refactor (3D Scene / Pipeline Stages / STL Browser)** | No | ✅ Done |
 | **4d follow-ups** | **GUI review pass: STL lift convention reset to visible-envelope, off-part edge-extend with masked output, SAT body-overlap, 2 mm cone-coverage tolerance, ABSURDLY_LARGE_MM raised to (500, 500, 120).** | No | ✅ Done |
 | **5** | **Lab-view + Recovered-Surface refactor + hardware-coordinate readout + cross-arm obstruction advisory. 11 commits (4d.2–4d.12). Lab-view ground-truth/recovered XOR toggle; new "Recovered Surface" 4th tab (solid recovered + translucent ground-truth over a labeled XYZ mm grid, error stats/colormap migrated here); STL Browser panel swap; numeric slider entry; projector lens-center anchored at origin-when-vertical; live Hardware Coordinates panel + CLI; cross-arm optical-obstruction advisory.** | No | ✅ Done |
-| 6 | Hardware familiarization (capture frame, project pattern) | Optional | — |
-| 7 | Real hardware integration with mounting + new projector | Yes | — |
+| **6 (A→B.3a)** | **Inverse-FPP reconstruction + physical beyond-Nyquist wall + headline showcase. Phase A: scale bridge (A.0.1), pixel-area sampling fade (A.0.2), real inverse-grating generator (A.1), closed inverse-FPP loop (A.2/A.2b), additive read-noise model (A.4). Phase B: flat-reference nulling before/after on the Recovered Surface tab (B.1), golden-part reference + 2D self-cal (B.2), beyond-Nyquist steep-dome headline showcase (B.3a). 9 commits, 322 tests passing at close.** | No | ✅ Done |
+| 6 (B.3b) | Steep STL part — the realistic AM demonstration (B.3a's headline on a believable part) | No | — |
+| 6 (B.4) | Deterministic, serializable reference the hardware phase validates against | No | — |
+| 7 | Real hardware integration with mounting + new projector (Camera/Projector protocols + mocks → PySpin/RealProjector; real-time closed loop = the paper's novelty) | Yes | — |
 
 > **Stage numbering note:** the Stage 5 commits are prefixed `Stage 5 (4d.X)` for X = 2…12. The `4d.` is a historical continuation of the Stage 4d sub-task numbering (Stage 5 grew directly out of the Stage 4d follow-up parking lot); the stage itself is **Stage 5**, tagged `stage-5-complete`. Hardware familiarization/integration shifted to Stages 6/7.
 
+
+> **Sequencing decision (post-Stage-5): web port DEFERRED until hardware integration is complete.** The web port (parking-lot #6 — HTML/Three.js re-implementation for larger screens and shareability) is explicitly held off until the PyQt6 reference model is finalized against real hardware. Rationale: the web port is a re-implementation of a *reference*; finalizing the reference first means porting it once, not porting a moving target. The new projector is arriving sooner than expected, which makes hardware integration (Stages 6/7) the immediate priority — it will touch geometry, possibly the math constants, and the mock→real arm path, all of which the web port would otherwise have to absorb mid-port. **Order is therefore: Stage 6/7 (hardware familiarization + integration) → THEN web port → aesthetics last.** Nothing in the model changes until the projector is physically in hand; this is a sequencing note, not a code change.
 ---
 
 ## 7. Design Principles
@@ -377,6 +412,42 @@ Rationale: the recovered surface is a math output that legitimately changes when
 ### 7.11 — Visualization layer is decoupled from the math pipeline (confirmed Stage 5)
 
 The hardware bodies, arm transforms, lens positions, cones, and clip-detection are the **visualization / scene layer**. The math pipeline (forward model, λ_eq, phase recovery, recovered heightmap, pipeline stages) is driven by **slider VALUES** (θ_projector, θ_camera, distances), NOT by mesh placement. The two paths from the sliders never cross. This was relied on explicitly in Stage 5 (4d.10): moving the projector body 17.5 mm to anchor its lens at the origin is purely cosmetic and cannot change the recovered output. Any future change to body/lens/cone placement is visualization-only.
+
+### 7.12 — The object-space scale bridge is labeling-only (Stage 6 A.0.1)
+
+The simulation core runs in **notebook pixel-space** (`p`, `M`, `a`, the carrier, `X = arange(W)` are all pixel-unit; live values `M=1`, `p=40`, `a=2000`). The scale bridge is three canonical constants in `geometry.py` — `CAMERA_PIXEL_PITCH_UM = 4.8`, `CAMERA_MAGNIFICATION = 0.09`, `OBJECT_SPACE_UM_PER_PIXEL = 4.8/0.09 ≈ 53.33` — that exist **solely to convert pixel counts to microns for human display** (e.g. "the ~2-px sampling wall sits at ~107 µm object-space"). They are **never read by any math path** (carrier, λ_eq, `project()`, `synthesize_psi_stack`). An enforceable no-leak test (`test_no_leak_scale_bridge.py`) forbids these constant names from appearing in `synthetic_fringes.py`, `pipeline.py`, or `sampling.py` — so µm cannot silently leak into the math.
+
+**Why a bridge, not a native-metric rewrite (the recon-settled decision):** the height-boundary core (λ_eq, `height_to_phase`, `phase_to_height`) is already unit-polymorphic — it scales cleanly with whatever unit `p` carries. But the `(2π/p)·X` carrier couples `p` to the integer pixel grid `X`, so going native-metric would require changing the X grid, which invalidates every `arange`-based closed-form expected value and **reopens the full 271-passing core + regenerates the regression fixtures**. The bridge touches **zero** existing tests (purely additive). Reopening a validated core to avoid carrying one documented px↔µm scale is a bad trade; the bridge is the project's standing approach. (The dead `pixel_pitch_um = 53.0` field on both geometries was retired and redirected to the canonical constant — one source of truth, value now the derived 53.33.)
+
+### 7.13 — The physical beyond-Nyquist wall: sampling fade × read noise (Stage 6 A.0.2 + A.4)
+
+A real camera pixel integrates light over its finite area; it does not point-sample a continuous sinusoid. `sampling.contrast_envelope(phase, fill_factor)` models this as a **sinc contrast envelope keyed off the LOCAL phase gradient** `f_local = |∇φ|/(2π)` in cycles/pixel (computed from the full 2D gradient magnitude, so height-warped/steep regions fade, not just a fine carrier). It is wired into `synthesize_psi_stack` as `A + B·env·cos(...)`, **off by default** (`fill_factor=None` → byte-identical point-sampled path). At fill=1.0 the first sinc null is at a 1-px fringe period; contrast is still ~64% at the 2-px Nyquist period — an **honest soft roll-off, not a hard cliff**.
+
+**Critical two-part mechanism (both required, surfaced by recon):**
+1. The envelope alone is **transparent to noiseless recovery** — it attenuates contrast `B·env` *identically across the N phase shifts*, so it divides straight out of `extract_phase`'s `arctan2`. A faded fringe recovers *perfectly* until contrast hits exactly zero (the degenerate `arctan2(0,0)` → a defined-but-meaningless constant, not the true phase). So the fade by itself does NOT produce a gradual wall.
+2. **Additive read noise (A.4)** is what gives the fade teeth. Drawn **per-frame-independent, shape (H,W,N)** (a k-common (H,W) map would cancel in arctan2 just like the envelope — the (H,W,N) shape is the load-bearing line), added at the sensor stage *after* the envelope. Because noise is independent per frame while `B·env` is common, it does NOT cancel: low contrast + fixed σ = low SNR = phase error scaling as `σ_φ ∝ σ/(B·env·√N)`. This is the gradual beyond-Nyquist wall. The `1/√N` term means **N=8 recovers ~√2 deeper into the fade than N=4** (measured 0.707, exactly 1/√2 — finding #2 made physically real). Noise requires an explicit seeded `rng` (`noise_sigma>0` with `rng=None` raises); the seed is serialized, not the Generator (reproducibility / future hardware-reference requirement).
+
+### 7.14 — Inverse-FPP nulling: the tilt-flip nulls a golden part (Stage 6 A.1/A.2/B.2)
+
+The inverse grating is the **fixture-locked tilt-flip** `φ_inverse = 2·P − φ_ref`, `P = fit_tilt_plane(φ_ref)` (`calibration.compute_inverse_phase`, reused — single source of truth). `pattern_generator.inverse_grating_phase` is the projector-side wrapper. The closed loop is `pipeline.run_inverse_fpp(reference, object, geometry, deltas, ...)`: reference capture → inverse grating → project onto object → recover. Because `project()` is **affine in its phase argument** (bias independent of phase), the projector's quadratic bias cancels exactly — the inverse grating makes `project()`-on-the-object safe (without it, the bias blows recovery up ~6 orders).
+
+**Golden-part generalization (recon-settled, B.2):** the *same* tilt-flip nulls a genuinely 2D-curved golden part — it does NOT only work for flat references. The algebra: flipping curvature about the fitted plane produces `−C[h_golden]`, so `recovered = C[part − golden]` (a matching part nulls to the carrier; a defect survives as the deviation's curvature). B.1 (flat golden) is the special case. `run_inverse_fpp` is loop-wrappable by construction (height-in/height-out) so the deferred closed-loop iteration wraps it without a rewrite.
+
+**Two honest bounds, pinned in code + tests (must not be over-claimed):**
+- **Curvature only:** `recovered = C[part − golden]` recovers the deviation's *curvature*; a purely **linear tilt difference** between part and golden is removed by self-cal and NOT recovered. This is the inherent single-carrier-FPP self-cal limitation — fine for **defect/local-deviation detection** (bumps, dents, cracks — the AM in-situ framing), NOT absolute global-tilt metrology.
+- **Defect's own Nyquist:** inverse-FPP decouples the *golden's* gradient from the wall (the matching shape can be arbitrarily steep), but a **defect whose own gradient exceeds Nyquist is not fully recovered** (~61% at own-f 0.81). The grating un-crushes the golden's contribution everywhere; it cannot un-crush a defect that is itself beyond-Nyquist.
+
+### 7.15 — Self-cal fit follows the reference's structure (Stage 6 B.2)
+
+`run_inverse_fpp`/`run_straight_fringe` take `selfcal_fit: Callable = fit_tilt_line_1d` (the default preserves all prior behavior byte-for-byte; the H_rec0 fixture's ~4e-5 1D-vs-2D divergence stays on the default, sealed fixture never reopened). **Rule: the self-cal follows the reference's structure.** A genuinely 2D golden needs `fit_tilt_plane` (2D) — the 1D row-mean fit (forces m_y=0) cannot remove a y-tilt in the reference phase and **leaks a linear y-ramp** into the deviation map (negligible for a centered/symmetric golden, ~3px for an asymmetric one, enough to bury a small defect). The recon proved the leak is **purely linear (never curvature corruption)** and that the 2D fit removes it completely (off-center matching null 3.12px → 6.7e-13). For y-invariant data the two fits agree, so 2D-vs-1D only matters when the reference carries real 2D structure. The GUI golden path passes `fit_tilt_plane`; the straight-fringe baseline in the same comparison uses the same fit so the before/after differs only by the inverse grating.
+
+### 7.16 — The two showcases: synthetic steep dome (validation) vs steep STL (realism) (Stage 6 B.3a; B.3b pending)
+
+The headline — inverse-FPP recovers steep features straight-fringe loses to the Nyquist wall — has two demonstrations doing different jobs:
+- **Synthetic steep dome (B.3a, done):** a `make_steep_dome` golden in the **math-pixel convention** (amplitude ~6000, σ ~60 px) whose flanks push the observed fringe frequency past 0.5 cyc/px. This is the **controlled validation gate** — extreme, tunable, reproducible (seeded), produces clean headline numbers: **decoupling ~42–135×** (observed-frequency reduction in the steep region) and a **steep-region recovery-error improvement of ~10⁴–10¹⁵×** depending on steepness. Both surface as a live "Steep-region: decoupling Nx, error ratio Mx" readout on the Recovered Surface tab (convention-agnostic ratios; the dual-run cost is gated to the steep-dome surface only). Demonstrated via the existing toggles: Inverse-FPP OFF → steep flanks alias (RMS error ~hundreds of mm), ON → recovers to the ~1mm noise floor; Sensor noise makes it the realistic regime; Inject demo defect (pixel-convention amplitude, sub-Nyquist own-gradient) pops a defect out of the quiet null.
+- **Steep STL part (B.3b, pending):** the *realistic* version — a real AM-relevant part with steep walls at sensible millimetre heights that crosses the wall by geometry, not by a cranked amplitude. Renders as a believable object and reads as in-situ AM metrology. The dome proves the method; the STL shows it on something believable.
+
+**Known GUI limitation (B.3 polish item, found in hands-on review):** the steep-dome **3D render is dominated by the unit-seam spike** (Z≈6000 "units" — the §7.12 cosmetic consequence) and is effectively unusable for the showcase; the result reads only via the Error Statistics box + the dynamic-range readout. A polish pass should normalize/cap the steep-dome Z render or auto-enable Color-by-error so the payoff is visible, not just numeric. The steep **Gaussian** (e.g. amp ~22mm/σ8mm) is the more *legible* near-wall demonstration — it renders as a recognizable bump that visibly mangles with correction off and snaps clean with it on — and may be the better default showcase surface than the dome.
 
 ---
 
@@ -1267,6 +1338,52 @@ def _obb_overlap(transform_a, local_corners_a, transform_b, local_corners_b):
 - **Deferred mm-vs-pixel unit reconciliation** (still Stage 6/7, unchanged from §9): the math layer uses notebook pixel-space units; the info panel shows mm. Reconcile when real hardware arrives.
 - **`Camera` / `Projector` protocols + mocks** still deferred to Stage 6/7 (§7.3).
 - **Extreme-angle warning banner** deliberately parked (user's call during Stage 5); the >50° unwrap divergence is correct physics, not a bug — a future advisory would just flag the regime.
+
+### Stage 6 (Phase A → B.3a) — Done (Inverse-FPP pipeline + physical beyond-Nyquist wall + headline showcase)
+
+**Goal achieved.** This phase turned the simulation from one that recovers everything perfectly (no limit in it, so it could demonstrate nothing) into one that contains the **physical beyond-Nyquist wall a real system has** and demonstrates **inverse-FPP beating it**. Before this phase, the live recovery was bias-free (`carrier + height_to_phase`, no `project()`, no fade, no noise) — recovered ≈ ground truth always. The Recovered Surface tab now routes through the projector bias + the sampling fade + optional read noise, so steep features genuinely fail unless inverse-FPP corrects them. 9 commits, 322 tests passing at close, tag `stage-6-b3a-complete`.
+
+**The arc (each commit byte-identical on its default/off path — the sealed core's `[pipeline] std_err` stays 1.764505e-05 throughout):**
+
+| # | Commit | What landed |
+|---|---|---|
+| A.0.1 | `0f08396` | **Object-space scale bridge.** Canonical `CAMERA_PIXEL_PITCH_UM=4.8`, `CAMERA_MAGNIFICATION=0.09`, `OBJECT_SPACE_UM_PER_PIXEL≈53.33` in `geometry.py`, labeling-only (§7.12). Retired the dead duplicate `pixel_pitch_um=53.0`, redirected to the canonical constant. +2 tests. (No-leak guard owed-and-delivered in A.0.2.) |
+| A.0.2 | `9b83479` | **Pixel-area sampling model.** `sampling.contrast_envelope(phase, fill_factor)` — sinc fade on local `\|∇φ\|/2π` cycles/pixel, wired into `synthesize_psi_stack` off-by-default. Gate test binds to a STEEP/height-modulated case (not a uniform carrier) so it can support the headline. + enforceable no-leak guard (`test_no_leak_scale_bridge.py`). +14 tests. |
+| A.1 | `db463fe` | **`pattern_generator.py` made real.** `inverse_grating_phase(reference_phase)` reuses the fixture-locked `compute_inverse_phase` tilt-flip (single source of truth). The A.1-deferred 2D question flagged in-code. +4 tests. |
+| A.2 | `99a4101` | **Closed the inverse-FPP loop.** `run_inverse_fpp` — reference → inverse grating → project → recover, as ONE wrappable callable (height-in/height-out, so closed-loop later wraps it). Bias-cancellation contrast asserted both sides (naive blows up ~6 orders; corrected meets the bar). Honest tautology label: closure proves CONSISTENCY, not physics (physics = the hardware phase). +5 tests. |
+| A.2b | `b55365c` | **Fade live through the loop.** No production logic change (fill_factor already flowed); pins the noiseless truth in docstring + tests: the envelope is **transparent to recovery** (divides out of arctan2), collapses only at the env→0 null. The gradual wall REQUIRES noise — deferred to A.4. +4 tests. |
+| A.4 | `b355dd7` | **Additive read-noise model — the fade finally bites.** Gated `noise_sigma`/`rng` in `synthesize_psi_stack`, drawn per-frame-independent (H,W,N). Threaded through `run_inverse_fpp`. Wall bites: faded-region RMS 3.9× flat. Finding #2 measured: N=8/N=4 error ratio 0.707 = 1/√2. Per-frame-independence guard test (fails if ever broadcast). Seeded for reproducibility; `noise_sigma>0` + `rng=None` raises. +6 tests. |
+| B.1 | `6460db0` | **Flat-reference nulling before/after on the Recovered Surface tab.** `run_straight_fringe` (failing baseline: project()-on-object, no grating) as a sibling with parameter parity. "Inverse-FPP correction" checkbox (default ON, honest-by-default). Visualization-layer only (§7.11); guardrail held (no GUI test byte-pinned the array). +4 tests. |
+| B.2 | `6f01b95` | **Golden-part reference + 2D self-cal.** `selfcal_fit` callable param (default 1D, 308 preserved); golden path uses `fit_tilt_plane` (2D) to remove the y-ramp leak. GUI: golden = current surface, "Inject demo defect" checkbox (visible, default ON); ground-truth stays the golden, error map = deviation-from-golden. C[part−golden] caveat pinned. +6 tests. |
+| B.3a | `3987189` | **Beyond-Nyquist headline showcase.** `make_steep_dome` (math-pixel convention — the only convention that crosses Nyquist, §7.16). "Sensor noise" checkbox (fixed σ/seed, threaded identically to both producers). Dynamic-range readout (decoupling + steep-region error ratio, gated dual-run). Convention-aware demo defect. Tests: headline (>100×), decoupling (>10×), defect-on-steep survives, beyond-Nyquist-defect bound, reproducibility. One conscious test update (surface-list enumeration, 4th surface). +8 tests. |
+| close | this commit | Docs update (PROJECT_CONTEXT.md + CONVERSATION_SUMMARY.md) + tag `stage-6-b3a-complete`. |
+
+**Key design decisions locked (cross-referenced to §7):**
+
+| Decision | Rationale |
+|---|---|
+| Scale bridge, not native-metric rewrite (§7.12) | Core is unit-polymorphic but the carrier/X coupling means native-metric reopens the 271-passing core + regenerates fixtures. Bridge touches zero tests. |
+| Sampling fade keys off LOCAL gradient, not carrier period (§7.13) | A carrier-period fade would pass a uniform-fine gate but never degrade steep object regions — the headline needs the steep-region fade, which is `\|∇(carrier+height_phase)\|`. |
+| Both fade AND noise required for the wall (§7.13) | Noiselessly the envelope divides out of arctan2 (transparent). Only `σ/(B·env·√N)` SNR loss makes a gradual wall. This was the second hidden prerequisite the phase surfaced. |
+| Noise per-frame-independent (H,W,N), seeded, explicit rng (§7.13) | A k-common map cancels like env; per-frame is the mechanism. Seed (not Generator) serialized for reproducibility — the future hardware-reference requirement. |
+| Tilt-flip nulls a 2D golden; B.1 is the special case (§7.14) | Recon overturned the A.1 worry: flipping curvature about the plane produces −C[h_golden] exactly. `recovered = C[part−golden]`. |
+| Self-cal follows the reference's structure (§7.15) | 1D leaks a linear y-ramp on a 2D golden (never curvature); 2D removes it. Default stays 1D so the sealed fixture is untouched. |
+| Two honest bounds pinned in code+tests (§7.14) | curvature-only (no absolute tilt) + defect-own-Nyquist degradation. Keeps the showcase from over-claiming; the curvature-only bound IS the AM defect-detection framing. |
+| Steep dome = validation gate; steep STL = realism (§7.16) | Dome is extreme/tunable/reproducible for clean numbers; STL is believable AM geometry. Different jobs. |
+
+**Carry-forward flags (open after this close):**
+
+- **B.3b — steep STL part:** the realistic AM demonstration. The dome's headline on a believable part rendered at sensible scale. Reuses the STL Browser plumbing.
+- **B.4 — deterministic serializable reference:** formalize the (already-seeded, reproducible) B.3a config into a saved/reloadable reference artifact + serialized headline numbers, as the thing the hardware phase validates against. Smaller than first scoped, because B.3a is already seeded and parameterized.
+- **A.3 — independent-route consistency check (deferred, validation hygiene):** derive the inverse by a route that does NOT reuse `project()`'s closed-form, so a test fails if either formula is wrong rather than passing because it's the same line twice. The A.2 bias-cancellation test + the per-frame guard already cover regression; A.3 is added-rigour, not a blocker. Add before the paper if a reviewer angle demands it.
+- **GUI polish (B.3 pass):** the steep-dome 3D render is dominated by the unit-seam spike — unusable for the showcase, reads only via the error stats + readout. Normalize/cap the steep-dome Z render or auto-enable Color-by-error. Consider defaulting the legible steep **Gaussian** as the showcase surface (§7.16).
+- **Wire `fill_factor` into the live `run_pipeline`** (the bias-free other-tabs path) is deliberately NOT done — only the Recovered Surface tab carries the bias+fade+noise showcase; the 3D Scene / Pipeline Stages tabs keep the original bias-free `run_pipeline` (the "recovered ≈ ground truth always" behaviour the user remembers).
+- **The closed-loop iteration (real-time adaptive nulling)** still nests on A.2's single-step `run_inverse_fpp` — the paper's "Real-Time" / "Adaptive" novelty lives in the hardware phase (Stage 7), simulatable as a loop-with-convergence-rule beforehand if desired.
+- **Incoming projector (Wintech PRO4500) — specs captured in Section 2.** Optics swap is mostly math-layer (keeps the existing sweep slider; reparameterizes free-throw → lens selector); diamond-pixel resolved (rectangular approx fine); two provisional-now items (lens choice, mount geometry) neither blocking; tentative projector-at-0°/camera-at-angle placement flagged for the bias-arm re-examination. **Integration is Stage 7, after Phase B.**
+
+**The honest framing for the paper (settled this phase):** the nulling *concept* is already in Samara Ch.3 (confirmed by thesis reading) — so the **sim work is the validation gate**, and the genuine extensions are (a) the measured-golden-part reference (over the thesis's 0.1×-scaled-OPD shortcut), and (b) the real-time DLP hardware closed loop + the AM/in-situ application framing, which is the Stage 7 novelty. B.3a's beyond-Nyquist result is reproduced/validated in sim; the headline result the abstract claims is realised on hardware and validated against the (forthcoming) B.4 reference.
+
+---
 
 ### Web port (next phase, planned)
 
