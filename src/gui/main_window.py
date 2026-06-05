@@ -369,6 +369,13 @@ class MainWindow(QMainWindow):
         # sub-task 5's drag handler will mutate it.
         self._stl_fov_origin_mm: Optional[tuple[float, float]] = None
         self._stl_is_browser_mode: bool = False
+        # Single source of truth for the Browser FOV-slice dimensions
+        # (pixels). Defaults to SURFACE_SHAPE — the full camera footprint
+        # (~68x55 mm @ 0.1 mm/px) — so behavior is identical to a fixed
+        # grid. Stage 6 B.3b FOV-preset work makes this selectable; the slice,
+        # the off-part mask, and the drawn minimap ROI all read it, so the
+        # captured window and the rectangle that draws it never desync.
+        self._fov_shape: tuple[int, int] = SURFACE_SHAPE
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_control_panel())
@@ -1745,7 +1752,7 @@ class MainWindow(QMainWindow):
         H_full, W_full = full.shape
         part_center_x = x_min + W_full * SURFACE_PIXEL_SIZE_MM / 2.0
         part_center_y = y_min + H_full * SURFACE_PIXEL_SIZE_MM / 2.0
-        H_fov, W_fov = SURFACE_SHAPE
+        H_fov, W_fov = self._fov_shape
         fov_origin_x = part_center_x - W_fov * SURFACE_PIXEL_SIZE_MM / 2.0
         fov_origin_y = part_center_y - H_fov * SURFACE_PIXEL_SIZE_MM / 2.0
         self._stl_fov_origin_mm = (fov_origin_x, fov_origin_y)
@@ -1767,7 +1774,7 @@ class MainWindow(QMainWindow):
             self._stl_full_origin_mm,
             SURFACE_PIXEL_SIZE_MM,
             self._stl_fov_origin_mm,
-            SURFACE_SHAPE,
+            self._fov_shape,
         )
         self.stl_browser.update_windowed_slice(
             self._stl_heightmap, SURFACE_PIXEL_SIZE_MM,
@@ -1777,7 +1784,7 @@ class MainWindow(QMainWindow):
             self._stl_full_origin_mm,
             SURFACE_PIXEL_SIZE_MM,
             self._stl_fov_origin_mm,
-            SURFACE_SHAPE,
+            self._fov_shape,
         )
         return True
 
@@ -1785,7 +1792,7 @@ class MainWindow(QMainWindow):
         self,
         origin_xy_mm: tuple[float, float],
     ) -> np.ndarray:
-        """Extract a SURFACE_SHAPE-sized window from `_stl_full_heightmap`.
+        """Extract a `_fov_shape`-sized window from `_stl_full_heightmap`.
 
         `origin_xy_mm` is the part-local (x, y) of the slice's top-left
         corner. Off-part regions (FOV window extending past the full
@@ -1798,7 +1805,7 @@ class MainWindow(QMainWindow):
         """
         assert self._stl_full_heightmap is not None
         assert self._stl_full_origin_mm is not None
-        H_fov, W_fov = SURFACE_SHAPE
+        H_fov, W_fov = self._fov_shape
         x_orig, y_orig = origin_xy_mm
         x_full_min, y_full_min = self._stl_full_origin_mm
         H_full, W_full = self._stl_full_heightmap.shape
@@ -1833,7 +1840,7 @@ class MainWindow(QMainWindow):
         stays untouched. Returns an empty rect (0, 0, 0, 0) when the FOV
         is entirely off-part.
         """
-        H_fov, W_fov = SURFACE_SHAPE
+        H_fov, W_fov = self._fov_shape
         x_orig, y_orig = self._stl_fov_origin_mm
         x_full_min, y_full_min = self._stl_full_origin_mm
         H_full, W_full = self._stl_full_heightmap.shape
@@ -1848,7 +1855,7 @@ class MainWindow(QMainWindow):
     def _browser_offpart_mask(self) -> np.ndarray:
         """Boolean (H_fov, W_fov): True where the committed FOV is off-part."""
         r0, r1, c0, c1 = self._browser_offpart_window()
-        mask = np.ones(SURFACE_SHAPE, dtype=bool)
+        mask = np.ones(self._fov_shape, dtype=bool)
         mask[r0:r1, c0:c1] = False
         return mask
 
@@ -1907,7 +1914,7 @@ class MainWindow(QMainWindow):
             self._stl_full_origin_mm,
             SURFACE_PIXEL_SIZE_MM,
             origin_xy_mm,
-            SURFACE_SHAPE,
+            self._fov_shape,
         )
 
     def _on_commit_fov_requested(self) -> None:
