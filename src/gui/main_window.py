@@ -1161,19 +1161,10 @@ class MainWindow(QMainWindow):
             else:
                 part = golden
 
-            # Sensor noise threaded identically to both producers: a FRESH
-            # default_rng(seed) per call so both see the SAME draws (the
-            # before/after differs only by the inverse grating).
-            def _noise_kwargs():
-                if self.sensor_noise_checkbox.isChecked():
-                    return {"noise_sigma": NOISE_SIGMA,
-                            "rng": np.random.default_rng(NOISE_SEED)}
-                return {}
-
             tab_recovered = self._recover_part_surface(
                 golden, part, geometry, deltas,
                 inverse_on=self.inverse_fpp_checkbox.isChecked(),
-                noise_kwargs=_noise_kwargs,
+                noise_kwargs=self._sensor_noise_kwargs,
             )
             if self._stl_is_browser_mode:
                 tab_recovered[self._browser_offpart_mask()] = 0.0
@@ -1182,7 +1173,8 @@ class MainWindow(QMainWindow):
             # shape (golden vs golden), so the ratios report steep-SHAPE
             # recovery and are independent of the demo-defect toggle.
             self._update_dynamic_range_readout(
-                golden, geometry, deltas, is_steep, is_stl, _noise_kwargs
+                golden, geometry, deltas, is_steep, is_stl,
+                self._sensor_noise_kwargs,
             )
 
             error = tab_recovered - heightmap
@@ -1210,7 +1202,37 @@ class MainWindow(QMainWindow):
             # physical-truth FOV slice (off-part = 0) with viridis-on-height.
             self.view_3d.update_heightmap(heightmap)
         else:
-            self.view_3d.update_heightmap(recovered)
+            # Recovered leg (Stage 6 B.3b-labview.2): render the SAME
+            # inverse-FPP surface the Recovered Surface tab shows — NOT the
+            # legacy run_pipeline forward surface — so the two stop diverging.
+            # part = golden (clean, NO defect; defect detection is tab 3's
+            # story, the lab view is orientation/recovery intuition). golden
+            # is pipeline_input (edge-extended in Browser mode), the identical
+            # reference tab 3 uses. inverse_on is forced True: the lab view is
+            # always the honest CORRECTED showcase, decoupled from tab 3's
+            # before/after Inverse-FPP checkbox. Same off-part mask as tab 3,
+            # so the honest off-part = 0 contract holds.
+            n = self.psi_steps.value()
+            deltas = [2.0 * math.pi * k / n for k in range(n)]
+            golden = pipeline_input
+            lab_recovered = self._recover_part_surface(
+                golden, golden, geometry, deltas,
+                inverse_on=True,
+                noise_kwargs=self._sensor_noise_kwargs,
+            )
+            if self._stl_is_browser_mode:
+                lab_recovered[self._browser_offpart_mask()] = 0.0
+            self.view_3d.update_heightmap(lab_recovered)
+
+    def _sensor_noise_kwargs(self) -> dict:
+        """Sensor-noise factory shared by the Recovered Surface tab and the
+        3D-Scene lab view. Returns a FRESH ``default_rng(NOISE_SEED)`` per
+        call so a before/after pair sees the SAME draws (the difference is
+        only the inverse grating); ``{}`` when the noise checkbox is off."""
+        if self.sensor_noise_checkbox.isChecked():
+            return {"noise_sigma": NOISE_SIGMA,
+                    "rng": np.random.default_rng(NOISE_SEED)}
+        return {}
 
     def _recover_part_surface(
         self,

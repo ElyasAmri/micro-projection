@@ -1026,9 +1026,12 @@ def test_browser_commit_masks_offpart_preserves_onpart(main_window):
     Uses a synthetic full heightmap with an X ramp so the on-part region
     carries genuine relief — a flat-topped box would collapse to z=0
     under the visible-envelope lift and make the on-part check vacuous.
-    """
-    from pipeline import run_pipeline
 
+    The compared-against producer is the inverse-FPP recovery the lab view
+    now uses (Stage 6 B.3b-labview.2: lab view feeds _recover_part_surface,
+    not run_pipeline); the test's purpose — browser edge-extend + mask are
+    no-ops with no off-part — is unchanged.
+    """
     main_window.right_pane_tabs.setCurrentIndex(0)        # 3D Scene tab
     H_full, W_full = 550, 1200
     ramp = np.linspace(0.0, 20.0, W_full, dtype=np.float64)
@@ -1046,9 +1049,11 @@ def test_browser_commit_masks_offpart_preserves_onpart(main_window):
     main_window.labview_recovered_radio.setChecked(True)
     main_window._refresh_surface_preview()
     fixed = main_window.view_3d._last_heightmap.copy()
-    raw = run_pipeline(
-        heightmap=on_slice, geometry=main_window._build_geometry(),
-        n_psi_steps=main_window.psi_steps.value(),
+    n = main_window.psi_steps.value()
+    deltas = [2.0 * np.pi * k / n for k in range(n)]
+    raw = main_window._recover_part_surface(
+        on_slice, on_slice, main_window._build_geometry(), deltas,
+        inverse_on=True, noise_kwargs=lambda: {},
     )
     np.testing.assert_allclose(fixed, raw, atol=1e-12)
 
