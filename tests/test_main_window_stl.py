@@ -29,9 +29,11 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from gui.main_window import (  # noqa: E402
+    FOV_PRESETS,
     MainWindow,
     STEEP_DOME_LABEL,
     STL_LABEL,
+    SURFACE_PIXEL_SIZE_MM,
     SURFACE_SHAPE,
 )
 from gui.stl_browser import (  # noqa: E402
@@ -1640,3 +1642,114 @@ def test_color_by_error_default_reapplied_on_stl_cancel_revert(
     # Reverted to the steep dome, and the default was re-applied to match.
     assert main_window.surface_combo.currentText() == STEEP_DOME_LABEL
     assert main_window.color_by_error_checkbox.isChecked() is True
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 B.3b-fov-preset.2 — selectable FOV-grid presets.
+# ---------------------------------------------------------------------------
+def test_fov_presets_constant_is_single_source():
+    """FOV_PRESETS is the single source of truth; the MAX (first) preset
+    must equal SURFACE_SHAPE so the default selection is byte-identical to
+    the fixed grid, and presets descend in size to the MIN."""
+    assert FOV_PRESETS[0][0] == SURFACE_SHAPE
+    assert "full" in FOV_PRESETS[0][1].lower()
+    assert len(FOV_PRESETS) == 4
+    areas = [h * w for (h, w), _label in FOV_PRESETS]
+    assert areas == sorted(areas, reverse=True)  # full -> min, strictly down
+    assert areas[0] > areas[-1]
+    for (h, w), label in FOV_PRESETS:
+        assert isinstance(h, int) and isinstance(w, int)
+        assert isinstance(label, str) and label
+
+
+def test_fov_preset_combo_defaults_to_full(main_window):
+    """The dropdown is populated from FOV_PRESETS, defaults to the full
+    preset, and that matches the default _fov_shape (SURFACE_SHAPE)."""
+    combo = main_window.fov_preset_combo
+    assert combo.count() == len(FOV_PRESETS)
+    assert [combo.itemText(i) for i in range(combo.count())] == [
+        label for _shape, label in FOV_PRESETS
+    ]
+    assert combo.currentIndex() == 0
+    assert main_window._fov_shape == SURFACE_SHAPE
+    assert main_window._fov_shape == FOV_PRESETS[0][0]
+
+
+def test_fov_preset_change_sets_fov_shape_field(main_window):
+    """Selecting a preset writes _fov_shape even before any STL load — the
+    handler sets the field before the Browser-mode guard, so the choice
+    persists for when Browser mode is next entered."""
+    assert main_window._stl_full_heightmap is None  # no load yet
+    main_window.fov_preset_combo.setCurrentIndex(3)  # MIN
+    assert main_window._fov_shape == FOV_PRESETS[3][0]
+
+
+def test_fov_preset_change_resizes_slice_in_browser(
+    main_window, tmp_path, monkeypatch,
+):
+    """In Browser mode, a preset change re-extracts the FOV slice at the new
+    size — the cached slice shape follows _fov_shape."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(2)  # 33 x 41
+    assert main_window._fov_shape == FOV_PRESETS[2][0]
+    assert main_window._stl_heightmap.shape == FOV_PRESETS[2][0]
+
+
+def test_fov_preset_change_resizes_minimap_roi(
+    main_window, tmp_path, monkeypatch,
+):
+    """The draggable minimap ROI resizes to the selected preset (mm) so the
+    drawn rectangle tracks the captured slice."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(3)  # MIN 22 x 27
+    H_fov, W_fov = FOV_PRESETS[3][0]
+    size = main_window.stl_browser._minimap_roi.size()
+    # RectROI.size() is (width, height) in mm = (W*ps, H*ps).
+    assert float(size[0]) == pytest.approx(W_fov * SURFACE_PIXEL_SIZE_MM)
+    assert float(size[1]) == pytest.approx(H_fov * SURFACE_PIXEL_SIZE_MM)
+
+
+def test_fov_preset_change_keeps_fov_centered(
+    main_window, tmp_path, monkeypatch,
+):
+    """A preset change keeps the FOV centered on its current center (shrink =
+    zoom in on the same spot, no jump)."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    oH, oW = main_window._fov_shape
+    ox, oy = main_window._stl_fov_origin_mm
+    center_before = (
+        ox + oW * SURFACE_PIXEL_SIZE_MM / 2.0,
+        oy + oH * SURFACE_PIXEL_SIZE_MM / 2.0,
+    )
+
+    main_window.fov_preset_combo.setCurrentIndex(1)  # 44 x 54
+
+    nH, nW = main_window._fov_shape
+    nx, ny = main_window._stl_fov_origin_mm
+    center_after = (
+        nx + nW * SURFACE_PIXEL_SIZE_MM / 2.0,
+        ny + nH * SURFACE_PIXEL_SIZE_MM / 2.0,
+    )
+    assert center_after[0] == pytest.approx(center_before[0])
+    assert center_after[1] == pytest.approx(center_before[1])
+
+
+def test_fov_preset_combo_scoped_to_browser_mode(
+    main_window, tmp_path, monkeypatch,
+):
+    """The FOV-preset dropdown is enabled only in Browser mode (the draggable
+    grid); a direct/small STL load greys it out."""
+    # Direct (small) STL: no draggable grid -> combo greyed.
+    small = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window._stl_is_browser_mode is False
+    assert main_window.fov_preset_combo.isEnabled() is False
+
+    # Oversized STL via [Change...] -> Browser mode -> combo enabled.
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    main_window._change_stl_clicked()
+    assert main_window._stl_is_browser_mode is True
+    assert main_window.fov_preset_combo.isEnabled() is True

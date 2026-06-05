@@ -117,6 +117,20 @@ DEGENERATE_TAN_SUM_THRESHOLD: float = 1e-3
 SURFACE_SHAPE: tuple[int, int] = (550, 680)
 SURFACE_PIXEL_SIZE_MM: float = 0.1
 
+# Stage 6 B.3b FOV presets: selectable Browser FOV-grid sizes in pixels
+# (@ SURFACE_PIXEL_SIZE_MM = 0.1 mm/px). The first entry is the full
+# camera footprint and MUST equal SURFACE_SHAPE so the default selection
+# is byte-identical to a fixed grid. Smaller grids leave more headroom
+# for tall edges before they clip off a tilted camera (the real 68x55
+# footprint stays intact underneath — the prism is footprint-sourced).
+# Single source of truth: the dropdown and the tests both read this list.
+FOV_PRESETS: list[tuple[tuple[int, int], str]] = [
+    ((550, 680), "55 × 68 mm (full)"),
+    ((440, 544), "44 × 54 mm"),
+    ((330, 408), "33 × 41 mm"),
+    ((220, 272), "22 × 27 mm"),
+]
+
 # Right-pane tab order (see _build_right_pane). Named so the dispatch in
 # _refresh_surface_preview doesn't carry bare magic indices.
 RECOVERED_TAB_INDEX = 3
@@ -607,15 +621,39 @@ class MainWindow(QMainWindow):
         )
         self.stl_inner.addWidget(placeholder)
 
-        # idx 1: filename + Change button row.
+        # idx 1: filename + Change button row, then the FOV-preset row.
         loaded = QWidget()
-        loaded_layout = QHBoxLayout(loaded)
+        loaded_layout = QVBoxLayout(loaded)
         loaded_layout.setContentsMargins(0, 0, 0, 0)
+
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
         self.stl_filename_label = QLabel("STL: (none)")
         self.stl_change_button = QPushButton("Change...")
         self.stl_change_button.clicked.connect(self._change_stl_clicked)
-        loaded_layout.addWidget(self.stl_filename_label, 1)
-        loaded_layout.addWidget(self.stl_change_button, 0)
+        name_row.addWidget(self.stl_filename_label, 1)
+        name_row.addWidget(self.stl_change_button, 0)
+        loaded_layout.addLayout(name_row)
+
+        # Stage 6 B.3b FOV-preset selector. Resizes the draggable Browser
+        # FOV grid (writes self._fov_shape — the single source of truth).
+        # Browser-mode only; greyed in direct/synthetic modes via
+        # _update_stl_page_state (no draggable grid there).
+        fov_row = QHBoxLayout()
+        fov_row.setContentsMargins(0, 0, 0, 0)
+        self.fov_preset_combo = QComboBox()
+        self.fov_preset_combo.blockSignals(True)
+        for _shape, label in FOV_PRESETS:
+            self.fov_preset_combo.addItem(label)
+        self.fov_preset_combo.setCurrentIndex(0)  # full == default _fov_shape
+        self.fov_preset_combo.blockSignals(False)
+        self.fov_preset_combo.currentIndexChanged.connect(
+            self._on_fov_preset_changed
+        )
+        fov_row.addWidget(QLabel("FOV grid:"), 0)
+        fov_row.addWidget(self.fov_preset_combo, 1)
+        loaded_layout.addLayout(fov_row)
+
         self.stl_inner.addWidget(loaded)
 
         self.stl_inner.setCurrentIndex(0)
@@ -1948,6 +1986,62 @@ class MainWindow(QMainWindow):
         """
         self._refresh_surface_preview()
 
+    def _on_fov_preset_changed(self, index: int) -> None:
+        """Stage 6 B.3b: FOV-grid preset selector slot.
+
+        Writes `self._fov_shape` (the single source of truth) and, in
+        Browser mode, re-extracts the slice centered on the CURRENT FOV
+        center (shrink = zoom in on the same spot, no jump), resizes the
+        draggable minimap ROI, and pushes the new capture to the lab view.
+
+        The origin read sits AFTER the Browser-mode / full-heightmap guard
+        so a preset change before any STL load can't dereference a None
+        `_stl_fov_origin_mm` — the preset still persists for when Browser
+        mode is next entered. No origin clamp: a centered resize past the
+        part edge fills off-part with 0.0 (bare stage), consistent with the
+        existing edge-drag behavior.
+        """
+        shape, _label = FOV_PRESETS[index]
+        old_H, old_W = self._fov_shape
+        self._fov_shape = shape
+        if not self._stl_is_browser_mode or self._stl_full_heightmap is None:
+            return  # preset persists; no grid to resize yet
+
+        # Past the guard: Browser mode with a loaded full heightmap, so
+        # `_stl_fov_origin_mm` is set (by `_load_stl_browser`). Keep the
+        # slice centered on its current center.
+        ox, oy = self._stl_fov_origin_mm
+        cx = ox + old_W * SURFACE_PIXEL_SIZE_MM / 2.0
+        cy = oy + old_H * SURFACE_PIXEL_SIZE_MM / 2.0
+        H_fov, W_fov = shape
+        self._stl_fov_origin_mm = (
+            cx - W_fov * SURFACE_PIXEL_SIZE_MM / 2.0,
+            cy - H_fov * SURFACE_PIXEL_SIZE_MM / 2.0,
+        )
+        self._stl_heightmap = self._extract_fov_slice(self._stl_fov_origin_mm)
+        # Push the resized capture through the existing panel + lab-view
+        # path. update_minimap resizes the ROI and recomputes drag bounds;
+        # _refresh_surface_preview renders the new slice (it reads
+        # _stl_heightmap for STL mode).
+        self.stl_browser.update_minimap(
+            self._stl_full_heightmap,
+            self._stl_full_origin_mm,
+            SURFACE_PIXEL_SIZE_MM,
+            self._stl_fov_origin_mm,
+            self._fov_shape,
+        )
+        self.stl_browser.update_windowed_slice(
+            self._stl_heightmap, SURFACE_PIXEL_SIZE_MM,
+        )
+        self.stl_browser.update_panel1_highlight(
+            self._stl_full_heightmap,
+            self._stl_full_origin_mm,
+            SURFACE_PIXEL_SIZE_MM,
+            self._stl_fov_origin_mm,
+            self._fov_shape,
+        )
+        self._refresh_surface_preview()
+
     def _update_stl_page_state(self) -> None:
         """Switch the STL inner page between placeholder and loaded row."""
         if self._stl_heightmap is None:
@@ -1956,6 +2050,9 @@ class MainWindow(QMainWindow):
         self.stl_filename_label.setText(f"STL: {self._stl_filename}")
         if self._stl_path is not None:
             self.stl_filename_label.setToolTip(str(self._stl_path))
+        # FOV-preset selector applies only to the Browser-mode draggable
+        # grid; greyed for direct/synthetic loads (no draggable grid).
+        self.fov_preset_combo.setEnabled(self._stl_is_browser_mode)
         self.stl_inner.setCurrentIndex(1)
 
     def _revert_stl_dropdown(self) -> None:

@@ -487,9 +487,13 @@ class STLBrowser(QWidget):
             self._minimap_plot.addItem(self._minimap_roi)
             self._minimap_roi.sigRegionChanged.connect(self._on_roi_changed)
         else:
-            # Subsequent call: reposition under blockSignals to avoid
-            # spurious emit during programmatic reposition.
+            # Subsequent call: reposition AND resize under blockSignals to
+            # avoid a spurious emit during programmatic update. setSize lets
+            # the Stage 6 B.3b FOV-preset selector resize the grid at runtime
+            # (resizable=False blocks only USER handles, not setSize); a
+            # same-size setSize is a no-op, so re-loads are unaffected.
             self._minimap_roi.blockSignals(True)
+            self._minimap_roi.setSize((W_fov * pixel_size_mm, H_fov * pixel_size_mm))
             self._minimap_roi.setPos(fov_origin_mm)
             self._minimap_roi.blockSignals(False)
 
