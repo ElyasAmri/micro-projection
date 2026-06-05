@@ -589,7 +589,7 @@ The lesson: **diagnostic-prompt-before-decision.** When strategy chat catches it
 
 ---
 
-## 7h. Stage 4d follow-up — Hands-on visual GUI review (complete; unpushed pending tag)
+## 7h. Stage 4d follow-up — Hands-on visual GUI review (complete; tagged stage-4d-followup-complete)
 
 After Stage 4d closed with tag `stage-4d-complete`, the user opened a hands-on visual review session. The framing locked in early: **launch the GUI, exercise real STL files (the user's `fringe_demo_block_pillars.stl` and `fringe_demo_block_draft.stl`), catch any cosmetic or behavioral issue that didn't surface during programmatic smoke-testing.**
 
@@ -1273,7 +1273,7 @@ Defect OFF: golden-vs-golden nulls to ~1e-13 (Max abs error 4.99e-13 mm) — mat
 
 ## Stage 6 B.3b-labview + FOV presets + B.4 — lab-view consistency, FOV planning tool, serializable reference
 
-Three arcs landed after the `stage-6-b3b-complete` tag, all **unpushed** on `main`: (1) the lab-view recovered-surface consistency that was B.3b's carry-forward NEXT TASK, (2) a selectable FOV-grid preset tool, (3) the B.4 deterministic serializable reference. **8 commits, 357 tests passing** (341 at B.3b close → +16), `[pipeline] std_err` byte-identical at **1.764505e-05** throughout, every commit byte-neutral or additive and confirmed **DISJOINT** from the Ilyas projector-build boundary (`HardwareScene`/`scene.py`). Each was recon-gated; the GUI-touching ones were verified in-GUI before commit.
+Three arcs landed after the `stage-6-b3b-complete` tag, **landed** on `main`: (1) the lab-view recovered-surface consistency that was B.3b's carry-forward NEXT TASK, (2) a selectable FOV-grid preset tool, (3) the B.4 deterministic serializable reference. **8 commits, 357 tests passing** (341 at B.3b close → +16), `[pipeline] std_err` byte-identical at **1.764505e-05** throughout, every commit byte-neutral or additive and confirmed **DISJOINT** from the Ilyas projector-build boundary (`HardwareScene`/`scene.py`). Each was recon-gated; the GUI-touching ones were verified in-GUI before commit.
 
 ### The arc (8 commits)
 
@@ -1307,4 +1307,4 @@ Three arcs landed after the `stage-6-b3b-complete` tag, all **unpushed** on `mai
 - **Lift-before-reference is a single-source discipline.** A serializable reference is only as honest as the code it re-derives from. The two byte-neutral lifts (each its own commit, suite-proven identical) are what make "what the reference froze" provably equal to "what the GUI shows" — the same single-source-of-truth reasoning as the `_fov_shape` and `_recover_part_surface` threads.
 - **Physical sanity anchors make a big headline trustworthy.** The 219×/37691× ratios are extreme by construction (straight-fringe fails catastrophically beyond Nyquist, inverse recovers near-perfectly), so the pre-commit check leaned on two physical anchors instead: `max_abs 29.92 ≈ the 30 px defect amplitude` (the recovered defect) and `recovered max 5999.5 ≈ the 6000 dome amplitude`. Both held — which is what licenses trusting the headline integers.
 
-*End of Stage 6 B.3b-labview + FOV presets + B.4 summary. **Current state: three arcs complete and UNPUSHED — 8 commits on `main` past `stage-6-b3b-complete` (`961709a` → `bb3ee56`), 357 tests passing, `[pipeline] std_err` byte-identical 1.764505e-05. Docs updated mid-stage (no push/tag yet). Open: FOV-margin-for-tilt, the ~2× lab-view pipeline-cost gating, A.3 consistency hygiene, and Stage 7 (hardware + the real-time novelty).***
+*End of Stage 6 B.3b-labview + FOV presets + B.4 summary. **Stage closed and pushed — tagged `stage-6-b4-complete`. The stack past `stage-6-b3b-complete` is 10 commits: 8 substantive (`961709a` labview.1 → `bb3ee56` B.4.2b), the mid-stage docs commit (`2b57636`), and this docs-close commit. 357 tests passing, `[pipeline] std_err` byte-identical 1.764505e-05. Open: FOV-margin-for-tilt, the ~2× lab-view pipeline-cost gating, A.3 consistency hygiene, and Stage 7 (hardware + the real-time novelty).***
