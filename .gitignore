@@ -31,6 +31,11 @@ data/captures/
 # output _rasterize_triangles must reproduce. Committed for the same reason.
 !tests/fixtures/rasterizer/rasterizer_baseline.npz
 
+# B.3a reference numbers + recovered array (Stage 6 B.4.2b): the Stage 7
+# hardware-phase validation target. Tolerance-checked (atol 1e-8), committed
+# alongside its self-describing config JSON.
+!tests/fixtures/b4_reference/b3a_reference.npz
+
 # Copyrighted thesis chapters — kept locally for reference,
 # never tracked, never pushed.
 FPP Thesis/
