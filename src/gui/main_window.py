@@ -87,6 +87,7 @@ from calibration import fit_tilt_plane
 from geometry import HybridGeometry
 from pattern_generator import inverse_grating_phase
 from pipeline import run_inverse_fpp, run_pipeline, run_straight_fringe
+from showcase_metrics import steep_region_ratios
 from synthetic_fringes import project
 from src.gui.comparison_view import RecoveredComparisonView
 from src.gui.hardware_scene import arm_lens_front_world
@@ -1475,53 +1476,27 @@ class MainWindow(QMainWindow):
             )
             return
 
-        H, W = golden.shape
-        X = np.tile(np.arange(W, dtype=np.float64), (H, 1))
-        carrier = (2.0 * np.pi / geometry.p) * X
-        h_g = geometry.height_to_phase(golden)
-        cam_straight = project(carrier, geometry) + h_g
-
-        def _lf(phase):
-            gy, gx = np.gradient(phase)
-            return np.hypot(gx, gy) / (2.0 * np.pi)
-
-        f_straight = _lf(cam_straight)
-        steep = f_straight > 0.5
-        if not steep.any():
+        # Numeric core lifted to showcase_metrics (Stage 6 B.4.2a) so the B.4
+        # reference artifact and this readout compute the SAME numbers. The
+        # :.0f display rounding and the label strings stay here; noise_kwargs_fn
+        # is passed as the factory (invoked once per producer inside).
+        ratios = steep_region_ratios(
+            golden, geometry, deltas, noise_kwargs_fn, with_error_ratio=is_steep
+        )
+        if not ratios["has_steep"]:
             self.dynamic_range_label.setText(
                 "Steep-region: — (no region beyond Nyquist)"
             )
             return
 
-        cam_inverse = project(
-            inverse_grating_phase(project(carrier, geometry) + h_g), geometry
-        ) + h_g
-        f_inverse = _lf(cam_inverse)
-        decoupling = float(f_straight[steep].mean() / f_inverse[steep].mean())
-
-        if not is_steep:
+        decoupling = ratios["decoupling"]
+        if ratios["error_ratio"] is None:
             self.dynamic_range_label.setText(
                 f"Steep-region: decoupling {decoupling:.0f}x"
             )
             return
 
-        # Dual-run (gated to the steep-dome showcase): matching-shape recovery.
-        rec_s = run_straight_fringe(
-            golden, geometry, deltas, selfcal_fit=fit_tilt_plane,
-            **noise_kwargs_fn(),
-        )
-        dev_i = run_inverse_fpp(
-            golden, golden, geometry, deltas, selfcal_fit=fit_tilt_plane,
-            **noise_kwargs_fn(),
-        )
-        rec_i = golden + (dev_i - dev_i.mean())
-
-        def _rms(a):
-            v = a[steep]
-            return float(np.sqrt(((v - v.mean()) ** 2).mean()))
-
-        rms_s, rms_i = _rms(rec_s - golden), _rms(rec_i - golden)
-        ratio = rms_s / rms_i if rms_i > 0 else float("inf")
+        ratio = ratios["error_ratio"]
         self.dynamic_range_label.setText(
             f"Steep-region: decoupling {decoupling:.0f}x, error ratio {ratio:.0f}x"
         )
