@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -1170,25 +1170,11 @@ class MainWindow(QMainWindow):
                             "rng": np.random.default_rng(NOISE_SEED)}
                 return {}
 
-            def _inverse_part():
-                deviation = run_inverse_fpp(
-                    golden, part, geometry, deltas,
-                    selfcal_fit=fit_tilt_plane, **_noise_kwargs(),
-                )
-                # Recovers C[part-golden] DC-aligned to part.mean; re-center to 0
-                # and add the known golden back to reconstruct the measured part.
-                return golden + (deviation - deviation.mean())
-
-            def _straight_part():
-                return run_straight_fringe(
-                    part, geometry, deltas,
-                    selfcal_fit=fit_tilt_plane, **_noise_kwargs(),
-                )
-
-            if self.inverse_fpp_checkbox.isChecked():
-                tab_recovered = _inverse_part()
-            else:
-                tab_recovered = _straight_part()
+            tab_recovered = self._recover_part_surface(
+                golden, part, geometry, deltas,
+                inverse_on=self.inverse_fpp_checkbox.isChecked(),
+                noise_kwargs=_noise_kwargs,
+            )
             if self._stl_is_browser_mode:
                 tab_recovered[self._browser_offpart_mask()] = 0.0
 
@@ -1225,6 +1211,49 @@ class MainWindow(QMainWindow):
             self.view_3d.update_heightmap(heightmap)
         else:
             self.view_3d.update_heightmap(recovered)
+
+    def _recover_part_surface(
+        self,
+        golden: np.ndarray,
+        part: np.ndarray,
+        geometry: HybridGeometry,
+        deltas: list[float],
+        *,
+        inverse_on: bool,
+        noise_kwargs: Callable[[], dict],
+    ) -> np.ndarray:
+        """Recover a part surface via the inverse-FPP showcase dispatch.
+
+        Shared producer for the Recovered Surface tab (and, from Stage 6
+        B.3b, the 3D-Scene lab view). The caller supplies the GOLDEN
+        reference and the (possibly defect-bearing) ``part`` it built, so
+        the defect-on/off decision stays with the caller — this helper makes
+        no assumption that ``part`` carries a defect (the lab view passes a
+        clean ``part=golden``).
+
+        ``inverse_on`` selects the path:
+        - True  → CORRECTED capture: ``run_inverse_fpp`` recovers
+          C[part-golden] (the deviation's curvature) DC-aligned to part.mean;
+          re-center to 0 and add the known golden back to reconstruct the
+          measured part.
+        - False → UNCORRECTED straight-fringe baseline (``run_straight_fringe``).
+
+        Both paths use the 2D ``fit_tilt_plane`` self-cal, so the only
+        difference is the inverse grating. ``noise_kwargs`` is the caller's
+        sensor-noise factory; it is invoked exactly once, in the selected
+        branch, yielding a fresh seeded RNG at the point of use (identical
+        draws for the before/after comparison).
+        """
+        if inverse_on:
+            deviation = run_inverse_fpp(
+                golden, part, geometry, deltas,
+                selfcal_fit=fit_tilt_plane, **noise_kwargs(),
+            )
+            return golden + (deviation - deviation.mean())
+        return run_straight_fringe(
+            part, geometry, deltas,
+            selfcal_fit=fit_tilt_plane, **noise_kwargs(),
+        )
 
     # ------------------------------------------------------------------
     # Stage 5 sub-task 2 — lab-view ground-truth / recovered XOR toggle.
