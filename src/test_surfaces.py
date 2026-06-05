@@ -163,3 +163,32 @@ def make_steep_dome(
     return amplitude_px * np.exp(
         -(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma_px * sigma_px))
     )
+
+
+def make_demo_defect(
+    shape: tuple[int, int],
+    amplitude: float = 3.0,
+    sigma_px: float | None = None,
+) -> np.ndarray:
+    """A fixed, off-center Gaussian bump — the Stage 6 B.2/B.3a demo "defect".
+
+    Added onto the golden to form the measured part so the deviation map shows a
+    defect popping out (the inverse-FPP-with-golden payoff). ONE hardcoded
+    feature, gated by a visible "Inject demo defect" checkbox; a defect editor /
+    golden-part library is deferred (B.3+).
+
+    Convention: `amplitude` is in the SAME convention as the golden it's added
+    to — the mm default (3.0, sigma ~0.05*min(H,W) px) suits the mm `make_gaussian`
+    golden; for the math-pixel `make_steep_dome` golden the caller passes the
+    pixel-convention values (STEEP_DEFECT_AMP_PX / STEEP_DEFECT_SIGMA_PX), gentle
+    enough that the defect's OWN gradient stays sub-Nyquist (so it survives the
+    un-crushing — see the B.3a recon). Do not cross the two.
+    """
+    H, W = shape
+    if sigma_px is None:
+        sigma_px = 0.05 * float(min(H, W))
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
+    yc, xc = 0.40 * H, 0.62 * W
+    return amplitude * np.exp(
+        -(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma_px * sigma_px))
+    )

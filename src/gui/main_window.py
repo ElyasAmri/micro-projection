@@ -100,6 +100,7 @@ from src.stl_loader import (
     load_stl_heightmap_full_scale,
 )
 from src.test_surfaces import (
+    make_demo_defect,
     make_flat,
     make_gaussian,
     make_steep_dome,
@@ -137,34 +138,6 @@ FOV_PRESETS: list[tuple[tuple[int, int], str]] = [
 RECOVERED_TAB_INDEX = 3
 
 
-def _demo_defect(
-    shape: tuple[int, int],
-    amplitude: float = 3.0,
-    sigma_px: float | None = None,
-) -> np.ndarray:
-    """A fixed, off-center Gaussian bump — the Stage 6 B.2/B.3a demo "defect".
-
-    Added onto the golden to form the measured part so the deviation map shows a
-    defect popping out (the inverse-FPP-with-golden payoff). ONE hardcoded
-    feature, gated by a visible "Inject demo defect" checkbox; a defect editor /
-    golden-part library is deferred (B.3+).
-
-    Convention: `amplitude` is in the SAME convention as the golden it's added
-    to — the mm default (3.0, sigma ~0.05*min(H,W) px) suits the mm `make_gaussian`
-    golden; for the math-pixel `make_steep_dome` golden the caller passes the
-    pixel-convention values (STEEP_DEFECT_AMP_PX / STEEP_DEFECT_SIGMA_PX), gentle
-    enough that the defect's OWN gradient stays sub-Nyquist (so it survives the
-    un-crushing — see the B.3a recon). Do not cross the two.
-    """
-    H, W = shape
-    if sigma_px is None:
-        sigma_px = 0.05 * float(min(H, W))
-    yy, xx = np.mgrid[0:H, 0:W].astype(np.float64)
-    yc, xc = 0.40 * H, 0.62 * W
-    return amplitude * np.exp(
-        -(((xx - xc) ** 2 + (yy - yc) ** 2) / (2.0 * sigma_px * sigma_px))
-    )
-
 # Stage 4c sub-task 3: dropdown label for the STL import entry. The
 # three-dot ASCII ellipsis is intentional UI convention for "opens a
 # dialog". Kept as a module constant so dispatch / tests / smoke script
@@ -180,7 +153,8 @@ NOISE_SIGMA: float = 0.01
 NOISE_SEED: int = 0
 # Pixel-convention demo defect for the steep dome (gentle, sub-Nyquist own
 # gradient so it survives the un-crushing). Distinct from the mm-scaled
-# _demo_defect used for the Gaussian golden — see _demo_defect.
+# default of make_demo_defect used for the Gaussian golden — see
+# test_surfaces.make_demo_defect.
 STEEP_DEFECT_AMP_PX: float = 30.0
 STEEP_DEFECT_SIGMA_PX: float = 15.0
 
@@ -1197,12 +1171,12 @@ class MainWindow(QMainWindow):
             # for the steep dome, mm for the Gaussian golden. Don't cross them.
             if self.inject_defect_checkbox.isChecked():
                 if is_steep:
-                    defect = _demo_defect(
+                    defect = make_demo_defect(
                         golden.shape, amplitude=STEEP_DEFECT_AMP_PX,
                         sigma_px=STEEP_DEFECT_SIGMA_PX,
                     )
                 else:
-                    defect = _demo_defect(golden.shape)
+                    defect = make_demo_defect(golden.shape)
                 part = golden + defect
             else:
                 part = golden
