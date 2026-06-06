@@ -2,7 +2,7 @@
 
 Coverage
 --------
-Six universal checks parametrized over six builders -> 36 cases:
+Six universal checks parametrized over eight builders -> 48 cases:
 
   1. test_return_contract             — verts (N, 3) float32; faces (M, 3) uint32
   2. test_vertex_and_face_counts      — exact N and M per builder
@@ -15,11 +15,16 @@ Six universal checks parametrized over six builders -> 36 cases:
 Parametrized builders
 ---------------------
 - `make_camera_body`         — 29 x 29 x 30 mm box
-- `make_projector_body`      — 55 mm cube
+- `make_projector_body`      — 55 mm cube (default PICO_GENIE profile)
+- `make_projector_body(PRO4500)` — 84 x 54 x 210 mm box (PRO4500 profile)
 - `_cylinder` reference      — 40 x 40 x 100 mm uniform cylinder (n_segments=32)
 - `_stepped_cylinder` ref    — 30 mm dia x 60 mm long (2 uniform sections)
 - `make_camera_lens`         — 110 mm front / 55 mm rear stepped lens, 200 mm
-- `make_projector_lens`      — 20 x 20 x 5 mm uniform cylinder
+- `make_projector_lens`      — 20 x 20 x 5 mm uniform cylinder (default PICO)
+- `make_projector_lens(PRO4500)` — 20 x 20 x 5 mm uniform cylinder (PRO4500)
+
+Projector-profile tests (Stage 6 projector-swap commit 1) live at the bottom:
+the default-is-Pico byte-identity guard and the profile/registry sanity checks.
 
 The reference cylinder/stepped builders use different parameters from the
 public lens builders to cover the helper code paths with distinct inputs.
@@ -42,6 +47,11 @@ import numpy as np
 import pytest
 
 from scene import (
+    PICO_GENIE,
+    PROJECTOR_PROFILES,
+    WINTECH_PRO4500,
+    ProjectorProfile,
+    _centered_box,
     _cylinder,
     _stepped_cylinder,
     make_camera_body,
@@ -58,6 +68,13 @@ from scene import (
 BUILDERS = [
     (make_camera_body,    (29.0, 29.0, 30.0),    8,  12, "camera_body"),
     (make_projector_body, (55.0, 55.0, 55.0),    8,  12, "projector_body"),
+    # PRO4500 body via its profile: 84 x 54 x 210 mm box (lz=210 optical-axis
+    # depth). Constructible + universally checked, but NOT displayed (commit 1).
+    (lambda: make_projector_body(WINTECH_PRO4500),
+                          (84.0, 54.0, 210.0),   8,  12, "projector_body_pro4500"),
+    # PRO4500 lens via its profile: 20 x 5 mm stub cylinder (same as Pico).
+    (lambda: make_projector_lens(WINTECH_PRO4500),
+                          (20.0, 20.0, 5.0),     66, 128, "projector_lens_pro4500"),
     # _cylinder reference: 40 dia x 100 long, n=32 -> 2*32+2=66 verts, 4*32=128 tris
     (lambda: _cylinder(40.0, 100.0),
                           (40.0, 40.0, 100.0),   66, 128, "cylinder_ref"),
@@ -310,3 +327,85 @@ def test_viewing_cone_is_parallel_prism():
         assert float(arr[:, 1].max() - arr[:, 1].min()) == pytest.approx(
             55.0, abs=1e-4
         )
+
+
+# ===========================================================================
+# Projector profiles (Stage 6 projector-swap commit 1).
+#
+# The profile spine makes the projector mesh builders profile-driven without
+# changing the default (Pico Genie) output. PRO4500 is constructible + checked
+# above via BUILDERS, but NOT displayed — HardwareScene still builds Pico.
+# These tests pin (a) the default-is-Pico byte-identity and (b) the profile /
+# registry data.
+# ===========================================================================
+def test_make_projector_default_is_pico_byte_identical():
+    """No-arg builders == explicit PICO_GENIE == the prior hardcoded mesh.
+
+    Guards the byte-identity the whole Option-A swap depends on: every existing
+    no-arg caller (HardwareScene, clip_detection's module-load bbox) must get
+    the exact prior Pico mesh, so nothing visible changes this commit.
+    """
+    # Body: default == PICO_GENIE == _centered_box(55, 55, 55).
+    dv, dfa = make_projector_body()
+    pv, pfa = make_projector_body(PICO_GENIE)
+    bv, bfa = _centered_box(55.0, 55.0, 55.0)
+    np.testing.assert_array_equal(dv, pv)
+    np.testing.assert_array_equal(dfa, pfa)
+    np.testing.assert_array_equal(dv, bv)
+    np.testing.assert_array_equal(dfa, bfa)
+
+    # Lens: default == PICO_GENIE == _cylinder(20, 5).
+    dlv, dlf = make_projector_lens()
+    plv, plf = make_projector_lens(PICO_GENIE)
+    clv, clf = _cylinder(20.0, 5.0)
+    np.testing.assert_array_equal(dlv, plv)
+    np.testing.assert_array_equal(dlf, plf)
+    np.testing.assert_array_equal(dlv, clv)
+    np.testing.assert_array_equal(dlf, clf)
+
+
+def test_pro4500_body_differs_from_pico():
+    """The PRO4500 body is genuinely a different (oriented) box, not the cube.
+
+    Sanity that the profile actually drives the mesh: same vert/face counts,
+    but the bounding box is the 84 x 54 x 210 mm oriented box (lz=210 is the
+    optical-axis depth) — distinct from Pico's 55^3 cube.
+    """
+    pico_v, _ = make_projector_body(PICO_GENIE)
+    pro_v, _ = make_projector_body(WINTECH_PRO4500)
+    assert pro_v.shape == pico_v.shape  # both 8-vertex boxes
+    assert not np.array_equal(pro_v, pico_v)
+    span = (pro_v.max(axis=0) - pro_v.min(axis=0)).astype(np.float64)
+    np.testing.assert_allclose(span, [84.0, 54.0, 210.0], atol=1e-4)
+
+
+def test_projector_registry_order_and_membership():
+    """Registry mirrors FOV_PRESETS: Pico first (default/active), PRO4500 next."""
+    assert isinstance(PROJECTOR_PROFILES, tuple)
+    assert len(PROJECTOR_PROFILES) == 2
+    assert PROJECTOR_PROFILES[0] is PICO_GENIE  # first == default/active
+    assert PROJECTOR_PROFILES[1] is WINTECH_PRO4500
+    assert all(isinstance(p, ProjectorProfile) for p in PROJECTOR_PROFILES)
+    names = [p.name for p in PROJECTOR_PROFILES]
+    assert names == ["Pico Genie Impact 2.0 Plus Elite", "Wintech PRO4500"]
+
+
+def test_profile_field_values():
+    """The two profiles carry the agreed visual specs, slots empty this commit."""
+    # Pico exactly reproduces the prior hardcoded values.
+    assert PICO_GENIE.body_dims_mm == (55.0, 55.0, 55.0)
+    assert PICO_GENIE.lens_diameter_mm == 20.0
+    assert PICO_GENIE.lens_length_mm == 5.0
+    assert PICO_GENIE.lens_face_offset_mm == (-6.5, 17.5, 1.5)
+
+    # PRO4500: 84 x 54 x 210 body (lz=210 optical-axis depth), centered lens
+    # (0% offset) with ~2 mm recess.
+    assert WINTECH_PRO4500.body_dims_mm == (84.0, 54.0, 210.0)
+    assert WINTECH_PRO4500.lens_diameter_mm == 20.0
+    assert WINTECH_PRO4500.lens_length_mm == 5.0
+    assert WINTECH_PRO4500.lens_face_offset_mm == (0.0, 0.0, 2.0)
+
+    # Deferred slots are empty/None this commit (populated in later commits).
+    for prof in (PICO_GENIE, WINTECH_PRO4500):
+        assert prof.lens_options == ()
+        assert prof.cone_params is None

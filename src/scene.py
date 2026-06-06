@@ -9,10 +9,23 @@ into a `pyqtgraph.opengl.GLMeshItem` separately.
 Scope (sub-tasks 1 and 2)
 -------------------------
 - `make_camera_body()`   — FLIR Blackfly S body, 29 x 29 x 30 mm box.
-- `make_projector_body()`— Pico Genie Impact 2.0 Plus Elite, 55 mm cube.
+- `make_projector_body(profile)` — projector body box from a
+                           `ProjectorProfile` (default `PICO_GENIE`, the
+                           55 mm cube; `WINTECH_PRO4500` available too).
 - `make_camera_lens()`   — Edmund Optics #58-259 stepped lens body,
                            total length 200 mm along local +Z.
-- `make_projector_lens()`— Short 20 x 5 mm stub cylinder.
+- `make_projector_lens(profile)` — projector lens stub cylinder from a
+                           `ProjectorProfile` (default `PICO_GENIE`,
+                           20 x 5 mm).
+
+Projector profiles (Stage 6 projector-swap commit 1)
+----------------------------------------------------
+`ProjectorProfile` carries the per-projector VISUAL specs (body box, lens
+stub, lens face offset) and a registry `PROJECTOR_PROFILES` mirrors
+`main_window.FOV_PRESETS`. This is an Option-A (visual-only) swap: profiles
+hold NO simulation-math parameters — `p`, `theta_projector`, `a` stay sealed
+in `geometry.py` (PROJECT_CONTEXT Sec 7.11). The default profile is the
+Pico Genie, so the no-arg builders are byte-identical to before.
 
 All bodies and lenses are centered on the origin of their own local
 frame. Pose (translation + rotation into the lab/world frame) is the
@@ -48,7 +61,8 @@ Module scope
 """
 from __future__ import annotations
 
-from typing import Tuple
+from dataclasses import dataclass
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -132,16 +146,109 @@ def make_camera_body() -> Tuple[np.ndarray, np.ndarray]:
     return _centered_box(29.0, 29.0, 30.0)
 
 
-def make_projector_body() -> Tuple[np.ndarray, np.ndarray]:
-    """Build the Pico Genie Impact 2.0 Plus Elite projector body mesh.
+# ---------------------------------------------------------------------------
+# Projector profiles (Stage 6 projector-swap commit 1).
+#
+# A ProjectorProfile bundles the VISUAL specs needed to render a projector's
+# body + lens in the lab view. Option-A (visual-only) swap: a profile carries
+# NO simulation-math parameters — p, theta_projector, a stay sealed in
+# geometry.py (PROJECT_CONTEXT Sec 7.11). Switching the active profile changes
+# only what the 3D scene draws, never the recovered surface. The registry
+# mirrors main_window.FOV_PRESETS; the first entry is the default/active
+# projector (Pico Genie), so the no-arg mesh builders stay byte-identical.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ProjectorProfile:
+    """Per-projector VISUAL specs for building the lab-view body + lens meshes.
 
-    Dimensions: 55 x 55 x 55 mm cube (per PROJECT_CONTEXT Sec 2).
+    Fields
+    ------
+    name : str
+        Human-readable projector name (e.g. for the future selector label).
+    body_dims_mm : (lx, ly, lz)
+        Body box dimensions in mm, centered on the local origin. `lz` is the
+        OPTICAL-AXIS DEPTH — the dimension perpendicular to the lens front
+        face, along local +Z (so a long unit standing lens-down at theta=0
+        carries its long dimension in `lz`). `lx`/`ly` are the in-face
+        horizontal / vertical spread.
+    lens_diameter_mm, lens_length_mm : float
+        Lens stub-cylinder size (length runs along local +Z).
+    lens_face_offset_mm : (face_x, face_vertical, recess)
+        Lens position on the body front face, mm, in the body-centered face
+        frame: `face_x` horizontal offset, `face_vertical` vertical offset,
+        `recess` how far the lens exit sits behind the front face. A plain
+        3-tuple by design — the projector-swap dropdown commit unifies it
+        against hardware_scene's existing `ProjectorLensOffset`, so a second
+        near-twin type here would only be torn down. NOT consumed by the mesh
+        builders (the lens mesh is a centered cylinder); used by the compose
+        layer, wired to the active profile in a later commit.
+    lens_options : tuple
+        SLOT — field-swappable lens table (working distance -> FOV -> pixel
+        size). Empty this commit; populated in a later commit (lens selector).
+    cone_params : object or None
+        SLOT — projection-cone optics (throw ratio / aspect / FOV). None this
+        commit; the cone still comes from make_projection_cone_wireframe's
+        hardcoded Pico spec. Populated in a later commit (cone swap).
+    """
 
-    Centered origin in scene frame. The corner-origin convention in
-    Projector_Geometry_Summary.docx is a measurement convention; see
-    sub-task 2 for the conversion when placing the lens.
+    name: str
+    body_dims_mm: Tuple[float, float, float]
+    lens_diameter_mm: float
+    lens_length_mm: float
+    lens_face_offset_mm: Tuple[float, float, float]
+    lens_options: Tuple = ()
+    cone_params: Optional[object] = None
 
-    The bounding box spans [-27.5, +27.5] on every axis.
+
+# Pico Genie Impact 2.0 Plus Elite — the current/default ACTIVE projector.
+# Values EXACTLY reproduce the prior hardcoded mesh (55^3 mm body, 20 x 5 mm
+# lens, measured -6.5 / 17.5 / 1.5 mm face offset) so the default-profile
+# builders are byte-identical to before.
+PICO_GENIE = ProjectorProfile(
+    name="Pico Genie Impact 2.0 Plus Elite",
+    body_dims_mm=(55.0, 55.0, 55.0),
+    lens_diameter_mm=20.0,
+    lens_length_mm=5.0,
+    lens_face_offset_mm=(-6.5, 17.5, 1.5),
+)
+
+# Wintech PRO4500 (TI DLP LightCrafter 4500 optical engine). Body 84 x 54 x
+# 210 mm with the 210 mm long axis as the OPTICAL-AXIS DEPTH (lz): the lens
+# exits a short end face, so the body hangs long / vertical and lens-down at
+# theta=0. The wider face dim (84) is image-horizontal, matching the lenses'
+# wider-than-tall FOV (e.g. 65.6 x 41, 131.2 x 82 mm). Lens dia/len ~20/5 mm
+# are PLACEHOLDERS (refine when the unit is mounted). Lens CENTERED on the
+# face (0% offset) with ~2 mm recess (observed indentation); centered + recess
+# are cosmetic-only and mount-time-refinable per PROJECT_CONTEXT Sec 7.11 —
+# non-blocking. NOT yet displayed: HardwareScene still builds Pico (commit 1).
+WINTECH_PRO4500 = ProjectorProfile(
+    name="Wintech PRO4500",
+    body_dims_mm=(84.0, 54.0, 210.0),
+    lens_diameter_mm=20.0,
+    lens_length_mm=5.0,
+    lens_face_offset_mm=(0.0, 0.0, 2.0),
+)
+
+# Registry mirroring main_window.FOV_PRESETS. Order matters: the FIRST entry
+# is the default/active projector (Pico Genie). The dropdown commit indexes
+# into this list.
+PROJECTOR_PROFILES: Tuple[ProjectorProfile, ...] = (PICO_GENIE, WINTECH_PRO4500)
+
+
+def make_projector_body(
+    profile: ProjectorProfile = PICO_GENIE,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build a projector body box mesh from a `ProjectorProfile`.
+
+    Defaults to `PICO_GENIE` so existing no-arg callers (HardwareScene,
+    clip_detection's module-load bbox, tests) get the prior 55 x 55 x 55 mm
+    Pico cube byte-identically. Pass `WINTECH_PRO4500` (or any profile) to
+    build that projector's body.
+
+    Dimensions come from `profile.body_dims_mm = (lx, ly, lz)`, centered on
+    the local origin; `lz` is the optical-axis depth. Pose (translation +
+    rotation into the lab/world frame) is `scene_compose.py`'s concern. For
+    the Pico cube the bounding box spans [-27.5, +27.5] on every axis.
 
     Returns
     -------
@@ -149,7 +256,8 @@ def make_projector_body() -> Tuple[np.ndarray, np.ndarray]:
     faces : (12, 3) uint32
         CCW outward winding.
     """
-    return _centered_box(55.0, 55.0, 55.0)
+    lx, ly, lz = profile.body_dims_mm
+    return _centered_box(lx, ly, lz)
 
 
 # ---------------------------------------------------------------------------
@@ -438,27 +546,30 @@ def make_camera_lens() -> Tuple[np.ndarray, np.ndarray]:
     return _stepped_cylinder(sections)
 
 
-def make_projector_lens() -> Tuple[np.ndarray, np.ndarray]:
-    """Build the Pico Genie projector lens mesh.
+def make_projector_lens(
+    profile: ProjectorProfile = PICO_GENIE,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build a projector lens stub-cylinder mesh from a `ProjectorProfile`.
 
-    Uniform cylinder: 20 mm diameter, 5 mm long along local +Z.
-    Centered origin in lens-local frame; bounding box spans
-    [-10, +10] on x and y, [-2.5, +2.5] on z.
+    Defaults to `PICO_GENIE` -> 20 mm diameter, 5 mm long, byte-identical to
+    the prior hardcoded mesh. Centered origin in lens-local frame, oriented
+    along local +Z; for the Pico lens the bounding box spans [-10, +10] on
+    x and y, [-2.5, +2.5] on z.
 
-    The Pico Genie's measured lens position is OFF-CENTER on the
-    projector body's front face (X = -6.5 mm relative to body center).
-    That horizontal offset is composed at scene-assembly time in
-    `scene_compose.py`, not encoded in this mesh — the lens mesh is
-    a centered cylinder; the GUI applies the offset translation when
-    composing the projector assembly.
+    The lens's off-center position on the body front face
+    (`profile.lens_face_offset_mm`) is NOT encoded in this mesh — the lens
+    mesh is a centered cylinder; the compose layer
+    (`hardware_scene` / `scene_compose`) applies the offset translation when
+    assembling the projector. Size comes from `profile.lens_diameter_mm` and
+    `profile.lens_length_mm`.
 
     Returns
     -------
-    verts : (66, 3) float32, units mm
+    verts : (66, 3) float32, units mm   (32-segment cylinder)
     faces : (128, 3) uint32
         CCW outward winding.
     """
-    return _cylinder(20.0, 5.0)
+    return _cylinder(profile.lens_diameter_mm, profile.lens_length_mm)
 
 
 # ---------------------------------------------------------------------------
