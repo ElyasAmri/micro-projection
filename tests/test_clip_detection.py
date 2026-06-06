@@ -678,3 +678,44 @@ def test_detect_clips_coverage_uses_active_profile_slopes():
     pro = detect_clips(t, **kwargs, projector_profile=WINTECH_PRO4500)
     assert not pico.surface_outside_projector_cone   # throw-ratio cone covers it
     assert pro.surface_outside_projector_cone        # FOV cone does not
+
+
+# ===========================================================================
+# Stage 6 projector-swap 4 — active-lens index threading.
+# ===========================================================================
+def test_detect_clips_active_lens_index_default_is_default_lens_index():
+    """Omitting active_lens_index == passing the profile's default_lens_index —
+    the additive byte-identical guard so 3b-era calls are unchanged."""
+    wd = 184.0
+    t = compute_arm_transforms(
+        theta_camera_deg=0.0, theta_projector_deg=0.0,
+        projector_distance_mm=wd, camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = np.zeros((400, 1440), dtype=np.float64)
+    kwargs = dict(
+        heightmap_mm=hm, surface_pixel_size_mm=0.1,
+        camera_distance_mm=157.0, projector_distance_mm=wd,
+        viewing_cone_world=viewing, projection_cone_world=projection,
+        projector_profile=WINTECH_PRO4500,
+    )
+    omitted = detect_clips(t, **kwargs)
+    explicit = detect_clips(t, **kwargs, active_lens_index=WINTECH_PRO4500.default_lens_index)
+    assert omitted == explicit
+
+
+def test_pro4500_lenses_share_cone_half_angle():
+    """Both PRO4500 lenses have the SAME cone half-angle: (fov/2)/WD is equal for
+    the 92 and 184 mm lenses. So the coverage SLOPE is lens-invariant — the lens
+    selector changes coverage via the working distance (apex height), not the
+    slope (see the GL update_pose coverage test). Documents why the detect_clips
+    active_lens_index has no slope effect for these two specific lenses."""
+    near, far = WINTECH_PRO4500.lens_options
+    np.testing.assert_allclose(
+        (near.fov_w_mm / 2) / near.working_distance_mm,
+        (far.fov_w_mm / 2) / far.working_distance_mm, rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        (near.fov_h_mm / 2) / near.working_distance_mm,
+        (far.fov_h_mm / 2) / far.working_distance_mm, rtol=1e-9,
+    )

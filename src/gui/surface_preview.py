@@ -227,6 +227,7 @@ class SurfacePreview(gl.GLViewWidget):
         heightmap_mm: "np.ndarray | None" = None,
         surface_pixel_size_mm: float = 0.0,
         profile: ProjectorProfile = PICO_GENIE,
+        active_lens_index: "int | None" = None,
     ):
         """Push fresh poses into the hardware bodies + cones.
 
@@ -247,6 +248,7 @@ class SurfacePreview(gl.GLViewWidget):
             heightmap_mm=heightmap_mm,
             surface_pixel_size_mm=surface_pixel_size_mm,
             profile=profile,
+            active_lens_index=active_lens_index,
         )
 
     def set_projector_profile(self, profile: ProjectorProfile) -> None:

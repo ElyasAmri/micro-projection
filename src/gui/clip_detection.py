@@ -532,6 +532,7 @@ def detect_clips(
     viewing_cone_world: "np.ndarray | None" = None,
     projection_cone_world: "np.ndarray | None" = None,
     projector_profile: "ProjectorProfile | None" = None,
+    active_lens_index: "int | None" = None,
 ) -> ClipState:
     """Run three collision checks plus three banner-only advisories.
 
@@ -542,17 +543,21 @@ def detect_clips(
         returned by `hardware_scene.compute_arm_transforms`. Keys:
         camera_body, camera_lens, projector_body, projector_lens.
     projector_profile : ProjectorProfile or None, keyword-only
-        Active projector profile (Stage 6 projector-swap 3a). `None` (default)
-        uses the module-cached Pico projector bbox EXACTLY as before — the
-        byte-identical live path, no per-frame mesh rebuild. When a profile is
-        passed, the projector body/lens bbox corners are derived on demand from
+        Active projector profile (Stage 6 projector-swap 3a/3b). `None` (default)
+        uses the module-cached Pico projector bbox + throw-ratio cone slopes
+        EXACTLY as before — the byte-identical path. When a profile is passed,
+        the projector body/lens bbox corners are derived on demand from
         `make_projector_body(profile)` / `make_projector_lens(profile)` for the
-        body-overlap (SAT) and cross-arm obstruction checks. NOTE (3b carry-
-        forward): the lens-front-disc check (`_LENS_FRONT_*`) and the cone-
-        coverage slopes (`_CONE_HALF_*_PER_L`) still read the cached Pico
-        geometry; for PRO4500 the lens-front disc is correct only by the 20x5 mm
-        lens placeholder coincidence, and the coverage slope is throw-ratio (not
-        FOV) — both to be made profile-aware when the projector goes on-display.
+        body-overlap (SAT) and cross-arm obstruction checks, and (3b) the
+        cone-coverage / camera-in-cone slopes track the profile's active lens
+        (FOV-rated for PRO4500). REMAINING Pico-cached: the lens-front-disc
+        check (`_LENS_FRONT_*`) — correct for PRO4500 only by the 20x5 mm
+        lens-stub coincidence; revisit with the measured lens barrel.
+    active_lens_index : int or None, keyword-only
+        Which lens of a multi-lens profile drives the cone-coverage slopes
+        (Stage 6 projector-swap 4). `None` (default) falls back to the profile's
+        `default_lens_index`, so an omitted call is byte-identical to 3b. Only
+        consulted when `projector_profile.lens_options` is non-empty.
     heightmap_mm : (H, W) array or None, keyword-only
         Current surface heightmap in honest mm. Required for the
         coverage advisories; None makes them inert.
@@ -599,7 +604,14 @@ def detect_clips(
     cone_half_u_per_l = _CONE_HALF_U_PER_L
     cone_half_v_per_l = _CONE_HALF_V_PER_L
     if projector_profile is not None and projector_profile.lens_options:
-        lens = projector_profile.lens_options[projector_profile.default_lens_index]
+        # `active_lens_index` (Stage 6 projector-swap 4) selects the lens; None
+        # falls back to default_lens_index, so an omitted call is byte-identical
+        # to 3b (the default-lens slopes).
+        idx = (
+            active_lens_index if active_lens_index is not None
+            else projector_profile.default_lens_index
+        )
+        lens = projector_profile.lens_options[idx]
         cone_half_u_per_l = (lens.fov_w_mm / 2.0) / lens.working_distance_mm
         cone_half_v_per_l = (lens.fov_h_mm / 2.0) / lens.working_distance_mm
 

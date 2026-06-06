@@ -51,6 +51,43 @@ def test_default_projector_is_pico(window):
     assert window.projector_distance.isEnabled()
     assert window._info_projector_label.text() == "Pico Genie Impact 2.0 Plus Elite"
     assert window._info_throw_ratio_label.text() == "1.2:1"
+    # Pico has no lens choice -> the lens combo is hidden.
+    assert window.lens_combo.isHidden()
+
+
+def test_lens_selector_round_trip_preserves_pico_throw(window):
+    """Pico (throw T) -> PRO4500 (slider locks 184) -> pick 92 mm (slider 92) ->
+    back to Pico (slider MUST restore T, not 92 or 184).
+
+    This is the exact path that exercises the _saved_projector_throw_mm ownership
+    boundary: _on_lens_changed must NOT overwrite the saved Pico throw, so the
+    final Pico restore returns the ORIGINAL value.
+    """
+    T = window.projector_distance.value()              # Pico free-throw default (150)
+
+    # Pico -> PRO4500: lens combo populates + shows, defaults to 184; slider locks.
+    window.projector_combo.setCurrentIndex(_PRO_IDX)
+    assert window._projector_profile is WINTECH_PRO4500
+    assert not window.lens_combo.isHidden()
+    assert window.lens_combo.count() == 2
+    assert window.lens_combo.currentIndex() == WINTECH_PRO4500.default_lens_index == 1
+    assert window._active_lens_index == 1
+    assert window.projector_distance.value() == 184.0
+    assert not window.projector_distance.isEnabled()
+
+    # Pick the 92 mm lens (index 0): slider re-locks to 92; profile stays canonical.
+    window.lens_combo.setCurrentIndex(0)
+    assert window._active_lens_index == 0
+    assert window.projector_distance.value() == 92.0
+    assert not window.projector_distance.isEnabled()
+    assert window._projector_profile is WINTECH_PRO4500   # canonical object unchanged
+
+    # Back to Pico: slider restores the ORIGINAL T (not 92 or 184); combo hidden.
+    window.projector_combo.setCurrentIndex(_PICO_IDX)
+    assert window._projector_profile is PICO_GENIE
+    assert window.projector_distance.isEnabled()
+    assert window.projector_distance.value() == T
+    assert window.lens_combo.isHidden()
 
 
 def test_select_pro4500_flips_profile_locks_wd_and_updates_info(window):

@@ -468,6 +468,7 @@ class HardwareScene:
         heightmap_mm: "np.ndarray | None" = None,
         surface_pixel_size_mm: float = 0.0,
         profile: ProjectorProfile = PICO_GENIE,
+        active_lens_index: "int | None" = None,
     ) -> ClipState:
         """Recompute and apply transforms; refresh cones; detect clips.
 
@@ -521,8 +522,15 @@ class HardwareScene:
         # Projection cone: an FOV-rated cone for a multi-lens projector
         # (PRO4500), else the throw-ratio cone at the slider distance (Pico).
         # Keyed strictly on a non-empty lens table, so Pico (empty) is unchanged.
+        # `active_lens_index` (Stage 6 projector-swap 4) selects which lens; None
+        # falls back to the profile's default_lens_index, so an omitted call is
+        # byte-identical to 3b.
         if profile.lens_options:
-            lens = profile.lens_options[profile.default_lens_index]
+            idx = (
+                active_lens_index if active_lens_index is not None
+                else profile.default_lens_index
+            )
+            lens = profile.lens_options[idx]
             proj_verts, proj_edges = make_projection_cone_from_fov(
                 lens.fov_w_mm, lens.fov_h_mm, lens.working_distance_mm
             )
@@ -554,6 +562,7 @@ class HardwareScene:
             viewing_cone_world=view_world,
             projection_cone_world=proj_world,
             projector_profile=profile,
+            active_lens_index=active_lens_index,
         )
         self._apply_clip_colors(clip_state)
         return clip_state

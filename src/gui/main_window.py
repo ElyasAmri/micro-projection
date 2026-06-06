@@ -372,9 +372,15 @@ class MainWindow(QMainWindow):
         # view draws the selected projector. Defaults to PICO_GENIE, so the
         # display is byte-identical until 3b's dropdown can flip it.
         self._projector_profile: ProjectorProfile = PICO_GENIE
+        # Active lens index into the projector's lens_options (Stage 6 swap 4).
+        # Meaningful only for a multi-lens projector (PRO4500); ignored for Pico
+        # (empty lens_options). Drives the FOV cone, coverage slopes, and the
+        # lens-fixed WD. Default 0 (moot for the Pico default).
+        self._active_lens_index: int = 0
         # Saved free-throw slider value while a fixed-WD (PRO4500-class)
         # projector locks the slider, restored when a free-throw projector
         # (Pico) is reselected (Stage 6 projector-swap 3b, "lens fixes the WD").
+        # Owned by _on_projector_changed ONLY — the lens selector never writes it.
         self._saved_projector_throw_mm: Optional[float] = None
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -667,6 +673,21 @@ class MainWindow(QMainWindow):
         proj_row.addWidget(QLabel("Projector:"), 0)
         proj_row.addWidget(self.projector_combo, 1)
         layout.addLayout(proj_row)
+
+        # Lens selector (Stage 6 projector-swap 4). Only relevant for a projector
+        # WITH a lens table (PRO4500); hidden for Pico (empty lens_options).
+        # DYNAMIC: repopulated per profile by _populate_lens_combo on projector
+        # change. currentIndexChanged -> _on_lens_changed re-locks the WD + redraws
+        # the FOV cone for the chosen lens. Default profile is Pico -> hidden.
+        self.lens_row = QHBoxLayout()
+        self.lens_row.setContentsMargins(0, 0, 0, 0)
+        self.lens_label = QLabel("Lens:")
+        self.lens_combo = QComboBox()
+        self.lens_combo.currentIndexChanged.connect(self._on_lens_changed)
+        self.lens_row.addWidget(self.lens_label, 0)
+        self.lens_row.addWidget(self.lens_combo, 1)
+        layout.addLayout(self.lens_row)
+        self._populate_lens_combo(self._projector_profile)  # Pico -> hidden
 
         # Range extended from ±60° to ±75° in Stage 4b task 4 to make
         # surface-clip cases reachable (a tilted lens-front disc only
@@ -1411,6 +1432,7 @@ class MainWindow(QMainWindow):
             heightmap_mm=self._compute_current_heightmap(),
             surface_pixel_size_mm=SURFACE_PIXEL_SIZE_MM,
             profile=self._projector_profile,
+            active_lens_index=self._active_lens_index,
         )
         self._update_clip_warning(clip_state.messages)
 
@@ -1441,6 +1463,15 @@ class MainWindow(QMainWindow):
         # (2) Rebuild the projector body/lens meshes for the new profile.
         self.view_3d.set_projector_profile(profile)
 
+        # Lens selector (Stage 6 swap 4): set the active lens index AND the lens
+        # combo's currentIndex together to the profile's default — both before
+        # the pose refresh, so there is no transient window where the cone draws
+        # at one index while the combo shows another. _populate_lens_combo sets
+        # the combo under blockSignals (no _on_lens_changed cascade) and hides
+        # the row for a lens-less projector (Pico).
+        self._active_lens_index = profile.default_lens_index if profile.lens_options else 0
+        self._populate_lens_combo(profile)
+
         # (5) Info panel: name + throw-ratio (no fabricated ratio for an
         # FOV/lens-based projector).
         if self._info_projector_label is not None:
@@ -1458,10 +1489,12 @@ class MainWindow(QMainWindow):
         # NOTE: a lens WD MUST fall within the projector_distance slider range
         # (50-200 mm) or set_value silently clamps it — both PRO4500 lenses
         # (92, 184) are in range; guard a future out-of-range lens here.
+        # This handler OWNS _saved_projector_throw_mm (the lens selector never
+        # touches it — see _on_lens_changed).
         if profile.lens_options:
             if self._saved_projector_throw_mm is None:
                 self._saved_projector_throw_mm = self.projector_distance.value()
-            lens = profile.lens_options[profile.default_lens_index]
+            lens = profile.lens_options[self._active_lens_index]
             self.projector_distance.blockSignals(True)
             self.projector_distance.set_value(lens.working_distance_mm)
             self.projector_distance.blockSignals(False)
@@ -1476,6 +1509,51 @@ class MainWindow(QMainWindow):
 
         # Single pose refresh: re-poses the rebuilt meshes, redraws the cone
         # (FOV vs throw-ratio), and re-runs profile-aware clip detection.
+        self._on_pose_changed()
+
+    def _populate_lens_combo(self, profile: ProjectorProfile) -> None:
+        """Repopulate + show/hide the lens combo for `profile` (Stage 6 swap 4).
+
+        Dynamic (unlike the static projector combo): clears and re-adds one item
+        per LensOption, labelled by WD + FOV. Sets the combo to the profile's
+        default lens UNDER blockSignals so it does not fire `_on_lens_changed`
+        (the caller has already set `self._active_lens_index` in lockstep). The
+        row is hidden for a lens-less projector (Pico — no lens choice).
+        """
+        self.lens_combo.blockSignals(True)
+        self.lens_combo.clear()
+        for lens in profile.lens_options:
+            self.lens_combo.addItem(
+                f"{lens.working_distance_mm:g} mm "
+                f"({lens.fov_w_mm:g} × {lens.fov_h_mm:g} mm)"
+            )
+        if profile.lens_options:
+            self.lens_combo.setCurrentIndex(profile.default_lens_index)
+        self.lens_combo.blockSignals(False)
+        visible = bool(profile.lens_options)
+        self.lens_label.setVisible(visible)
+        self.lens_combo.setVisible(visible)
+
+    def _on_lens_changed(self, index: int) -> None:
+        """Lens-selector slot (Stage 6 projector-swap 4). PRO4500-active only.
+
+        Sets the active lens index, re-locks the throw slider to the NEW lens's
+        working distance (the cone depth + coverage + readout all follow the
+        slider / active index), and refreshes the pose. Does NOT touch
+        `_saved_projector_throw_mm` — that belongs to the Pico<->PRO4500
+        transition (owned by _on_projector_changed); re-locking among lens WDs
+        happens while already in the locked state, so overwriting the saved Pico
+        throw here would corrupt the eventual Pico restore.
+        """
+        profile = self._projector_profile
+        if not profile.lens_options:
+            return  # defensive: combo is hidden for lens-less projectors
+        self._active_lens_index = index
+        lens = profile.lens_options[index]
+        self.projector_distance.blockSignals(True)
+        self.projector_distance.set_value(lens.working_distance_mm)
+        self.projector_distance.blockSignals(False)
+        self.projector_distance.setEnabled(False)
         self._on_pose_changed()
 
     def _update_error_stats(self, error: np.ndarray) -> float:
