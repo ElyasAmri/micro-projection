@@ -321,6 +321,7 @@ def arm_lens_front_world(
     theta_proj_deg: float,
     proj_dist_mm: float,
     cam_dist_mm: float,
+    profile: ProjectorProfile = PICO_GENIE,
 ) -> Dict[str, tuple]:
     """Camera + projector lens-front world positions (mm), surface frame.
 
@@ -333,6 +334,12 @@ def arm_lens_front_world(
     `_projector_cone_world` helpers), then returns each lens-front
     (cone apex) world position — the translation column of the cone
     transform.
+
+    `profile` (Stage 6 projector-swap 3b) selects the active projector so the
+    readout matches the displayed body: the projector lens-front is placed with
+    that profile's body depth / lens length / offset + recess. Defaults to
+    PICO_GENIE, whose values are the prior literals, so the default-profile
+    readout is byte-identical. (The camera arm is profile-independent.)
 
     Frame: world origin at the stage-surface center, +z up toward the
     rig (z=0 is the stage). After 4d.10 anchoring, the projector
@@ -352,9 +359,10 @@ def arm_lens_front_world(
         theta_projector_deg=theta_proj_deg,
         projector_distance_mm=proj_dist_mm,
         camera_distance_mm=cam_dist_mm,
+        profile=profile,
     )
     cam = _camera_cone_world(transforms[KEY_CAMERA_BODY])
-    proj = _projector_cone_world(transforms[KEY_PROJECTOR_BODY])
+    proj = _projector_cone_world(transforms[KEY_PROJECTOR_BODY], profile)
     return {
         "camera": (float(cam[0, 3]), float(cam[1, 3]), float(cam[2, 3])),
         "projector": (float(proj[0, 3]), float(proj[1, 3]), float(proj[2, 3])),
@@ -413,6 +421,34 @@ class HardwareScene:
             view.addItem(line)
             self._cones[key] = line
 
+        # Currently-built projector mesh profile (Stage 6 projector-swap 3b).
+        # __init__ builds the no-arg (Pico) meshes above; set_projector_profile
+        # rebuilds them on a profile change. Tracked so re-selecting the same
+        # projector is a cheap no-op.
+        self._built_profile: ProjectorProfile = PICO_GENIE
+
+    def set_projector_profile(self, profile: ProjectorProfile) -> None:
+        """Rebuild the projector body + lens MESH ITEMS for a new profile.
+
+        Stage 6 projector-swap 3b. Called by the projector-selector handler on a
+        profile CHANGE (not per pose) — `update_pose` stays transform-only. Swaps
+        the vertex data of the existing `self._items` projector entries in place
+        via `setMeshData` (keeps item identity, color, shader, scene order); the
+        next `update_pose(profile=...)` then poses them. No-op if the profile is
+        already built. The camera items are never touched.
+        """
+        if profile is self._built_profile:
+            return
+        for key, builder in (
+            (KEY_PROJECTOR_BODY, make_projector_body),
+            (KEY_PROJECTOR_LENS, make_projector_lens),
+        ):
+            verts, faces = builder(profile)
+            self._items[key].setMeshData(
+                meshdata=gl.MeshData(vertexes=verts, faces=faces)
+            )
+        self._built_profile = profile
+
     @staticmethod
     def _edges_to_segments(verts: np.ndarray, edges: np.ndarray) -> np.ndarray:
         """Expand (verts, edges) to a (2M, 3) line-segment pos array.
@@ -444,16 +480,18 @@ class HardwareScene:
         FOV / projector-cone coverage advisories (both default
         inert for callers that don't pass them).
 
-        `profile` (Stage 6 projector-swap 3a) selects the active projector's
-        body/lens dimensions, lens offset, and projection-cone style. Defaults
-        to PICO_GENIE, whose values are the prior literals, so the default-
-        profile path is byte-identical. A profile with a non-empty `lens_options`
-        (e.g. PRO4500) draws an FOV-rated cone instead of the throw-ratio cone;
-        Pico's empty `lens_options` keeps the throw-ratio cone at the slider
-        distance. NOTE: clip-detection is still called with the cached Pico
-        geometry (`projector_profile=None`) this commit — making the bbox /
-        coverage-slope / lens-front-disc checks profile-aware is the on-display
-        (3b) concern; here `profile` is always PICO_GENIE so it is moot.
+        `profile` (Stage 6 projector-swap 3a/3b) selects the active projector's
+        body/lens dimensions, lens offset, and projection-cone style, and is
+        passed to `detect_clips` so the body-overlap SAT bbox, cross-arm
+        obstruction, and cone-coverage slopes all track the displayed projector.
+        Defaults to PICO_GENIE, whose values are the prior literals, so the
+        default-profile path is byte-identical. A profile with a non-empty
+        `lens_options` (e.g. PRO4500) draws an FOV-rated cone (and FOV-rated
+        coverage slopes) instead of the throw-ratio versions; Pico's empty
+        `lens_options` keeps the throw-ratio cone at the slider distance.
+        REMAINING Pico-cached (3b): the lens-front-disc surface-clip check
+        (`_LENS_FRONT_*` in clip_detection) — correct for PRO4500 only by the
+        20x5 mm lens-stub coincidence; revisit with the measured lens barrel.
 
         Still cheap: a handful of small matrix multiplies, four mesh
         `setTransform` calls, two tiny wireframe rebuilds, the
@@ -501,11 +539,12 @@ class HardwareScene:
         )
 
         # --- Clip detection + gray override. ---
-        # projector_profile=None: keep the live clip path on the cached Pico
-        # geometry (no per-frame bbox recompute). The active `profile` is
-        # PICO_GENIE in 3a, so this is byte-identical; 3b will pass the active
-        # profile once the dropdown can vary it (and the bbox / coverage-slope /
-        # lens-front-disc checks become profile-aware).
+        # Pass the ACTIVE profile (Stage 6 projector-swap 3b) so the body-overlap
+        # SAT bbox, the cross-arm obstruction edge-samples, and the cone-coverage
+        # slopes all track the displayed projector. Pico -> derived bbox == cached
+        # and FOV-less slopes == the module constants, so byte-identical (3a
+        # proved derive==cached). Per-pose this rebuilds the projector box mesh to
+        # derive its bbox — a tiny 8-vertex build, acceptable on a slider tick.
         clip_state = detect_clips(
             transforms,
             heightmap_mm=heightmap_mm,
@@ -514,7 +553,7 @@ class HardwareScene:
             projector_distance_mm=projector_distance_mm,
             viewing_cone_world=view_world,
             projection_cone_world=proj_world,
-            projector_profile=None,
+            projector_profile=profile,
         )
         self._apply_clip_colors(clip_state)
         return clip_state

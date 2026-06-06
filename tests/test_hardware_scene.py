@@ -44,7 +44,7 @@ from gui.hardware_scene import (
     arm_lens_front_world,
     compute_arm_transforms,
 )
-from scene import PICO_GENIE
+from scene import PICO_GENIE, WINTECH_PRO4500
 from scene_compose import body_lens_offset, projector_arm_transform
 
 
@@ -440,3 +440,31 @@ def test_projector_cone_world_pico_profile_byte_identical(
         _projector_cone_world(M),
         _projector_cone_world(M, PICO_GENIE),
     )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 projector-swap 3b — arm_lens_front_world (Hardware Coordinates panel +
+# CLI) is profile-aware. Pico default == no-arg (byte-identical); PRO4500 reports
+# its own (centered, 210-deep) lens-front, distinct from Pico.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "theta_cam,theta_proj,throw,wd", _POSES,
+    ids=["vertical", "sym30", "steep_proj", "extreme_a", "extreme_b"],
+)
+def test_arm_lens_front_world_pico_profile_byte_identical(
+    theta_cam, theta_proj, throw, wd
+):
+    """arm_lens_front_world(..., profile=PICO_GENIE) == the no-arg readout."""
+    a = arm_lens_front_world(theta_cam, theta_proj, throw, wd)
+    b = arm_lens_front_world(theta_cam, theta_proj, throw, wd, profile=PICO_GENIE)
+    assert a == b
+
+
+def test_arm_lens_front_world_pro4500_differs_and_is_centered():
+    """PRO4500 vertical at its 184 mm WD: lens-front on-axis (x=y=0), z = WD +
+    recess (2 mm) = 186; and the projector coord differs from Pico's."""
+    wd = 184.0
+    pico = arm_lens_front_world(0.0, 0.0, wd, 157.0)["projector"]
+    pro = arm_lens_front_world(0.0, 0.0, wd, 157.0, profile=WINTECH_PRO4500)["projector"]
+    assert not np.allclose(pico, pro)            # profile changes the readout
+    np.testing.assert_allclose(pro, [0.0, 0.0, 186.0], atol=1e-4)  # centered, WD+recess

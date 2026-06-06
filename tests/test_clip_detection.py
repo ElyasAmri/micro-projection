@@ -63,6 +63,8 @@ from gui.clip_detection import (
     MSG_PROJECTOR_SURFACE,
     MSG_SURFACE_OUTSIDE_CONE,
     MSG_SURFACE_OUTSIDE_FOV,
+    _CONE_HALF_U_PER_L,
+    _CONE_HALF_V_PER_L,
     _LOCAL_CORNERS,
     _box_edge_samples,
     _local_bbox_corners,
@@ -70,7 +72,12 @@ from gui.clip_detection import (
     _points_in_prism,
     detect_clips,
 )
-from scene import PICO_GENIE, make_projector_body, make_projector_lens
+from scene import (
+    PICO_GENIE,
+    WINTECH_PRO4500,
+    make_projector_body,
+    make_projector_lens,
+)
 from gui.hardware_scene import (
     _CAMERA_BODY_DEPTH_MM,
     _CAMERA_LENS_LENGTH_MM,
@@ -602,3 +609,72 @@ def test_derived_pico_bbox_equals_cached():
         _local_bbox_corners(make_projector_lens(PICO_GENIE)[0]),
         _LOCAL_CORNERS[KEY_PROJECTOR_LENS],
     )
+
+
+# ===========================================================================
+# Stage 6 projector-swap 3b — profile-aware cone-coverage slopes. Pico (and any
+# lens-table-less profile) keeps the throw-ratio module-constant slopes EXACTLY;
+# an FOV-rated lens (PRO4500) uses (fov_w/2)/WD, (fov_h/2)/WD. The lateral swap
+# leaves axial handling untouched (a Pico-slopes==module-constants guard).
+# ===========================================================================
+def test_points_in_cone_default_slopes_are_module_constants():
+    """_points_in_cone with no slope args == passing the module constants (the
+    Pico throw-ratio slopes) — pins that part-4 does not shift Pico laterally,
+    and that axial handling is unchanged."""
+    world = np.eye(4, dtype=np.float64)  # apex 0, axis +Z
+    # A point near the throw-ratio cone boundary at s=100 (half-width ~43.7).
+    pts = np.array([[40.0, 0.0, 100.0], [60.0, 0.0, 100.0], [0.0, 0.0, -10.0]])
+    default = _points_in_cone(world, pts)
+    explicit = _points_in_cone(
+        world, pts, half_u_per_l=_CONE_HALF_U_PER_L, half_v_per_l=_CONE_HALF_V_PER_L,
+    )
+    np.testing.assert_array_equal(default, explicit)
+    # Axial unchanged: the behind-apex point (s<0) is excluded either way.
+    assert not default[2]
+
+
+def test_pro4500_fov_slopes_differ_and_flip_inclusion():
+    """The PRO4500 default (184 mm) lens FOV slopes differ from the throw-ratio
+    constants, and a point between the two boundary widths flips inclusion."""
+    lens = WINTECH_PRO4500.lens_options[WINTECH_PRO4500.default_lens_index]
+    assert (lens.fov_w_mm, lens.working_distance_mm) == (131.2, 184.0)  # the default lens
+    fov_u = (lens.fov_w_mm / 2.0) / lens.working_distance_mm   # 65.6/184 ~ 0.3565
+    fov_v = (lens.fov_h_mm / 2.0) / lens.working_distance_mm   # 41/184 ~ 0.2228
+    assert abs(fov_u - _CONE_HALF_U_PER_L) > 1e-3   # genuinely different
+    assert abs(fov_v - _CONE_HALF_V_PER_L) > 1e-3
+
+    world = np.eye(4, dtype=np.float64)
+    s = lens.working_distance_mm                      # axial = WD (184)
+    # FOV half-width here ~65.6 mm; throw-ratio half-width ~76.7 mm. A point at
+    # lateral 70 is inside the throw-ratio cone but OUTSIDE the narrower FOV cone.
+    pt = np.array([[70.0, 0.0, s]])
+    assert _points_in_cone(world, pt)[0]                                   # throw-ratio: inside
+    assert not _points_in_cone(world, pt, half_u_per_l=fov_u, half_v_per_l=fov_v)[0]  # FOV: outside
+
+
+def test_detect_clips_coverage_uses_active_profile_slopes():
+    """Same cone world + surface, different projector profile -> the cone-
+    coverage advisory flips, because PRO4500's FOV cone is narrower than Pico's
+    throw-ratio cone at the same working distance."""
+    wd = 184.0
+    t = compute_arm_transforms(
+        theta_camera_deg=0.0, theta_projector_deg=0.0,
+        projector_distance_mm=wd, camera_distance_mm=157.0,
+    )
+    viewing, projection = _cone_worlds(t)
+    # Flat slab ~ +/-72 mm wide (x) but only +/-20 mm tall (y): the x corners
+    # sit inside Pico's wide throw-ratio cone at WD (half-width ~79 mm) but
+    # outside the narrower PRO4500 default-lens FOV cone (131.2 mm -> half-width
+    # ~68 mm); the y extent is inside both. So the cone-coverage advisory fires
+    # for PRO4500 only.
+    # shape (H, W): H rows -> y (+/-20), W cols -> x (+/-72), at 0.1 mm/px.
+    hm = np.zeros((400, 1440), dtype=np.float64)
+    kwargs = dict(
+        heightmap_mm=hm, surface_pixel_size_mm=0.1,
+        camera_distance_mm=157.0, projector_distance_mm=wd,
+        viewing_cone_world=viewing, projection_cone_world=projection,
+    )
+    pico = detect_clips(t, **kwargs, projector_profile=PICO_GENIE)
+    pro = detect_clips(t, **kwargs, projector_profile=WINTECH_PRO4500)
+    assert not pico.surface_outside_projector_cone   # throw-ratio cone covers it
+    assert pro.surface_outside_projector_cone        # FOV cone does not

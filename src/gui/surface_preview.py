@@ -249,6 +249,16 @@ class SurfacePreview(gl.GLViewWidget):
             profile=profile,
         )
 
+    def set_projector_profile(self, profile: ProjectorProfile) -> None:
+        """Rebuild the projector body/lens meshes for a new active projector.
+
+        Thin pass-through to `HardwareScene.set_projector_profile` (Stage 6
+        projector-swap 3b). Called by the projector-selector handler on a
+        profile change; the subsequent `update_hardware_pose` poses the rebuilt
+        meshes.
+        """
+        self._hardware_scene.set_projector_profile(profile)
+
     def update_heightmap(
         self,
         heightmap_mm: np.ndarray,

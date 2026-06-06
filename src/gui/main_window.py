@@ -87,7 +87,7 @@ from calibration import fit_tilt_plane
 from geometry import HybridGeometry
 from pattern_generator import inverse_grating_phase
 from pipeline import run_inverse_fpp, run_pipeline, run_straight_fringe
-from scene import PICO_GENIE, ProjectorProfile
+from scene import PICO_GENIE, PROJECTOR_PROFILES, ProjectorProfile
 from showcase_metrics import steep_region_ratios
 from synthetic_fringes import project
 from src.gui.comparison_view import RecoveredComparisonView
@@ -372,6 +372,10 @@ class MainWindow(QMainWindow):
         # view draws the selected projector. Defaults to PICO_GENIE, so the
         # display is byte-identical until 3b's dropdown can flip it.
         self._projector_profile: ProjectorProfile = PICO_GENIE
+        # Saved free-throw slider value while a fixed-WD (PRO4500-class)
+        # projector locks the slider, restored when a free-throw projector
+        # (Pico) is reselected (Stage 6 projector-swap 3b, "lens fixes the WD").
+        self._saved_projector_throw_mm: Optional[float] = None
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_control_panel())
@@ -645,6 +649,25 @@ class MainWindow(QMainWindow):
     def _build_geometry_group(self) -> QGroupBox:
         box = QGroupBox("Geometry")
         layout = QVBoxLayout(box)
+
+        # Projector selector (Stage 6 projector-swap 3b). Near-copy of the FOV
+        # combo: PROJECTOR_PROFILES is the (profile, label) source; index 0 is
+        # the active default (Pico). On change, _on_projector_changed rebuilds
+        # the body/lens meshes, updates the info panel, applies lens-fixed-WD,
+        # and refreshes the pose — all keyed on self._projector_profile.
+        proj_row = QHBoxLayout()
+        proj_row.setContentsMargins(0, 0, 0, 0)
+        self.projector_combo = QComboBox()
+        self.projector_combo.blockSignals(True)
+        for prof in PROJECTOR_PROFILES:
+            self.projector_combo.addItem(prof.name)
+        self.projector_combo.setCurrentIndex(0)  # PROJECTOR_PROFILES[0] == PICO_GENIE
+        self.projector_combo.blockSignals(False)
+        self.projector_combo.currentIndexChanged.connect(self._on_projector_changed)
+        proj_row.addWidget(QLabel("Projector:"), 0)
+        proj_row.addWidget(self.projector_combo, 1)
+        layout.addLayout(proj_row)
+
         # Range extended from ±60° to ±75° in Stage 4b task 4 to make
         # surface-clip cases reachable (a tilted lens-front disc only
         # reaches z=0 past ~67° at minimum WD); default ±30° unchanged.
@@ -692,6 +715,11 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(box)
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
+        # Handles to the two projector-dependent value labels, retained so
+        # _on_projector_changed can setText them on selection (Stage 6 swap 3b).
+        # The other rows stay static (the simple loop).
+        self._info_projector_label: Optional[QLabel] = None
+        self._info_throw_ratio_label: Optional[QLabel] = None
         for row, (name, value) in enumerate(HARDWARE_INFO_ROWS):
             name_label = QLabel(name)
             name_label.setStyleSheet("color: #888;")
@@ -701,6 +729,10 @@ class MainWindow(QMainWindow):
             )
             grid.addWidget(name_label, row, 0)
             grid.addWidget(value_label, row, 1)
+            if name == "Projector":
+                self._info_projector_label = value_label
+            elif name == "Projector throw ratio":
+                self._info_throw_ratio_label = value_label
         return box
 
     def _build_hardware_coords_group(self) -> QGroupBox:
@@ -1388,9 +1420,63 @@ class MainWindow(QMainWindow):
             theta_proj_deg=self.theta_projector.value(),
             proj_dist_mm=self.projector_distance.value(),
             cam_dist_mm=self.camera_distance.value(),
+            profile=self._projector_profile,
         )
         self.hw_coord_camera.setText(self._format_coord(coords["camera"]))
         self.hw_coord_projector.setText(self._format_coord(coords["projector"]))
+
+    def _on_projector_changed(self, index: int) -> None:
+        """Projector-selector slot (Stage 6 projector-swap 3b).
+
+        Flips the active projector profile and brings the whole lab view into
+        agreement with it: rebuild the body/lens meshes, update the info-panel
+        strings, apply the lens-fixed working distance to the throw slider, then
+        refresh the pose (which re-poses the rebuilt meshes and re-runs the
+        profile-aware clip detection). `self._projector_profile` is the single
+        source driving the mesh rebuild AND the profile passed to `update_pose`.
+        """
+        profile = PROJECTOR_PROFILES[index]
+        self._projector_profile = profile
+
+        # (2) Rebuild the projector body/lens meshes for the new profile.
+        self.view_3d.set_projector_profile(profile)
+
+        # (5) Info panel: name + throw-ratio (no fabricated ratio for an
+        # FOV/lens-based projector).
+        if self._info_projector_label is not None:
+            self._info_projector_label.setText(profile.name)
+        if self._info_throw_ratio_label is not None:
+            self._info_throw_ratio_label.setText(
+                "—" if profile.lens_options else "1.2:1"
+            )
+
+        # (6) "Lens fixes the WD": a projector with a lens table fixes the
+        # working distance, so set + lock the throw slider to the active lens's
+        # WD (the true standoff); a free-throw projector (Pico) restores the
+        # saved value and re-enables the slider. setValue is signal-blocked so
+        # the single _on_pose_changed below is the only refresh.
+        # NOTE: a lens WD MUST fall within the projector_distance slider range
+        # (50-200 mm) or set_value silently clamps it — both PRO4500 lenses
+        # (92, 184) are in range; guard a future out-of-range lens here.
+        if profile.lens_options:
+            if self._saved_projector_throw_mm is None:
+                self._saved_projector_throw_mm = self.projector_distance.value()
+            lens = profile.lens_options[profile.default_lens_index]
+            self.projector_distance.blockSignals(True)
+            self.projector_distance.set_value(lens.working_distance_mm)
+            self.projector_distance.blockSignals(False)
+            self.projector_distance.setEnabled(False)
+        else:
+            if self._saved_projector_throw_mm is not None:
+                self.projector_distance.blockSignals(True)
+                self.projector_distance.set_value(self._saved_projector_throw_mm)
+                self.projector_distance.blockSignals(False)
+                self._saved_projector_throw_mm = None
+            self.projector_distance.setEnabled(True)
+
+        # Single pose refresh: re-poses the rebuilt meshes, redraws the cone
+        # (FOV vs throw-ratio), and re-runs profile-aware clip detection.
+        self._on_pose_changed()
 
     def _update_error_stats(self, error: np.ndarray) -> float:
         """Refresh the four QLabels and return abs_max for the colorbar.

@@ -435,15 +435,25 @@ def _points_in_cone(
     projection_cone_world: np.ndarray,
     pts: np.ndarray,
     axial_max: float = np.inf,
+    half_u_per_l: float = _CONE_HALF_U_PER_L,
+    half_v_per_l: float = _CONE_HALF_V_PER_L,
 ) -> np.ndarray:
     """Per-point INSIDE mask for the diverging projection-cone volume.
 
     The cone grows linearly from the apex; lateral half-extents at
-    axial distance s are `(_CONE_HALF_*_PER_L) * s`, widened by
+    axial distance s are `(half_*_per_l) * s`, widened by
     `_CONE_COVERAGE_TOLERANCE_MM` (advisory tolerance for the real
     projector's gradual edge falloff vs. this sharp-boundary model). A
     point is inside iff it is in front of the projector (`s >= 0`) and
     within that cross-section.
+
+    `half_u_per_l` / `half_v_per_l` are the cone's lateral half-extent per
+    unit axial distance (Stage 6 projector-swap 3b). They default to the
+    module `_CONE_HALF_*_PER_L` constants (the Pico throw-ratio slopes), so the
+    default call is byte-identical to before. For an FOV-rated projector lens
+    (PRO4500) `detect_clips` passes `(fov_w/2)/WD` and `(fov_h/2)/WD`. This is a
+    LATERAL change ONLY — the `* s` axial scaling, the `s >= 0` front test, and
+    the `axial_max` handling below are unchanged.
 
     `axial_max` defaults to `inf` (the coverage criterion — NO upper
     bound; the light cone keeps diverging past the nominal throw, so a
@@ -466,8 +476,8 @@ def _points_in_cone(
     lat = rel - np.outer(s, axis)
     lu = lat @ u
     lv = lat @ v
-    hw = _CONE_HALF_U_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
-    hh = _CONE_HALF_V_PER_L * s + _CONE_COVERAGE_TOLERANCE_MM
+    hw = half_u_per_l * s + _CONE_COVERAGE_TOLERANCE_MM
+    hh = half_v_per_l * s + _CONE_COVERAGE_TOLERANCE_MM
     inside = (s >= 0.0) & (np.abs(lu) <= hw) & (np.abs(lv) <= hh)
     if np.isfinite(axial_max):
         inside = inside & (s <= axial_max)
@@ -490,6 +500,8 @@ def _surface_exceeds_cone(
     projection_cone_world: np.ndarray,
     pts: np.ndarray,
     throw_mm: float,
+    half_u_per_l: float = _CONE_HALF_U_PER_L,
+    half_v_per_l: float = _CONE_HALF_V_PER_L,
 ) -> bool:
     """Any sample point outside the diverging projection-cone volume?
 
@@ -497,8 +509,17 @@ def _surface_exceeds_cone(
     is `any(~_points_in_cone(...))` — behavior-identical to the
     pre-4d.12 inline test. `throw_mm` is accepted for API symmetry /
     future focus checks (the coverage cone is deliberately unbounded).
+    `half_*_per_l` are the active cone's lateral slopes (Stage 6
+    projector-swap 3b); default to the Pico throw-ratio module constants.
     """
-    return bool(np.any(~_points_in_cone(projection_cone_world, pts)))
+    return bool(
+        np.any(
+            ~_points_in_cone(
+                projection_cone_world, pts,
+                half_u_per_l=half_u_per_l, half_v_per_l=half_v_per_l,
+            )
+        )
+    )
 
 
 def detect_clips(
@@ -568,6 +589,20 @@ def detect_clips(
             make_projector_lens(projector_profile)[0]
         )
 
+    # Projection-cone lateral slopes (half-extent per unit axial distance), used
+    # by both _points_in_cone consumers below (surface-coverage + camera-in-cone
+    # obstruction). Pico / no profile / a profile with no lens table -> the Pico
+    # throw-ratio module constants EXACTLY (byte-identical). An FOV-rated lens
+    # (PRO4500) -> (fov_w/2)/WD and (fov_h/2)/WD from the active lens, so the
+    # coverage / obstruction volume matches the FOV cone that is actually drawn.
+    # LATERAL ONLY: axial handling (s>=0, axial_max) is unchanged (Stage 6 3b).
+    cone_half_u_per_l = _CONE_HALF_U_PER_L
+    cone_half_v_per_l = _CONE_HALF_V_PER_L
+    if projector_profile is not None and projector_profile.lens_options:
+        lens = projector_profile.lens_options[projector_profile.default_lens_index]
+        cone_half_u_per_l = (lens.fov_w_mm / 2.0) / lens.working_distance_mm
+        cone_half_v_per_l = (lens.fov_h_mm / 2.0) / lens.working_distance_mm
+
     # 1 & 2 — lens-front disc vs surface plane (z = 0).
     cam_low = _lens_front_disc_lowest_z(
         transforms[KEY_CAMERA_LENS], KEY_CAMERA_LENS
@@ -619,7 +654,8 @@ def detect_clips(
             projection_cone_world is not None
             and projector_distance_mm > 0.0
             and _surface_exceeds_cone(
-                projection_cone_world, pts, projector_distance_mm
+                projection_cone_world, pts, projector_distance_mm,
+                half_u_per_l=cone_half_u_per_l, half_v_per_l=cone_half_v_per_l,
             )
         ):
             state.surface_outside_projector_cone = True
@@ -643,6 +679,8 @@ def detect_clips(
                 _points_in_cone(
                     projection_cone_world, cam_pts,
                     axial_max=projector_distance_mm,
+                    half_u_per_l=cone_half_u_per_l,
+                    half_v_per_l=cone_half_v_per_l,
                 )
             ):
                 state.camera_in_projector_cone = True
