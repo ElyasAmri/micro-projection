@@ -1151,6 +1151,14 @@ class MainWindow(QMainWindow):
         """
         heightmap = self._compute_current_heightmap()
         geometry = self._build_geometry()
+        # Single source for the four browser-mode blocks below. `heightmap`
+        # is always SURFACE_SHAPE for a procedural surface but _fov_shape-sized
+        # for STL; the off-part edge-extend / mask only make sense when STL is
+        # the CURRENT surface, so every browser block is gated on `is_stl` (not
+        # on `_stl_is_browser_mode` alone). Without this, switching away from a
+        # browser-mode STL leaves the flag set and applies a _fov_shape-sized
+        # mask to a SURFACE_SHAPE array -> IndexError that freezes the view.
+        is_stl = self.surface_combo.currentText() == STL_LABEL
 
         # Degenerate-geometry check (task 4c).
         tan_sum = abs(
@@ -1171,7 +1179,7 @@ class MainWindow(QMainWindow):
         # off-part cells back to 0 in the recovered output so the user
         # still sees physical truth (off-part = flat stage at 0).
         pipeline_input = heightmap
-        if self._stl_is_browser_mode:
+        if self._stl_is_browser_mode and is_stl:
             pipeline_input = self._edge_extend_offpart(heightmap)
 
         # Always request stages: the dict is cheap (references, not
@@ -1183,7 +1191,7 @@ class MainWindow(QMainWindow):
             return_stages=True,
         )
 
-        if self._stl_is_browser_mode:
+        if self._stl_is_browser_mode and is_stl:
             recovered[self._browser_offpart_mask()] = 0.0
 
         if self.right_pane_tabs.currentIndex() == 1:
@@ -1225,7 +1233,6 @@ class MainWindow(QMainWindow):
             deltas = [2.0 * math.pi * k / n for k in range(n)]
             golden = pipeline_input
             is_steep = self.surface_combo.currentText() == STEEP_DOME_LABEL
-            is_stl = self.surface_combo.currentText() == STL_LABEL
 
             # Demo defect, sized to the GOLDEN's convention (B.3a): pixel-units
             # for the steep dome, mm for the Gaussian golden. Don't cross them.
@@ -1246,7 +1253,7 @@ class MainWindow(QMainWindow):
                 inverse_on=self.inverse_fpp_checkbox.isChecked(),
                 noise_kwargs=self._sensor_noise_kwargs,
             )
-            if self._stl_is_browser_mode:
+            if self._stl_is_browser_mode and is_stl:
                 tab_recovered[self._browser_offpart_mask()] = 0.0
 
             # Beyond-Nyquist dynamic-range readout (B.3a). Uses the MATCHING
@@ -1300,7 +1307,7 @@ class MainWindow(QMainWindow):
                 inverse_on=True,
                 noise_kwargs=self._sensor_noise_kwargs,
             )
-            if self._stl_is_browser_mode:
+            if self._stl_is_browser_mode and is_stl:
                 lab_recovered[self._browser_offpart_mask()] = 0.0
             self.view_3d.update_heightmap(lab_recovered)
 

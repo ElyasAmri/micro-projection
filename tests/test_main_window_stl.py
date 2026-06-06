@@ -1753,3 +1753,129 @@ def test_fov_preset_combo_scoped_to_browser_mode(
     main_window._change_stl_clicked()
     assert main_window._stl_is_browser_mode is True
     assert main_window.fov_preset_combo.isEnabled() is True
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: STL-browser state leak crashing procedural surface refresh.
+#
+# Switching the surface dropdown FROM a browser-mode STL TO a procedural
+# surface left `_stl_is_browser_mode=True` and (after a non-full FOV preset) a
+# shrunken `_fov_shape`. `_refresh_surface_preview` then applied a
+# `_fov_shape`-sized off-part mask (`_browser_offpart_mask`) to a SURFACE_SHAPE
+# array -> `IndexError: boolean index did not match`, which Qt swallowed: the
+# surface view froze on its last STL frame and re-crashed on every slider move
+# until restart. On full FOV it didn't crash but silently edge-extended +
+# zero-masked the procedural surface (math contamination). The fix gates all
+# four browser blocks in `_refresh_surface_preview` on the CURRENT surface
+# being STL (`is_stl`), not on `_stl_is_browser_mode` alone.
+#
+# Reproduce-then-fix: with the production gate reverted, the non-full-preset
+# cases (A / B) raise IndexError and the full-FOV case (C) fails the
+# contamination assertion; with the gate they pass. D was never affected
+# (direct-mode STL never sets the browser flag).
+# ---------------------------------------------------------------------------
+_PROCEDURAL_LABELS = ["Gaussian", "Flat", STEEP_DOME_LABEL]
+
+
+def _clean_recovery(main_window):
+    """The lab-view recovered surface the 3D-Scene leg should produce for the
+    CURRENT (procedural) surface: inverse-FPP recovery of the raw golden, with
+    NO browser edge-extend and NO off-part zeroing. Mirrors the production leg
+    (`inverse_on=True`, sensor noise off -> empty noise kwargs)."""
+    golden = main_window._compute_current_heightmap()
+    n = main_window.psi_steps.value()
+    deltas = [2.0 * np.pi * k / n for k in range(n)]
+    return main_window._recover_part_surface(
+        golden, golden, main_window._build_geometry(), deltas,
+        inverse_on=True, noise_kwargs=lambda: {},
+    )
+
+
+@pytest.mark.parametrize("proc_label", _PROCEDURAL_LABELS)
+def test_browser_nonfull_preset_switch_to_procedural_no_crash(
+    main_window, tmp_path, monkeypatch, proc_label,
+):
+    """Browser STL + a NON-FULL FOV preset (shrinks `_fov_shape` below
+    SURFACE_SHAPE) -> switch the dropdown to a procedural surface. Pre-fix this
+    raised IndexError (mask `_fov_shape` vs SURFACE_SHAPE array) and froze the
+    view on the STL frame. The refresh must now complete, render a fresh
+    SURFACE_SHAPE surface, and not be the stale STL frame."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    stl_frame = main_window.view_3d._last_heightmap
+    assert stl_frame is not None
+
+    # Non-full preset (index 1 = 440 x 544) shrinks _fov_shape.
+    main_window.fov_preset_combo.setCurrentIndex(1)
+    assert main_window._fov_shape == FOV_PRESETS[1][0]
+    assert main_window._fov_shape != SURFACE_SHAPE
+
+    # The crash path: switch the dropdown to a procedural surface.
+    main_window.surface_combo.setCurrentText(proc_label)  # must not raise
+
+    shown = main_window.view_3d._last_heightmap
+    assert shown is not None
+    assert shown.shape == SURFACE_SHAPE        # SURFACE_SHAPE, not browser-masked
+    assert shown is not stl_frame              # view advanced, not frozen
+
+
+def test_browser_nonfull_preset_switch_to_gaussian_clean(
+    main_window, tmp_path, monkeypatch,
+):
+    """Value check for the fix: after switching to Gaussian (with the stale
+    non-full `_fov_shape` still set), the lab-view recovered surface equals the
+    clean inverse-FPP recovery of the raw Gaussian golden -- no edge-extend, no
+    off-part zeroing. Pre-fix this path raised before reaching the lab view."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(1)  # stale shrunken _fov_shape
+
+    main_window.surface_combo.setCurrentText("Gaussian")
+    shown = main_window.view_3d._last_heightmap
+
+    assert shown.shape == SURFACE_SHAPE
+    np.testing.assert_allclose(shown, _clean_recovery(main_window), atol=1e-12)
+
+
+def test_browser_fullfov_switch_to_gaussian_not_contaminated(
+    main_window, tmp_path, monkeypatch,
+):
+    """Full-FOV silent-contamination guard: a browser STL whose part is shorter
+    than the FOV in Y leaves a NON-EMPTY off-part mask but keeps
+    `_fov_shape == SURFACE_SHAPE` (so no crash even pre-fix). Switching to
+    Gaussian must NOT edge-extend / zero the off-part bands -> recovered equals
+    the clean recovery. Pre-fix those bands were silently zeroed."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene
+    # 100 x 40 x 30: X(100) exceeds working volume -> browser; Y(40) < FOV Y(55)
+    # so the centered FOV straddles the part edge -> non-empty off-part band.
+    big = _make_box_stl(tmp_path / "straddle.stl", sx=100.0, sy=40.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window._stl_is_browser_mode is True
+    assert main_window._fov_shape == SURFACE_SHAPE          # full FOV (default)
+    assert main_window._browser_offpart_mask().any()        # genuine off-part band
+
+    main_window.surface_combo.setCurrentText("Gaussian")
+    shown = main_window.view_3d._last_heightmap
+
+    assert shown.shape == SURFACE_SHAPE
+    np.testing.assert_allclose(shown, _clean_recovery(main_window), atol=1e-12)
+
+
+def test_direct_stl_switch_to_gaussian_unaffected(
+    main_window, tmp_path, monkeypatch,
+):
+    """Direct-mode STL (small part, `_stl_is_browser_mode` False) was never
+    affected by the leak; confirm switch-to-procedural stays clean post-gate."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene
+    small = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window._stl_is_browser_mode is False
+
+    main_window.surface_combo.setCurrentText("Gaussian")  # must not raise
+    shown = main_window.view_3d._last_heightmap
+    assert shown is not None
+    assert shown.shape == SURFACE_SHAPE
