@@ -21,6 +21,7 @@ Tolerances come from tests/conftest.py:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from conftest import ATOL_ANALYTICAL
 from geometry import HybridGeometry, SymmetricGeometry
@@ -225,4 +226,128 @@ def test_psi_stack_matches_notebook_formula(regression_data):
         expected_frame_0,
         atol=ATOL_ANALYTICAL,
         err_msg="synthesize_psi_stack frame 0 must equal A + B*cos(phase + 0)",
+    )
+
+
+# ======================================================================
+# A.3a — project() AFFINE-STRUCTURE check (validation hygiene).
+#
+# The inverse-FPP loop's exact-cancellation premise (pipeline.run_inverse_fpp)
+# is that `project` is a PURE PHASE TRANSLATION: project(phi) = phi - b(x), with
+# the bias `b` a function of the column index ONLY and INDEPENDENT of the phase
+# argument. These two tests pin that affine STRUCTURE for both model branches.
+#
+# SCOPE / HONESTY: they do NOT validate the numeric correctness of b(x). A
+# self-consistent WRONG bias would still cancel in the inverse-FPP loop (the
+# inverse grating is derived empirically from project()'s own output), so the
+# physical correctness of the bias stays the hardware oracle (D.3-vs-B.4: a real
+# projector whose bias is not the analytic Taylor model). These complement the
+# tautology documented in tests/test_inverse_fpp.py's module docstring by
+# pinning the one premise that IS checkable in sim: the affine structure.
+#
+# Float floor: the translation identity is EXACT in real arithmetic; in double
+# precision it floors at ~1.4e-14 at the ~15-17 rad bias magnitude (measured for
+# both branches). ATOL_ANALYTICAL = 1e-12 sits ~70x above that floor and ~12
+# orders below any real phase-dependent contamination (which would be O(0.1)+).
+# ======================================================================
+@pytest.mark.parametrize("model", ["taylor", "exact"])
+@pytest.mark.parametrize("shape", [(550, 680), (64, 100), (200, 320)])
+def test_project_is_pure_phase_translation(model, shape):
+    """project(phi1) - project(phi2) == phi1 - phi2: the bias is phase-independent.
+
+    Pins the AFFINE STRUCTURE the inverse-FPP exact-cancellation premise relies
+    on. Two arbitrary, structurally-different phase maps -- one of them
+    height-modulated on the carrier (a realistic object-phase argument) -- over
+    several grid shapes. The expectation is built STRUCTURALLY (the difference of
+    two phase maps), with no reference to b(x)'s formula: if any phase-DEPENDENT
+    term ever entered project, the bias would not cancel in the difference and
+    this fails.
+
+    NOT a numeric check of b(x) (a self-consistent wrong bias still cancels);
+    that is the D.3-vs-B.4 hardware oracle.
+    """
+    geom = SymmetricGeometry()
+    H, W = shape
+    X = np.tile(np.arange(W, dtype=np.float64), (H, 1))
+    Y = np.tile(np.arange(H, dtype=np.float64).reshape(-1, 1), (1, W))
+    carrier = (2.0 * np.pi / geom.p) * X
+
+    rng = np.random.default_rng(20240607)
+    phi1 = (
+        0.5 * np.sin(X / 13.0)
+        + 0.2 * np.cos(Y / 9.0)
+        + 0.01 * rng.standard_normal((H, W))
+    )
+    bump = 3.0 * np.exp(
+        -(((X - W / 2.0) ** 2 + (Y - H / 2.0) ** 2) / (2.0 * 70.0 ** 2))
+    )
+    phi2 = carrier + bump  # height-modulated phase argument
+
+    delta_proj = project(phi1, geom, model=model) - project(phi2, geom, model=model)
+    delta_phase = phi1 - phi2
+
+    np.testing.assert_allclose(
+        delta_proj,
+        delta_phase,
+        rtol=0.0,
+        atol=ATOL_ANALYTICAL,
+        err_msg=(
+            f"project(model={model!r}) is not a pure phase translation: the bias "
+            "must be independent of the phase argument so it cancels in a "
+            "difference (the inverse-FPP exact-cancellation premise)."
+        ),
+    )
+
+
+@pytest.mark.parametrize("model", ["taylor", "exact"])
+def test_project_zero_offset_is_minus_bias(model):
+    """project(zeros) == -b(x): the translation offset equals the column bias.
+
+    Plus two structural facts measured to hold exactly: the offset is
+    row-independent (b depends on the column only) and vanishes at x=0.
+
+    TYPO-GUARD caveat: b(x) here is RE-TYPED from project's own formula line, so
+    this confirms the offset equals the DOCUMENTED bias -- a wiring/typo guard,
+    NOT an independent validation of the bias physics (that is the D.3-vs-B.4
+    hardware oracle). It pairs with test_project_is_pure_phase_translation, whose
+    expectation needs no formula at all.
+    """
+    geom = SymmetricGeometry()
+    H, W = 550, 680
+    X = np.tile(np.arange(W, dtype=np.float64), (H, 1))
+    offset = project(np.zeros((H, W), dtype=np.float64), geom, model=model)
+
+    # Structural: the offset is column-only (every row identical) ...
+    np.testing.assert_array_equal(
+        offset,
+        np.tile(offset[0, :], (H, 1)),
+        err_msg="project(zeros) offset must be row-independent (column-only bias)",
+    )
+    # ... and vanishes at x=0 (both bias forms are 0 there).
+    np.testing.assert_array_equal(
+        offset[:, 0],
+        np.zeros(H, dtype=np.float64),
+        err_msg="project(zeros) offset must be zero on the x=0 column",
+    )
+
+    # The offset equals -b(x), with b re-typed from project's formula (typo-guard).
+    if model == "taylor":
+        b = (4.0 * np.pi / geom.p) * (
+            X ** 2 * np.tan(geom.theta_projector) / geom.a
+        )
+    else:  # exact
+        carrier_input = (2.0 * np.pi / geom.p) * X
+        denom = 1.0 + 2.0 * X * np.tan(geom.theta_projector) / geom.a
+        carrier_exact = (2.0 * np.pi / geom.p) * X / denom
+        b = carrier_input - carrier_exact
+
+    np.testing.assert_allclose(
+        offset,
+        -b,
+        rtol=0.0,
+        atol=ATOL_ANALYTICAL,
+        err_msg=(
+            f"project(zeros, model={model!r}) must equal -b(x), the documented "
+            "column bias (typo-guard, not a physics check)."
+        ),
     )
