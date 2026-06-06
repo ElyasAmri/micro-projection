@@ -50,12 +50,14 @@ from scene import (
     PICO_GENIE,
     PROJECTOR_PROFILES,
     WINTECH_PRO4500,
+    LensOption,
     ProjectorProfile,
     _centered_box,
     _cylinder,
     _stepped_cylinder,
     make_camera_body,
     make_camera_lens,
+    make_projection_cone_from_fov,
     make_projection_cone_wireframe,
     make_projector_body,
     make_projector_lens,
@@ -405,7 +407,107 @@ def test_profile_field_values():
     assert WINTECH_PRO4500.lens_length_mm == 5.0
     assert WINTECH_PRO4500.lens_face_offset_mm == (0.0, 0.0, 2.0)
 
-    # Deferred slots are empty/None this commit (populated in later commits).
+    # cone_params slot stays None this commit for both.
     for prof in (PICO_GENIE, WINTECH_PRO4500):
-        assert prof.lens_options == ()
         assert prof.cone_params is None
+
+
+# ===========================================================================
+# PRO4500 lens table + FOV-driven projection cone (Stage 6 projector-swap
+# commit 2). The PRO4500 cone is constructible + checked here, but NOT drawn —
+# HardwareScene still calls the Pico throw-ratio builder (verified headless in
+# the commit's verification, not in this pure-mesh test module).
+# ===========================================================================
+@pytest.mark.parametrize(
+    "fov_w,fov_h,dist,hw,hh",
+    [
+        (65.6, 41.0, 92.0, 32.8, 20.5),     # PRO4500 92 mm lens
+        (131.2, 82.0, 184.0, 65.6, 41.0),   # PRO4500 184 mm lens
+    ],
+    ids=["lens_92mm", "lens_184mm"],
+)
+def test_projection_cone_from_fov(fov_w, fov_h, dist, hw, hh):
+    """The FOV cone's base is the rated FOV rectangle at the rated WD.
+
+    Apex at the origin; base corners at +/-fov_w/2, +/-fov_h/2, z=distance —
+    the lens's true light cone, NOT a throw-ratio extrapolation. Same 5-vert /
+    8-edge shape + dtypes + edge convention as the Pico builder.
+    """
+    verts, edges = make_projection_cone_from_fov(fov_w, fov_h, dist)
+    assert verts.shape == (5, 3) and verts.dtype == np.float32
+    assert edges.shape == (8, 2) and edges.dtype == np.uint32
+
+    # Apex at origin.
+    np.testing.assert_allclose(verts[0], [0.0, 0.0, 0.0], atol=1e-6)
+    # Base = rated FOV rectangle at z = distance.
+    base = verts[1:]
+    np.testing.assert_allclose(base[:, 0].max(), +hw, atol=1e-4)
+    np.testing.assert_allclose(base[:, 0].min(), -hw, atol=1e-4)
+    np.testing.assert_allclose(base[:, 1].max(), +hh, atol=1e-4)
+    np.testing.assert_allclose(base[:, 1].min(), -hh, atol=1e-4)
+    np.testing.assert_allclose(base[:, 2], dist, atol=1e-4)
+
+    # Edge convention identical to the Pico cone builder (same apex/base wiring).
+    _, pico_edges = make_projection_cone_wireframe(100.0)
+    np.testing.assert_array_equal(edges, pico_edges)
+
+    # It is genuinely FOV-driven, not the throw-ratio cone: at the same
+    # distance the Pico builder would give a different base width (dist/1.2).
+    pico_v, _ = make_projection_cone_wireframe(dist)
+    pico_base_w = float(pico_v[1:, 0].max() - pico_v[1:, 0].min())
+    assert abs(pico_base_w - 2.0 * hw) > 1.0  # different base => not a throw-ratio
+
+
+def test_pico_cone_byte_unchanged_guard():
+    """Pico throw-ratio cone at throw=150 is literally unchanged: base 125 x
+    70.3125 (corners +/-62.5, +/-35.15625) at z=150, apex at origin.
+
+    Guards the commit promise that make_projection_cone_wireframe's body was
+    not touched. The added FOV builder is separate; this pins the Pico bytes.
+    """
+    verts, edges = make_projection_cone_wireframe(150.0)
+    expected_verts = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [+62.5, +35.15625, 150.0],
+            [-62.5, +35.15625, 150.0],
+            [-62.5, -35.15625, 150.0],
+            [+62.5, -35.15625, 150.0],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_array_equal(verts, expected_verts)
+    expected_edges = np.array(
+        [[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 3], [3, 4], [4, 1]],
+        dtype=np.uint32,
+    )
+    np.testing.assert_array_equal(edges, expected_edges)
+
+
+def test_pro4500_lens_table_and_default_index():
+    """PRO4500 carries the 2 lenses in WD order; default index resolves to 184 mm.
+
+    Pico keeps an empty table (default index moot).
+    """
+    opts = WINTECH_PRO4500.lens_options
+    assert len(opts) == 2
+    assert [o.working_distance_mm for o in opts] == [92.0, 184.0]  # ascending WD
+    assert WINTECH_PRO4500.default_lens_index == 1
+    chosen = opts[WINTECH_PRO4500.default_lens_index]
+    assert chosen.working_distance_mm == 184.0
+    assert (chosen.fov_w_mm, chosen.fov_h_mm) == (131.2, 82.0)  # full 68x55 coverage
+
+    # Pico: single-lens / throw-ratio projector — empty table, index 0 (moot).
+    assert PICO_GENIE.lens_options == ()
+    assert PICO_GENIE.default_lens_index == 0
+
+
+def test_lens_option_field_values():
+    """Both PRO4500 lens rows carry the settled rated specs (named access)."""
+    near, far = WINTECH_PRO4500.lens_options
+    assert near == LensOption(92.0, 65.6, 41.0, 50.0)
+    assert far == LensOption(184.0, 131.2, 82.0, 100.0)
+    assert near.working_distance_mm == 92.0
+    assert (near.fov_w_mm, near.fov_h_mm) == (65.6, 41.0)
+    assert near.projected_pixel_um == 50.0
+    assert far.projected_pixel_um == 100.0

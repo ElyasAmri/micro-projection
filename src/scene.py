@@ -62,7 +62,7 @@ Module scope
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -157,6 +157,34 @@ def make_camera_body() -> Tuple[np.ndarray, np.ndarray]:
 # mirrors main_window.FOV_PRESETS; the first entry is the default/active
 # projector (Pico Genie), so the no-arg mesh builders stay byte-identical.
 # ---------------------------------------------------------------------------
+class LensOption(NamedTuple):
+    """One field-swappable projector lens: a rated (working distance -> FOV) pair.
+
+    Stage 6 projector-swap commit 2. A PRO4500-class projector's lens does NOT
+    project by a single throw ratio; each lens has a FIXED working distance and
+    the FOV it covers there (with the resulting projected pixel size). The
+    projection cone for such a lens is therefore its rated FOV rectangle at its
+    rated WD — see `make_projection_cone_from_fov` — not a throw-ratio
+    extrapolation.
+
+    Fields
+    ------
+    working_distance_mm : float
+        Lens-front to projected-image-plane (the cone's draw distance).
+    fov_w_mm, fov_h_mm : float
+        Field of view covered on the surface at `working_distance_mm`
+        (full width / height, image-horizontal / image-vertical).
+    projected_pixel_um : float
+        Projected pixel pitch on the surface at this WD (display fact;
+        NOT a simulation-math parameter).
+    """
+
+    working_distance_mm: float
+    fov_w_mm: float
+    fov_h_mm: float
+    projected_pixel_um: float
+
+
 @dataclass(frozen=True)
 class ProjectorProfile:
     """Per-projector VISUAL specs for building the lab-view body + lens meshes.
@@ -182,13 +210,20 @@ class ProjectorProfile:
         near-twin type here would only be torn down. NOT consumed by the mesh
         builders (the lens mesh is a centered cylinder); used by the compose
         layer, wired to the active profile in a later commit.
-    lens_options : tuple
-        SLOT — field-swappable lens table (working distance -> FOV -> pixel
-        size). Empty this commit; populated in a later commit (lens selector).
+    lens_options : tuple of LensOption
+        Field-swappable lens table (rated WD -> FOV -> pixel). Empty for a
+        single-lens / throw-ratio projector (e.g. Pico Genie); populated for
+        the PRO4500. The active lens is `lens_options[default_lens_index]`.
+    default_lens_index : int
+        Index into `lens_options` of the currently-chosen lens (the cone is
+        drawn from that lens's rated FOV/WD). Moot when `lens_options` is empty.
+        The commit-4 selector will drive this; it is the "active lens" home.
     cone_params : object or None
-        SLOT — projection-cone optics (throw ratio / aspect / FOV). None this
-        commit; the cone still comes from make_projection_cone_wireframe's
-        hardcoded Pico spec. Populated in a later commit (cone swap).
+        SLOT — reserved projection-cone optics hook. None this commit; the
+        PRO4500 cone is built from `lens_options` via
+        `make_projection_cone_from_fov`, and the Pico cone stays the
+        throw-ratio `make_projection_cone_wireframe`. Kept for any future
+        cone parameter that is not a per-lens FOV row.
     """
 
     name: str
@@ -196,7 +231,8 @@ class ProjectorProfile:
     lens_diameter_mm: float
     lens_length_mm: float
     lens_face_offset_mm: Tuple[float, float, float]
-    lens_options: Tuple = ()
+    lens_options: Tuple[LensOption, ...] = ()
+    default_lens_index: int = 0
     cone_params: Optional[object] = None
 
 
@@ -221,12 +257,23 @@ PICO_GENIE = ProjectorProfile(
 # face (0% offset) with ~2 mm recess (observed indentation); centered + recess
 # are cosmetic-only and mount-time-refinable per PROJECT_CONTEXT Sec 7.11 —
 # non-blocking. NOT yet displayed: HardwareScene still builds Pico (commit 1).
+#
+# lens_options (commit 2): the two PRO4500 field-swappable lenses in the
+# work-area range. 92 mm under-fills the 68 x 55 mm camera footprint (a dead
+# band around the projected patch); 184 mm fully covers it — so 184 mm is the
+# sane measurement default (default_lens_index=1). The brochure's 700 mm /
+# 400 x 250 mm lens is out of work-area range and is omitted (docs-only).
 WINTECH_PRO4500 = ProjectorProfile(
     name="Wintech PRO4500",
     body_dims_mm=(84.0, 54.0, 210.0),
     lens_diameter_mm=20.0,
     lens_length_mm=5.0,
     lens_face_offset_mm=(0.0, 0.0, 2.0),
+    lens_options=(
+        LensOption(92.0, 65.6, 41.0, 50.0),     # under-fills 68x55 camera (dead band)
+        LensOption(184.0, 131.2, 82.0, 100.0),  # full camera coverage
+    ),
+    default_lens_index=1,  # 184 mm = full coverage, the sane measurement default
 )
 
 # Registry mirroring main_window.FOV_PRESETS. Order matters: the FIRST entry
@@ -626,6 +673,77 @@ def make_projection_cone_wireframe(
     w = L / 1.2
     h = w * 9.0 / 16.0
     hw, hh = w / 2.0, h / 2.0
+
+    verts = np.array(
+        [
+            [0.0, 0.0, 0.0],   # 0 apex
+            [+hw, +hh, L],     # 1
+            [-hw, +hh, L],     # 2
+            [-hw, -hh, L],     # 3
+            [+hw, -hh, L],     # 4
+        ],
+        dtype=np.float32,
+    )
+    edges = np.array(
+        [
+            [0, 1], [0, 2], [0, 3], [0, 4],   # apex -> base corners
+            [1, 2], [2, 3], [3, 4], [4, 1],   # base perimeter
+        ],
+        dtype=np.uint32,
+    )
+    return verts, edges
+
+
+def make_projection_cone_from_fov(
+    fov_w_mm: float,
+    fov_h_mm: float,
+    distance_mm: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Wireframe of a projection cone whose base is a KNOWN FOV at a KNOWN distance.
+
+    Stage 6 projector-swap commit 2 — for PRO4500-class lenses. Same rectangular
+    pyramid SHAPE as `make_projection_cone_wireframe` (apex at the local origin =
+    lens-front, opening along local +Z; 5 vertices, 8 edges, identical vertex
+    order + edge list + dtypes), but the base is the lens's RATED FOV rectangle
+    (`fov_w_mm` x `fov_h_mm`) at its RATED working distance (`distance_mm`):
+
+        base half-width  = fov_w_mm / 2     at z = distance_mm
+        base half-height = fov_h_mm / 2
+
+    This is NOT a throw-ratio extrapolation (contrast `make_projection_cone_
+    wireframe`, where the base is `L/1.2` x `(L/1.2)*9/16`). A PRO4500 lens fixes
+    (working distance, FOV) as a pair, so the drawn cone is the true light cone
+    from the lens to its rated image rectangle.
+
+    Standalone by design (commit 2): the throw-ratio Pico builder is left
+    byte-untouched; no shared helper is factored out, to avoid any float32 LSB
+    shift on the Pico cone.
+
+    Vertices (5)
+    ------------
+        0 : apex at (0, 0, 0)
+        1 : (+fov_w/2, +fov_h/2, distance)
+        2 : (-fov_w/2, +fov_h/2, distance)
+        3 : (-fov_w/2, -fov_h/2, distance)
+        4 : (+fov_w/2, -fov_h/2, distance)
+
+    Edges (8): 4 apex->corner slants + 4 base-perimeter segments.
+
+    Parameters
+    ----------
+    fov_w_mm, fov_h_mm : float
+        Full field-of-view width / height covered on the surface. Must be > 0.
+    distance_mm : float
+        Working distance (lens-front to image plane). Must be > 0.
+
+    Returns
+    -------
+    verts : (5, 3) float32, units mm
+    edges : (8, 2) uint32
+    """
+    L = float(distance_mm)
+    hw = float(fov_w_mm) / 2.0
+    hh = float(fov_h_mm) / 2.0
 
     verts = np.array(
         [
