@@ -52,6 +52,7 @@ import pyqtgraph.opengl as gl
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter
 from PyQt6.QtWidgets import QWidget
 
+from scene import PICO_GENIE, ProjectorProfile
 from src.gui.hardware_scene import HardwareScene
 from src.gui.surface_render import ERROR_COLORMAP, apply_heightmap, error_colors
 
@@ -225,6 +226,7 @@ class SurfacePreview(gl.GLViewWidget):
         camera_distance_mm: float,
         heightmap_mm: "np.ndarray | None" = None,
         surface_pixel_size_mm: float = 0.0,
+        profile: ProjectorProfile = PICO_GENIE,
     ):
         """Push fresh poses into the hardware bodies + cones.
 
@@ -233,7 +235,9 @@ class SurfacePreview(gl.GLViewWidget):
         the HardwareScene directly. Returns the `ClipState` from the
         pose update so main_window can drive the clip-warning banner.
         `heightmap_mm` / `surface_pixel_size_mm` feed the 3D-volume
-        FOV / projector-cone coverage advisories.
+        FOV / projector-cone coverage advisories. `profile` (Stage 6
+        projector-swap 3a) selects the active projector; defaults to
+        PICO_GENIE (byte-identical).
         """
         return self._hardware_scene.update_pose(
             theta_camera_deg=theta_camera_deg,
@@ -242,6 +246,7 @@ class SurfacePreview(gl.GLViewWidget):
             camera_distance_mm=camera_distance_mm,
             heightmap_mm=heightmap_mm,
             surface_pixel_size_mm=surface_pixel_size_mm,
+            profile=profile,
         )
 
     def update_heightmap(

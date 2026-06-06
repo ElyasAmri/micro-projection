@@ -48,8 +48,11 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
 from scene import (
+    PICO_GENIE,
+    ProjectorProfile,
     make_camera_body,
     make_camera_lens,
+    make_projection_cone_from_fov,
     make_projection_cone_wireframe,
     make_projector_body,
     make_projector_lens,
@@ -162,6 +165,7 @@ def compute_arm_transforms(
     theta_projector_deg: float,
     projector_distance_mm: float,
     camera_distance_mm: float,
+    profile: ProjectorProfile = PICO_GENIE,
 ) -> Dict[str, np.ndarray]:
     """Return the four 4x4 row-major transforms for the hardware bodies.
 
@@ -228,8 +232,14 @@ def compute_arm_transforms(
     face_vertical maps to world -Y invariantly under the R_y arm swing.
     The camera lens is centered (no offset), so it is untouched.
     """
-    face_x = PROJECTOR_LENS_OFFSET_MM.face_x
-    face_vertical = PROJECTOR_LENS_OFFSET_MM.face_vertical
+    # Projector body/lens dimensions + lens face offset are sourced from the
+    # ACTIVE PROFILE (Stage 6 projector-swap 3a). PICO_GENIE's values ARE the
+    # module constants (body lz=55.0, lens=5.0, offset=(-6.5,17.5,1.5)), so the
+    # default-profile arithmetic below is bit-identical to the prior literals.
+    face_x = profile.lens_face_offset_mm[0]
+    face_vertical = profile.lens_face_offset_mm[1]
+    proj_body_depth = profile.body_dims_mm[2]
+    proj_lens_length = profile.lens_length_mm
     camera_body_distance = (
         camera_distance_mm
         + _CAMERA_LENS_LENGTH_MM
@@ -237,8 +247,8 @@ def compute_arm_transforms(
     )
     projector_body_distance = (
         projector_distance_mm
-        + _PROJECTOR_LENS_LENGTH_MM
-        + _PROJECTOR_BODY_DEPTH_MM / 2.0
+        + proj_lens_length
+        + proj_body_depth / 2.0
     )
 
     M_cam_body = camera_arm_transform(theta_camera_deg, camera_body_distance)
@@ -256,7 +266,7 @@ def compute_arm_transforms(
     # Lens re-applies +face offsets, landing back on the arm axis (0,0).
     M_proj_lens = (
         M_proj_body
-        @ body_lens_offset(_PROJECTOR_BODY_DEPTH_MM, _PROJECTOR_LENS_LENGTH_MM)
+        @ body_lens_offset(proj_body_depth, proj_lens_length)
         @ _translation(face_x, face_vertical, 0.0)
     ).astype(np.float32, copy=False)
 
@@ -283,21 +293,26 @@ def _camera_cone_world(camera_body_transform: np.ndarray) -> np.ndarray:
     )
 
 
-def _projector_cone_world(projector_body_transform: np.ndarray) -> np.ndarray:
+def _projector_cone_world(
+    projector_body_transform: np.ndarray,
+    profile: ProjectorProfile = PICO_GENIE,
+) -> np.ndarray:
     """Projector cone world transform (apex at the anchored lens-front).
 
-    Shared by `update_pose` and `arm_lens_front_world`. Re-applies the
-    Pico Genie in-face offsets + recess to the already-anchored body
-    transform so the apex lands on the optical axis (0,0,~throw) when
-    vertical (4d.10).
+    Shared by `update_pose` and `arm_lens_front_world`. Re-applies the active
+    profile's in-face lens offsets + recess to the already-anchored body
+    transform so the apex lands on the optical axis (0,0,~throw) when vertical
+    (4d.10). Body depth / lens length / offset + recess come from `profile`
+    (Stage 6 projector-swap 3a) — PICO_GENIE's values are the prior literals, so
+    the default-profile placement is bit-identical.
     """
     return cone_local_to_world_transform(
         projector_body_transform,
-        lens_length_mm=_PROJECTOR_LENS_LENGTH_MM,
-        body_depth_mm=_PROJECTOR_BODY_DEPTH_MM,
-        x_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_x,
-        y_offset_mm=PROJECTOR_LENS_OFFSET_MM.face_vertical,
-        recess_mm=PROJECTOR_LENS_OFFSET_MM.recess,
+        lens_length_mm=profile.lens_length_mm,
+        body_depth_mm=profile.body_dims_mm[2],
+        x_offset_mm=profile.lens_face_offset_mm[0],
+        y_offset_mm=profile.lens_face_offset_mm[1],
+        recess_mm=profile.lens_face_offset_mm[2],
     )
 
 
@@ -416,6 +431,7 @@ class HardwareScene:
         camera_distance_mm: float,
         heightmap_mm: "np.ndarray | None" = None,
         surface_pixel_size_mm: float = 0.0,
+        profile: ProjectorProfile = PICO_GENIE,
     ) -> ClipState:
         """Recompute and apply transforms; refresh cones; detect clips.
 
@@ -428,6 +444,17 @@ class HardwareScene:
         FOV / projector-cone coverage advisories (both default
         inert for callers that don't pass them).
 
+        `profile` (Stage 6 projector-swap 3a) selects the active projector's
+        body/lens dimensions, lens offset, and projection-cone style. Defaults
+        to PICO_GENIE, whose values are the prior literals, so the default-
+        profile path is byte-identical. A profile with a non-empty `lens_options`
+        (e.g. PRO4500) draws an FOV-rated cone instead of the throw-ratio cone;
+        Pico's empty `lens_options` keeps the throw-ratio cone at the slider
+        distance. NOTE: clip-detection is still called with the cached Pico
+        geometry (`projector_profile=None`) this commit — making the bbox /
+        coverage-slope / lens-front-disc checks profile-aware is the on-display
+        (3b) concern; here `profile` is always PICO_GENIE so it is moot.
+
         Still cheap: a handful of small matrix multiplies, four mesh
         `setTransform` calls, two tiny wireframe rebuilds, the
         AABB / disc-edge clip arithmetic, and a 121-point volume
@@ -438,6 +465,7 @@ class HardwareScene:
             theta_projector_deg=theta_projector_deg,
             projector_distance_mm=projector_distance_mm,
             camera_distance_mm=camera_distance_mm,
+            profile=profile,
         )
         for key, item in self._items.items():
             item.setTransform(pg.Transform3D(transforms[key]))
@@ -452,10 +480,19 @@ class HardwareScene:
         )
         self._cones[KEY_VIEWING_CONE].setTransform(pg.Transform3D(view_world))
 
-        proj_verts, proj_edges = make_projection_cone_wireframe(
-            projector_distance_mm
-        )
-        proj_world = _projector_cone_world(transforms[KEY_PROJECTOR_BODY])
+        # Projection cone: an FOV-rated cone for a multi-lens projector
+        # (PRO4500), else the throw-ratio cone at the slider distance (Pico).
+        # Keyed strictly on a non-empty lens table, so Pico (empty) is unchanged.
+        if profile.lens_options:
+            lens = profile.lens_options[profile.default_lens_index]
+            proj_verts, proj_edges = make_projection_cone_from_fov(
+                lens.fov_w_mm, lens.fov_h_mm, lens.working_distance_mm
+            )
+        else:
+            proj_verts, proj_edges = make_projection_cone_wireframe(
+                projector_distance_mm
+            )
+        proj_world = _projector_cone_world(transforms[KEY_PROJECTOR_BODY], profile)
         self._cones[KEY_PROJECTION_CONE].setData(
             pos=self._edges_to_segments(proj_verts, proj_edges)
         )
@@ -464,6 +501,11 @@ class HardwareScene:
         )
 
         # --- Clip detection + gray override. ---
+        # projector_profile=None: keep the live clip path on the cached Pico
+        # geometry (no per-frame bbox recompute). The active `profile` is
+        # PICO_GENIE in 3a, so this is byte-identical; 3b will pass the active
+        # profile once the dropdown can vary it (and the bbox / coverage-slope /
+        # lens-front-disc checks become profile-aware).
         clip_state = detect_clips(
             transforms,
             heightmap_mm=heightmap_mm,
@@ -472,6 +514,7 @@ class HardwareScene:
             projector_distance_mm=projector_distance_mm,
             viewing_cone_world=view_world,
             projection_cone_world=proj_world,
+            projector_profile=None,
         )
         self._apply_clip_colors(clip_state)
         return clip_state

@@ -79,6 +79,7 @@ from typing import Dict, List
 import numpy as np
 
 from scene import (
+    ProjectorProfile,
     make_camera_body,
     make_camera_lens,
     make_projection_cone_wireframe,
@@ -273,16 +274,19 @@ def _box_edge_samples(
 
 
 def _assembly_edge_samples(
-    transforms: Dict[str, np.ndarray], keys
+    transforms: Dict[str, np.ndarray], keys,
+    local_corners: Dict[str, np.ndarray] = _LOCAL_CORNERS,
 ) -> np.ndarray:
     """Edge samples for an assembly's body+lens boxes, in world space.
 
     Places each box's local bbox corners with its post-4d.10 anchored
-    transform, then edge-samples. Stacks the keys' samples.
+    transform, then edge-samples. Stacks the keys' samples. `local_corners`
+    defaults to the module-cached (Pico) corners; `detect_clips` passes a
+    profile-derived dict when an active projector profile is supplied.
     """
     return np.concatenate(
         [
-            _box_edge_samples(_apply(transforms[k], _LOCAL_CORNERS[k]))
+            _box_edge_samples(_apply(transforms[k], local_corners[k]))
             for k in keys
         ],
         axis=0,
@@ -506,6 +510,7 @@ def detect_clips(
     projector_distance_mm: float = 0.0,
     viewing_cone_world: "np.ndarray | None" = None,
     projection_cone_world: "np.ndarray | None" = None,
+    projector_profile: "ProjectorProfile | None" = None,
 ) -> ClipState:
     """Run three collision checks plus three banner-only advisories.
 
@@ -515,6 +520,18 @@ def detect_clips(
         Mapping of mesh key -> (4,4) row-major world transform, as
         returned by `hardware_scene.compute_arm_transforms`. Keys:
         camera_body, camera_lens, projector_body, projector_lens.
+    projector_profile : ProjectorProfile or None, keyword-only
+        Active projector profile (Stage 6 projector-swap 3a). `None` (default)
+        uses the module-cached Pico projector bbox EXACTLY as before — the
+        byte-identical live path, no per-frame mesh rebuild. When a profile is
+        passed, the projector body/lens bbox corners are derived on demand from
+        `make_projector_body(profile)` / `make_projector_lens(profile)` for the
+        body-overlap (SAT) and cross-arm obstruction checks. NOTE (3b carry-
+        forward): the lens-front-disc check (`_LENS_FRONT_*`) and the cone-
+        coverage slopes (`_CONE_HALF_*_PER_L`) still read the cached Pico
+        geometry; for PRO4500 the lens-front disc is correct only by the 20x5 mm
+        lens placeholder coincidence, and the coverage slope is throw-ratio (not
+        FOV) — both to be made profile-aware when the projector goes on-display.
     heightmap_mm : (H, W) array or None, keyword-only
         Current surface heightmap in honest mm. Required for the
         coverage advisories; None makes them inert.
@@ -537,6 +554,20 @@ def detect_clips(
     """
     state = ClipState()
 
+    # Projector bbox source: cached Pico corners by default (the byte-identical
+    # live path — no per-frame mesh rebuild), or derived from an active profile's
+    # meshes on demand. Camera entries are always the cached corners (the camera
+    # is not swapped).
+    local_corners = _LOCAL_CORNERS
+    if projector_profile is not None:
+        local_corners = dict(_LOCAL_CORNERS)
+        local_corners[KEY_PROJECTOR_BODY] = _local_bbox_corners(
+            make_projector_body(projector_profile)[0]
+        )
+        local_corners[KEY_PROJECTOR_LENS] = _local_bbox_corners(
+            make_projector_lens(projector_profile)[0]
+        )
+
     # 1 & 2 — lens-front disc vs surface plane (z = 0).
     cam_low = _lens_front_disc_lowest_z(
         transforms[KEY_CAMERA_LENS], KEY_CAMERA_LENS
@@ -558,8 +589,8 @@ def detect_clips(
     # OBB-SAT is exact for boxes and removes those false positives.
     if any(
         _obb_overlap(
-            transforms[ck], _LOCAL_CORNERS[ck],
-            transforms[pk], _LOCAL_CORNERS[pk],
+            transforms[ck], local_corners[ck],
+            transforms[pk], local_corners[pk],
         )
         for ck in (KEY_CAMERA_BODY, KEY_CAMERA_LENS)
         for pk in (KEY_PROJECTOR_BODY, KEY_PROJECTOR_LENS)
@@ -606,7 +637,7 @@ def detect_clips(
     if viewing_cone_world is not None and projection_cone_world is not None:
         if projector_distance_mm > 0.0:
             cam_pts = _assembly_edge_samples(
-                transforms, (KEY_CAMERA_BODY, KEY_CAMERA_LENS)
+                transforms, (KEY_CAMERA_BODY, KEY_CAMERA_LENS), local_corners
             )
             if np.any(
                 _points_in_cone(
@@ -619,7 +650,7 @@ def detect_clips(
 
         if camera_distance_mm > 0.0:
             proj_pts = _assembly_edge_samples(
-                transforms, (KEY_PROJECTOR_BODY, KEY_PROJECTOR_LENS)
+                transforms, (KEY_PROJECTOR_BODY, KEY_PROJECTOR_LENS), local_corners
             )
             if np.any(
                 _points_in_prism(

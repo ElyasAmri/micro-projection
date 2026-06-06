@@ -31,6 +31,7 @@ Tolerances
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from gui.hardware_scene import (
     KEY_CAMERA_BODY,
@@ -39,9 +40,11 @@ from gui.hardware_scene import (
     KEY_PROJECTOR_LENS,
     PROJECTOR_LENS_OFFSET_MM,
     PROJECTOR_LENS_X_OFFSET_MM,
+    _projector_cone_world,
     arm_lens_front_world,
     compute_arm_transforms,
 )
+from scene import PICO_GENIE
 from scene_compose import body_lens_offset, projector_arm_transform
 
 
@@ -375,4 +378,65 @@ def test_arm_lens_front_world_shifts_with_theta():
     assert abs(tilted[1]) < 1e-4, f"projector Y left the axis: {tilted[1]}"
     assert tilted[2] < vertical[2], (
         f"projector Z did not drop when tilted: {tilted[2]} !< {vertical[2]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 projector-swap 3a — active-profile plumbing is BYTE-IDENTICAL with
+# the default (PICO_GENIE). Passing profile=PICO_GENIE through the new params
+# must reproduce the no-profile arithmetic exactly, because the Pico profile's
+# values ARE the prior module-constant literals. Several representative poses,
+# including the clip-triggering steep-projector pose.
+# ---------------------------------------------------------------------------
+# (theta_cam, theta_proj, throw, wd)
+_POSES = [
+    (0.0, 0.0, 150.0, 157.0),       # vertical default
+    (30.0, 30.0, 150.0, 157.0),     # symmetric default tilt
+    (30.0, -41.0, 149.0, 157.0),    # clip-triggering steep projector
+    (-60.0, 75.0, 50.0, 182.0),     # extreme opposite tilt, min throw / max WD
+    (75.0, -75.0, 200.0, 132.0),    # extreme, max throw / min WD
+]
+
+
+@pytest.mark.parametrize(
+    "theta_cam,theta_proj,throw,wd", _POSES,
+    ids=["vertical", "sym30", "steep_proj", "extreme_a", "extreme_b"],
+)
+def test_compute_arm_transforms_pico_profile_byte_identical(
+    theta_cam, theta_proj, throw, wd
+):
+    """compute_arm_transforms(profile=PICO_GENIE) == no-profile, all 4 transforms."""
+    a = compute_arm_transforms(
+        theta_camera_deg=theta_cam, theta_projector_deg=theta_proj,
+        projector_distance_mm=throw, camera_distance_mm=wd,
+    )
+    b = compute_arm_transforms(
+        theta_camera_deg=theta_cam, theta_projector_deg=theta_proj,
+        projector_distance_mm=throw, camera_distance_mm=wd,
+        profile=PICO_GENIE,
+    )
+    assert a.keys() == b.keys()
+    for key in a:
+        np.testing.assert_array_equal(
+            a[key], b[key],
+            err_msg=f"{key} transform differs with profile=PICO_GENIE",
+        )
+
+
+@pytest.mark.parametrize(
+    "theta_cam,theta_proj,throw,wd", _POSES,
+    ids=["vertical", "sym30", "steep_proj", "extreme_a", "extreme_b"],
+)
+def test_projector_cone_world_pico_profile_byte_identical(
+    theta_cam, theta_proj, throw, wd
+):
+    """_projector_cone_world(M, profile=PICO_GENIE) == no-profile apex placement."""
+    transforms = compute_arm_transforms(
+        theta_camera_deg=theta_cam, theta_projector_deg=theta_proj,
+        projector_distance_mm=throw, camera_distance_mm=wd,
+    )
+    M = transforms[KEY_PROJECTOR_BODY]
+    np.testing.assert_array_equal(
+        _projector_cone_world(M),
+        _projector_cone_world(M, PICO_GENIE),
     )

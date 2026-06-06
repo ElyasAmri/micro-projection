@@ -87,6 +87,7 @@ from calibration import fit_tilt_plane
 from geometry import HybridGeometry
 from pattern_generator import inverse_grating_phase
 from pipeline import run_inverse_fpp, run_pipeline, run_straight_fringe
+from scene import PICO_GENIE, ProjectorProfile
 from showcase_metrics import steep_region_ratios
 from synthetic_fringes import project
 from src.gui.comparison_view import RecoveredComparisonView
@@ -365,6 +366,12 @@ class MainWindow(QMainWindow):
         # the off-part mask, and the drawn minimap ROI all read it, so the
         # captured window and the rectangle that draws it never desync.
         self._fov_shape: tuple[int, int] = SURFACE_SHAPE
+
+        # Active projector profile (Stage 6 projector-swap 3a). State home,
+        # mirroring self._fov_shape; threaded into the pose update so the lab
+        # view draws the selected projector. Defaults to PICO_GENIE, so the
+        # display is byte-identical until 3b's dropdown can flip it.
+        self._projector_profile: ProjectorProfile = PICO_GENIE
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_control_panel())
@@ -1371,6 +1378,7 @@ class MainWindow(QMainWindow):
             camera_distance_mm=self.camera_distance.value(),
             heightmap_mm=self._compute_current_heightmap(),
             surface_pixel_size_mm=SURFACE_PIXEL_SIZE_MM,
+            profile=self._projector_profile,
         )
         self._update_clip_warning(clip_state.messages)
 

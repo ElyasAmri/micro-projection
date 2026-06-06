@@ -49,6 +49,7 @@ hardware; and edge-sampling catching a box spearing a volume with all
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from gui.clip_detection import (
     KEY_CAMERA_BODY,
@@ -62,12 +63,14 @@ from gui.clip_detection import (
     MSG_PROJECTOR_SURFACE,
     MSG_SURFACE_OUTSIDE_CONE,
     MSG_SURFACE_OUTSIDE_FOV,
+    _LOCAL_CORNERS,
     _box_edge_samples,
     _local_bbox_corners,
     _points_in_cone,
     _points_in_prism,
     detect_clips,
 )
+from scene import PICO_GENIE, make_projector_body, make_projector_lens
 from gui.hardware_scene import (
     _CAMERA_BODY_DEPTH_MM,
     _CAMERA_LENS_LENGTH_MM,
@@ -545,3 +548,57 @@ def test_edge_sampling_catches_box_spearing_cone():
     # Edge-sampling: the long edge's interior samples land inside.
     samples = _box_edge_samples(corners)
     assert _points_in_cone(world, samples).any()
+
+
+# ===========================================================================
+# Stage 6 projector-swap 3a — detect_clips(projector_profile=PICO_GENIE) is
+# field-for-field identical to the cached (no-profile) live path. The Pico-
+# derived projector bbox equals the module-cached bbox, so the body-overlap
+# (SAT) and cross-arm obstruction checks (the local_corners consumers) produce
+# identical ClipStates. Poses chosen to trigger those branches.
+# ===========================================================================
+_EQ_POSES = [
+    (20.0, -20.0, 150.0, 157.0),   # clean V-rig
+    (30.0, 30.0, 150.0, 157.0),    # bodies overlap (SAT reads projector corners)
+    (70.0, -20.0, 150.0, 132.0),   # camera lens clips surface
+    (-50.0, -25.0, 200.0, 157.0),  # camera assembly in projector cone (obstruction)
+    (-25.0, 0.0, 100.0, 157.0),    # projector assembly in camera FOV (obstruction)
+    (0.0, -41.0, 149.0, 157.0),    # steep projector, 15 mm slab
+]
+
+
+@pytest.mark.parametrize(
+    "theta_cam,theta_proj,throw,wd", _EQ_POSES,
+    ids=["vrig", "overlap", "cam_clip", "cam_in_cone", "proj_in_fov", "steep"],
+)
+def test_detect_clips_pico_profile_matches_cached(theta_cam, theta_proj, throw, wd):
+    """detect_clips(projector_profile=PICO_GENIE) == the no-profile cached path,
+    field-for-field (all seven booleans + messages order)."""
+    t = compute_arm_transforms(
+        theta_camera_deg=theta_cam, theta_projector_deg=theta_proj,
+        projector_distance_mm=throw, camera_distance_mm=wd,
+    )
+    viewing, projection = _cone_worlds(t)
+    hm = np.full((550, 680), 15.0, dtype=np.float64)
+    kwargs = dict(
+        heightmap_mm=hm, surface_pixel_size_mm=0.1,
+        camera_distance_mm=wd, projector_distance_mm=throw,
+        viewing_cone_world=viewing, projection_cone_world=projection,
+    )
+    cached = detect_clips(t, **kwargs)                            # projector_profile=None
+    pico = detect_clips(t, **kwargs, projector_profile=PICO_GENIE)
+    assert cached == pico            # @dataclass eq: every field incl. messages
+    assert cached.messages == pico.messages   # order, asserted explicitly
+
+
+def test_derived_pico_bbox_equals_cached():
+    """The on-demand Pico-derived projector bbox equals the module-cached bbox —
+    the foundation of 3a's byte-identity through the profile=PICO_GENIE path."""
+    np.testing.assert_array_equal(
+        _local_bbox_corners(make_projector_body(PICO_GENIE)[0]),
+        _LOCAL_CORNERS[KEY_PROJECTOR_BODY],
+    )
+    np.testing.assert_array_equal(
+        _local_bbox_corners(make_projector_lens(PICO_GENIE)[0]),
+        _LOCAL_CORNERS[KEY_PROJECTOR_LENS],
+    )
