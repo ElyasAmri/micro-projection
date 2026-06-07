@@ -637,6 +637,11 @@ class MainWindow(QMainWindow):
         self.fov_preset_combo.blockSignals(True)
         for _shape, label in FOV_PRESETS:
             self.fov_preset_combo.addItem(label)
+        # FOV custom-entry work: a final "Custom…" item turns the combo into the
+        # single FOV-mode source (numeric presets + custom). Its index is one
+        # past the presets; _on_fov_preset_changed branches on it.
+        self.fov_preset_combo.addItem("Custom…")
+        self._custom_fov_index = len(FOV_PRESETS)
         self.fov_preset_combo.setCurrentIndex(0)  # full == default _fov_shape
         self.fov_preset_combo.blockSignals(False)
         self.fov_preset_combo.currentIndexChanged.connect(
@@ -645,6 +650,49 @@ class MainWindow(QMainWindow):
         fov_row.addWidget(QLabel("FOV grid:"), 0)
         fov_row.addWidget(self.fov_preset_combo, 1)
         loaded_layout.addLayout(fov_row)
+
+        # FOV custom-entry work: HEIGHT-FIRST H×W spin row, revealed only when
+        # "Custom…" is the active combo item (mirrors the swap-4 lens row).
+        # Height = rows = vertical (10–55 mm); width = cols = horizontal
+        # (10–68 mm) — same order as the presets' "55 × 68 mm" labels. Values
+        # snap to the 0.1 mm/px SIM grid (NOT the real 53 µm camera pitch);
+        # the tooltip states this so users don't expect finer resolution.
+        custom_row = QHBoxLayout()
+        custom_row.setContentsMargins(0, 0, 0, 0)
+        self.custom_fov_label = QLabel("Custom (mm):")
+        self.custom_fov_h_label = QLabel("H")
+        self.custom_fov_height = QDoubleSpinBox()
+        self.custom_fov_height.setRange(10.0, 55.0)
+        self.custom_fov_height.setSingleStep(0.1)
+        self.custom_fov_height.setDecimals(1)
+        self.custom_fov_height.setKeyboardTracking(False)
+        self.custom_fov_height.setValue(55.0)
+        self.custom_fov_w_label = QLabel("× W")
+        self.custom_fov_width = QDoubleSpinBox()
+        self.custom_fov_width.setRange(10.0, 68.0)
+        self.custom_fov_width.setSingleStep(0.1)
+        self.custom_fov_width.setDecimals(1)
+        self.custom_fov_width.setKeyboardTracking(False)
+        self.custom_fov_width.setValue(68.0)
+        _custom_tip = "Snaps to the 0.1 mm SIM grid (sim pixel pitch)"
+        self.custom_fov_height.setToolTip(_custom_tip)
+        self.custom_fov_width.setToolTip(_custom_tip)
+        self.custom_fov_height.valueChanged.connect(self._on_custom_fov_changed)
+        self.custom_fov_width.valueChanged.connect(self._on_custom_fov_changed)
+        custom_row.addWidget(self.custom_fov_label, 0)
+        custom_row.addWidget(self.custom_fov_h_label, 0)
+        custom_row.addWidget(self.custom_fov_height, 1)
+        custom_row.addWidget(self.custom_fov_w_label, 0)
+        custom_row.addWidget(self.custom_fov_width, 1)
+        loaded_layout.addLayout(custom_row)
+        # Toggled as a unit by _set_custom_fov_row_visible; hidden by default
+        # (combo starts on the full preset).
+        self._custom_fov_widgets = [
+            self.custom_fov_label, self.custom_fov_h_label,
+            self.custom_fov_height, self.custom_fov_w_label,
+            self.custom_fov_width,
+        ]
+        self._set_custom_fov_row_visible(False)
 
         self.stl_inner.addWidget(loaded)
 
@@ -2115,33 +2163,86 @@ class MainWindow(QMainWindow):
         self._refresh_surface_preview()
 
     def _on_fov_preset_changed(self, index: int) -> None:
-        """Stage 6 B.3b: FOV-grid preset selector slot.
+        """Stage 6 B.3b FOV-grid selector slot — the SINGLE mode source.
 
-        Writes `self._fov_shape` (the single source of truth) and, in
-        Browser mode, re-extracts the slice centered on the CURRENT FOV
-        center (shrink = zoom in on the same spot, no jump), resizes the
-        draggable minimap ROI, and pushes the new capture to the lab view.
+        The combo's current item decides the FOV mode: a numeric preset OR
+        the appended "Custom…" entry (FOV custom-entry work). Both set
+        `self._fov_shape` (the single source of truth) and run the shared
+        `_apply_fov_shape` chain (Browser-mode recenter + re-extract + panel/
+        lab refresh); there is no separate deselect logic.
 
-        The origin read sits AFTER the Browser-mode / full-heightmap guard
-        so a preset change before any STL load can't dereference a None
-        `_stl_fov_origin_mm` — the preset still persists for when Browser
-        mode is next entered. No origin clamp: a centered resize past the
-        part edge fills off-part with 0.0 (bare stage), consistent with the
-        existing edge-drag behavior.
+        - "Custom…" (index == `_custom_fov_index`): reveal the H×W row and
+          apply the current custom spin values (`_apply_custom_fov`).
+        - numeric preset: hide the custom row and apply `FOV_PRESETS[index]`.
         """
-        shape, _label = FOV_PRESETS[index]
-        old_H, old_W = self._fov_shape
-        self._fov_shape = shape
-        if not self._stl_is_browser_mode or self._stl_full_heightmap is None:
-            return  # preset persists; no grid to resize yet
+        if index == self._custom_fov_index:
+            self._set_custom_fov_row_visible(True)
+            self._apply_custom_fov()
+            return
+        self._set_custom_fov_row_visible(False)
+        old_shape = self._fov_shape
+        self._fov_shape = FOV_PRESETS[index][0]
+        self._apply_fov_shape(old_shape)
 
-        # Past the guard: Browser mode with a loaded full heightmap, so
-        # `_stl_fov_origin_mm` is set (by `_load_stl_browser`). Keep the
-        # slice centered on its current center.
+    def _apply_custom_fov(self) -> None:
+        """Apply the custom H×W spin values as `_fov_shape` (custom-entry work).
+
+        HEIGHT-FIRST, matching the presets' "55 × 68 mm" (H × W) labels:
+        height = rows = vertical (55 mm / 550 px max), width = cols =
+        horizontal (68 mm / 680 px max). Snaps mm -> whole pixels on the
+        0.1 mm/px SIM grid (`px = round(mm * 10)`; NOT the real camera's
+        53 µm pitch), clamps px to [100,550] x [100,680], writes the snapped
+        mm (`px * 0.1`) back into the spins under blockSignals so the display
+        reflects reality, then runs the shared apply chain.
+        """
+        old_shape = self._fov_shape
+        H_px = max(100, min(550, int(round(self.custom_fov_height.value() * 10))))
+        W_px = max(100, min(680, int(round(self.custom_fov_width.value() * 10))))
+        self._fov_shape = (H_px, W_px)
+        self.custom_fov_height.blockSignals(True)
+        self.custom_fov_height.setValue(H_px * SURFACE_PIXEL_SIZE_MM)
+        self.custom_fov_height.blockSignals(False)
+        self.custom_fov_width.blockSignals(True)
+        self.custom_fov_width.setValue(W_px * SURFACE_PIXEL_SIZE_MM)
+        self.custom_fov_width.blockSignals(False)
+        self._apply_fov_shape(old_shape)
+
+    def _on_custom_fov_changed(self, _v: float) -> None:
+        """Custom H/W spin-box edit slot. Inert unless "Custom…" is the active
+        combo item (the combo is the single mode source; a stray spin signal
+        while a preset is selected must not hijack `_fov_shape`)."""
+        if self.fov_preset_combo.currentIndex() != self._custom_fov_index:
+            return
+        self._apply_custom_fov()
+
+    def _set_custom_fov_row_visible(self, visible: bool) -> None:
+        """Show/hide the custom H×W entry row (mirrors the swap-4 lens row).
+        Visibility tracks the active combo item; enabled-state tracks Browser
+        mode (set in `_update_stl_page_state`) — two orthogonal axes."""
+        for w in self._custom_fov_widgets:
+            w.setVisible(visible)
+
+    def _apply_fov_shape(self, old_shape: tuple[int, int]) -> None:
+        """Shared FOV-apply chain for both presets and custom entry.
+
+        `self._fov_shape` is already set by the caller; `old_shape` is the
+        prior shape (for the centered recenter). In Browser mode, re-extracts
+        the slice centered on the CURRENT FOV center (shrink = zoom in on the
+        same spot, no jump), resizes the draggable minimap ROI, and pushes the
+        new capture to the lab view. Outside Browser mode it is a no-op (the
+        new shape persists for when Browser mode is next entered) — so a
+        preset/custom change before any STL load can't dereference a None
+        `_stl_fov_origin_mm`. No origin clamp: a centered resize past the part
+        edge fills off-part with 0.0 (bare stage), as edge-drag does.
+        """
+        if not self._stl_is_browser_mode or self._stl_full_heightmap is None:
+            return  # shape persists; no grid to resize yet
+
+        old_H, old_W = old_shape
         ox, oy = self._stl_fov_origin_mm
         cx = ox + old_W * SURFACE_PIXEL_SIZE_MM / 2.0
         cy = oy + old_H * SURFACE_PIXEL_SIZE_MM / 2.0
-        H_fov, W_fov = shape
+        H_fov, W_fov = self._fov_shape
         self._stl_fov_origin_mm = (
             cx - W_fov * SURFACE_PIXEL_SIZE_MM / 2.0,
             cy - H_fov * SURFACE_PIXEL_SIZE_MM / 2.0,
@@ -2178,9 +2279,11 @@ class MainWindow(QMainWindow):
         self.stl_filename_label.setText(f"STL: {self._stl_filename}")
         if self._stl_path is not None:
             self.stl_filename_label.setToolTip(str(self._stl_path))
-        # FOV-preset selector applies only to the Browser-mode draggable
-        # grid; greyed for direct/synthetic loads (no draggable grid).
+        # FOV-preset selector + custom H×W entry apply only to the Browser-mode
+        # draggable grid; greyed for direct/synthetic loads (no draggable grid).
         self.fov_preset_combo.setEnabled(self._stl_is_browser_mode)
+        self.custom_fov_height.setEnabled(self._stl_is_browser_mode)
+        self.custom_fov_width.setEnabled(self._stl_is_browser_mode)
         self.stl_inner.setCurrentIndex(1)
 
     def _revert_stl_dropdown(self) -> None:

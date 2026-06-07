@@ -1663,13 +1663,16 @@ def test_fov_presets_constant_is_single_source():
 
 
 def test_fov_preset_combo_defaults_to_full(main_window):
-    """The dropdown is populated from FOV_PRESETS, defaults to the full
-    preset, and that matches the default _fov_shape (SURFACE_SHAPE)."""
+    """The dropdown is populated from FOV_PRESETS (plus the appended "Custom…"
+    entry from the custom-entry work), defaults to the full preset, and that
+    matches the default _fov_shape (SURFACE_SHAPE)."""
     combo = main_window.fov_preset_combo
-    assert combo.count() == len(FOV_PRESETS)
-    assert [combo.itemText(i) for i in range(combo.count())] == [
+    # Presets occupy the first slots; "Custom…" is appended as the last item.
+    assert combo.count() == len(FOV_PRESETS) + 1
+    assert [combo.itemText(i) for i in range(len(FOV_PRESETS))] == [
         label for _shape, label in FOV_PRESETS
     ]
+    assert combo.itemText(combo.count() - 1) == "Custom…"
     assert combo.currentIndex() == 0
     assert main_window._fov_shape == SURFACE_SHAPE
     assert main_window._fov_shape == FOV_PRESETS[0][0]
@@ -1879,3 +1882,200 @@ def test_direct_stl_switch_to_gaussian_unaffected(
     shown = main_window.view_3d._last_heightmap
     assert shown is not None
     assert shown.shape == SURFACE_SHAPE
+
+
+# ---------------------------------------------------------------------------
+# FOV custom H×W entry — a selectable custom ROI (10–55 × 10–68 mm) alongside
+# the symmetric presets. HEIGHT-FIRST (rows/vertical first, matching the
+# presets' "55 × 68 mm" labels); snapped to the 0.1 mm/px SIM grid
+# (px = round(mm × 10)); combo is the single FOV-mode source; persists across
+# surface switches (no reset); browser-only; procedural path untouched.
+# ---------------------------------------------------------------------------
+def _manual_centered_slice(mw, old_shape, new_shape):
+    """Independent reimplementation of the recenter + extract that the FOV
+    apply chain performs, computed inline (NOT via the production helpers) so
+    it is a true byte-identity reference for the post-refactor preset path.
+    Returns (expected_slice, expected_origin_xy)."""
+    ps = SURFACE_PIXEL_SIZE_MM
+    ox, oy = mw._stl_fov_origin_mm
+    old_H, old_W = old_shape
+    cx = ox + old_W * ps / 2.0
+    cy = oy + old_H * ps / 2.0
+    H, W = new_shape
+    nox = cx - W * ps / 2.0
+    noy = cy - H * ps / 2.0
+    full = mw._stl_full_heightmap
+    x_min, y_min = mw._stl_full_origin_mm
+    H_full, W_full = full.shape
+    col = int(round((nox - x_min) / ps))
+    row = int(round((noy - y_min) / ps))
+    out = np.zeros((H, W), dtype=np.float64)
+    rs, re = max(0, row), min(H_full, row + H)
+    cs, ce = max(0, col), min(W_full, col + W)
+    if rs < re and cs < ce:
+        out[rs - row:rs - row + (re - rs), cs - col:cs - col + (ce - cs)] = (
+            full[rs:re, cs:ce]
+        )
+    return out, (nox, noy)
+
+
+def test_fov_custom_combo_entry_present_and_reveals_row(
+    main_window, tmp_path, monkeypatch,
+):
+    """"Custom…" is the last combo item (one past the presets); the H×W row is
+    hidden by default, revealed when "Custom…" is active, re-hidden on a preset."""
+    combo = main_window.fov_preset_combo
+    assert combo.count() == len(FOV_PRESETS) + 1
+    assert combo.itemText(combo.count() - 1) == "Custom…"
+    assert main_window._custom_fov_index == len(FOV_PRESETS)
+    assert main_window.custom_fov_height.isHidden()  # default = full preset
+
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    combo.setCurrentIndex(main_window._custom_fov_index)
+    assert not main_window.custom_fov_height.isHidden()
+    assert not main_window.custom_fov_width.isHidden()
+
+    combo.setCurrentIndex(0)  # back to a numeric preset
+    assert main_window.custom_fov_height.isHidden()
+
+
+@pytest.mark.parametrize("idx", [0, 1, 2, 3])
+def test_fov_preset_paths_unchanged_after_refactor(
+    main_window, tmp_path, monkeypatch, idx,
+):
+    """The `_apply_fov_shape` extraction must not shift preset behavior: each
+    preset index produces the IDENTICAL `_fov_shape`, origin, and slice as the
+    pre-refactor inline path (proven against an independent inline recompute)."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    old_shape = main_window._fov_shape  # full, post-load
+    exp_slice, exp_origin = _manual_centered_slice(
+        main_window, old_shape, FOV_PRESETS[idx][0],
+    )
+
+    main_window.fov_preset_combo.setCurrentIndex(idx)
+
+    assert main_window._fov_shape == FOV_PRESETS[idx][0]
+    assert main_window._stl_fov_origin_mm[0] == pytest.approx(exp_origin[0])
+    assert main_window._stl_fov_origin_mm[1] == pytest.approx(exp_origin[1])
+    np.testing.assert_array_equal(main_window._stl_heightmap, exp_slice)
+    assert main_window.custom_fov_height.isHidden()  # preset hides custom row
+
+
+def test_fov_custom_snap_and_clamp(main_window, tmp_path, monkeypatch):
+    """Typed mm -> whole-pixel _fov_shape on the 0.1 mm grid (height-first),
+    clamped to [100,550] × [100,680] px; out-of-range mm clamps via the spin
+    ranges and the snapped mm is reflected back."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+
+    # In-range: 24.0 mm tall × 50.0 mm wide -> (240, 500) = (H_px, W_px).
+    main_window.custom_fov_height.setValue(24.0)
+    main_window.custom_fov_width.setValue(50.0)
+    assert main_window._fov_shape == (240, 500)
+
+    # Below min -> clamps to 10 mm -> 100 px; spins reflect the clamp.
+    main_window.custom_fov_height.setValue(5.0)
+    main_window.custom_fov_width.setValue(5.0)
+    assert main_window._fov_shape == (100, 100)
+    assert main_window.custom_fov_height.value() == pytest.approx(10.0)
+    assert main_window.custom_fov_width.value() == pytest.approx(10.0)
+
+    # Above max -> clamps to 55 / 68 mm -> 550 / 680 px (= SURFACE_SHAPE).
+    main_window.custom_fov_height.setValue(99.0)
+    main_window.custom_fov_width.setValue(99.0)
+    assert main_window._fov_shape == (550, 680)
+    assert main_window.custom_fov_height.value() == pytest.approx(55.0)
+    assert main_window.custom_fov_width.value() == pytest.approx(68.0)
+
+
+def test_fov_custom_offgrid_snaps_back(main_window, tmp_path, monkeypatch):
+    """An off-0.1-grid entry snaps to the grid and the snapped mm is shown."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+
+    main_window.custom_fov_height.setValue(24.04)
+    assert main_window.custom_fov_height.value() == pytest.approx(24.0)
+    assert main_window._fov_shape[0] == 240
+
+
+def test_fov_custom_nonproportional_runs(main_window, tmp_path, monkeypatch):
+    """A non-proportional ROI (68 mm wide × 24 mm tall -> (240, 680)) extracts a
+    valid slice, the off-part mask shape-matches, and the refresh completes."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+
+    main_window.custom_fov_height.setValue(24.0)   # H -> 240 rows
+    main_window.custom_fov_width.setValue(68.0)    # W -> 680 cols
+    assert main_window._fov_shape == (240, 680)
+    assert main_window._stl_heightmap.shape == (240, 680)
+    assert main_window._browser_offpart_mask().shape == (240, 680)
+    main_window._refresh_surface_preview()         # must not raise
+
+
+def test_fov_custom_persists_across_surface_switch(
+    main_window, tmp_path, monkeypatch,
+):
+    """Custom _fov_shape + the combo selection persist across a surface switch
+    (no reset) — same lifetime model as the presets."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+    main_window.custom_fov_height.setValue(24.0)
+    main_window.custom_fov_width.setValue(50.0)
+    assert main_window._fov_shape == (240, 500)
+
+    main_window.surface_combo.setCurrentText("Gaussian")
+
+    assert main_window._fov_shape == (240, 500)
+    assert main_window.fov_preset_combo.currentIndex() == main_window._custom_fov_index
+
+
+def test_fov_custom_restores_on_reentry(main_window, tmp_path, monkeypatch):
+    """Re-entering "Custom…" after a preset detour restores the last-typed H×W."""
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+    main_window.custom_fov_height.setValue(24.0)
+    main_window.custom_fov_width.setValue(50.0)
+    assert main_window._fov_shape == (240, 500)
+
+    main_window.fov_preset_combo.setCurrentIndex(1)         # preset detour
+    assert main_window._fov_shape == FOV_PRESETS[1][0]
+    assert main_window.custom_fov_height.isHidden()
+
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+    assert main_window._fov_shape == (240, 500)             # restored from spins
+    assert not main_window.custom_fov_height.isHidden()
+
+
+def test_fov_custom_procedural_unaffected(main_window, tmp_path, monkeypatch):
+    """With a custom _fov_shape set, switching to a procedural surface still
+    renders SURFACE_SHAPE cleanly (the freeze-fix gate holds)."""
+    main_window.right_pane_tabs.setCurrentIndex(0)  # 3D Scene
+    _load_browser_stl(main_window, tmp_path, monkeypatch)
+    main_window.fov_preset_combo.setCurrentIndex(main_window._custom_fov_index)
+    main_window.custom_fov_height.setValue(24.0)
+    main_window.custom_fov_width.setValue(50.0)
+
+    main_window.surface_combo.setCurrentText("Gaussian")  # must not raise
+    shown = main_window.view_3d._last_heightmap
+    assert shown is not None
+    assert shown.shape == SURFACE_SHAPE
+
+
+def test_fov_custom_greyed_outside_browser(main_window, tmp_path, monkeypatch):
+    """The custom spins are enabled only in Browser mode — same scoping as the
+    preset combo (a direct/small STL greys them out)."""
+    small = _make_cube_stl(tmp_path / "small.stl", side=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(small))
+    _patch_warning(monkeypatch)
+    main_window.surface_combo.setCurrentText(STL_LABEL)
+    assert main_window._stl_is_browser_mode is False
+    assert main_window.custom_fov_height.isEnabled() is False
+    assert main_window.custom_fov_width.isEnabled() is False
+
+    big = _make_box_stl(tmp_path / "big.stl", sx=100.0, sy=80.0, sz=30.0)
+    _patch_file_dialog(monkeypatch, return_path=str(big))
+    main_window._change_stl_clicked()
+    assert main_window._stl_is_browser_mode is True
+    assert main_window.custom_fov_height.isEnabled() is True
+    assert main_window.custom_fov_width.isEnabled() is True
