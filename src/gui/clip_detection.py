@@ -293,15 +293,30 @@ def _assembly_edge_samples(
     )
 
 
-def _lens_front_disc_lowest_z(M_lens: np.ndarray, key: str) -> float:
+def _lens_front_disc_lowest_z(
+    M_lens: np.ndarray,
+    key: str,
+    front_z: "float | None" = None,
+    radius: "float | None" = None,
+) -> float:
     """Lowest world-z of the lens-front disc edge.
 
     `center_z - r * sqrt(1 - Nz^2)` where N is the (unit) lens-axis
     world direction and r the front-element radius. See module
     docstring for the geometry.
+
+    `front_z` / `radius` override the per-key module constants
+    (`_LENS_FRONT_LOCAL_Z` / `_LENS_FRONT_RADIUS`) when supplied. The
+    projector disc check passes profile-derived values so barrel-tip
+    clearance tracks the active projector's lens mesh (PRO4500: a 65 mm
+    barrel -> front-z 32.5, r 15). `None` (default) reads the module
+    dicts, keeping the camera disc and the no-profile Pico projector
+    path byte-identical.
     """
-    front_local_z = _LENS_FRONT_LOCAL_Z[key]
-    r = _LENS_FRONT_RADIUS[key]
+    front_local_z = (
+        _LENS_FRONT_LOCAL_Z[key] if front_z is None else float(front_z)
+    )
+    r = _LENS_FRONT_RADIUS[key] if radius is None else float(radius)
 
     front_center = _apply(
         M_lens, np.array([[0.0, 0.0, front_local_z]])
@@ -623,8 +638,22 @@ def detect_clips(
         state.camera_clipping_surface = True
         state.messages.append(MSG_CAMERA_SURFACE)
 
+    # Projector disc front-z / radius track the active profile's lens mesh
+    # (e.g. the PRO4500 65 mm barrel) when a profile is supplied: derive from
+    # the SAME local_corners[KEY_PROJECTOR_LENS] the SAT box uses (single
+    # source of truth), so the disc tip/radius can never disagree with the SAT
+    # box. front-z = max local-Z (= lens_length/2), radius = max local-X (=
+    # lens_diameter/2). No profile -> None -> module dict (Pico 2.5 / 10),
+    # byte-identical.
+    proj_front_z = None
+    proj_radius = None
+    if projector_profile is not None:
+        pc = local_corners[KEY_PROJECTOR_LENS]
+        proj_front_z = float(pc[:, 2].max())
+        proj_radius = float(pc[:, 0].max())
     proj_low = _lens_front_disc_lowest_z(
-        transforms[KEY_PROJECTOR_LENS], KEY_PROJECTOR_LENS
+        transforms[KEY_PROJECTOR_LENS], KEY_PROJECTOR_LENS,
+        front_z=proj_front_z, radius=proj_radius,
     )
     if proj_low < 0.0:
         state.projector_clipping_surface = True

@@ -67,6 +67,7 @@ from gui.clip_detection import (
     _CONE_HALF_V_PER_L,
     _LOCAL_CORNERS,
     _box_edge_samples,
+    _lens_front_disc_lowest_z,
     _local_bbox_corners,
     _points_in_cone,
     _points_in_prism,
@@ -168,6 +169,49 @@ def test_projector_clip_at_extreme_angle():
     assert state.projector_clipping_surface
     assert MSG_PROJECTOR_SURFACE in state.messages
     assert not state.camera_clipping_surface
+
+
+# ---------------------------------------------------------------------------
+# 3b — PRO4500 barrel-tip disc clearance is profile-aware. The disc-vs-surface
+# check must use the active profile's lens-mesh geometry (the 65 mm protruding
+# barrel: front-z = 32.5, r = 15), NOT the Pico-stale stub literals (2.5 / 10).
+# At theta_proj=80, throw=50 the protruding barrel tip dips ~6 mm below z=0
+# while the stub front sits ~4 mm above it — so the profile-aware path clips and
+# the old profile-blind (stub) path would not. theta=80 is past the +/-75 deg
+# slider clamp but valid for the detection logic (cf. the Pico test above).
+# Pre-fix this used 2.5/10 even for PRO4500 and MISSED the barrel clip — this
+# pins the fix.
+# ---------------------------------------------------------------------------
+def test_pro4500_barrel_disc_clearance_is_profile_aware():
+    t = compute_arm_transforms(
+        theta_camera_deg=-20.0,
+        theta_projector_deg=80.0,
+        projector_distance_mm=50.0,
+        camera_distance_mm=157.0,
+        profile=WINTECH_PRO4500,
+    )
+    # Integrated: the profile-aware path clips on the protruding barrel tip.
+    state = detect_clips(t, projector_profile=WINTECH_PRO4500)
+    assert state.projector_clipping_surface
+    assert MSG_PROJECTOR_SURFACE in state.messages
+    assert not state.camera_clipping_surface
+
+    # Discriminating: on the SAME lens transform, the true barrel geometry
+    # (front-z 32.5, r 15) dips below z=0 while the Pico-stale stub (the module
+    # dict 2.5 / 10) does not — the assertion that would FAIL pre-fix.
+    barrel_low = _lens_front_disc_lowest_z(
+        t[KEY_PROJECTOR_LENS], KEY_PROJECTOR_LENS, front_z=32.5, radius=15.0
+    )
+    stub_low = _lens_front_disc_lowest_z(
+        t[KEY_PROJECTOR_LENS], KEY_PROJECTOR_LENS
+    )
+    assert barrel_low < 0.0 < stub_low
+
+    # The override values match the profile mesh's bbox (single source of
+    # truth with the SAT box): front-z = lens_length/2, radius = lens_diameter/2.
+    pc = _local_bbox_corners(make_projector_lens(WINTECH_PRO4500)[0])
+    assert float(pc[:, 2].max()) == 32.5    # 65 mm barrel / 2
+    assert float(pc[:, 0].max()) == 15.0    # 30 mm dia / 2
 
 
 # ---------------------------------------------------------------------------
