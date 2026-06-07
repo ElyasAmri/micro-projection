@@ -445,7 +445,7 @@ def test_projector_cone_world_pico_profile_byte_identical(
 # ---------------------------------------------------------------------------
 # Stage 6 projector-swap 3b — arm_lens_front_world (Hardware Coordinates panel +
 # CLI) is profile-aware. Pico default == no-arg (byte-identical); PRO4500 reports
-# its own (centered, 210-deep) lens-front, distinct from Pico.
+# its own (145-deep body + 65 mm protruding barrel) lens-front, distinct from Pico.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "theta_cam,theta_proj,throw,wd", _POSES,
@@ -462,7 +462,9 @@ def test_arm_lens_front_world_pico_profile_byte_identical(
 
 def test_arm_lens_front_world_pro4500_differs_and_is_centered():
     """PRO4500 vertical at its 184 mm WD: lens-front on-axis (x=y=0), z = WD +
-    recess (2 mm) = 186; and the projector coord differs from Pico's."""
+    recess (2 mm) = 186; and the projector coord differs from Pico's. On-axis
+    holds despite the -7 mm face offset — the anchoring re-centers the lens-front,
+    and the body-depth/lens-length repartition cancels in z (= throw + recess)."""
     wd = 184.0
     pico = arm_lens_front_world(0.0, 0.0, wd, 157.0)["projector"]
     pro = arm_lens_front_world(0.0, 0.0, wd, 157.0, profile=WINTECH_PRO4500)["projector"]

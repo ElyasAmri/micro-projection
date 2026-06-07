@@ -248,15 +248,22 @@ PICO_GENIE = ProjectorProfile(
     lens_face_offset_mm=(-6.5, 17.5, 1.5),
 )
 
-# Wintech PRO4500 (TI DLP LightCrafter 4500 optical engine). Body 84 x 54 x
-# 210 mm with the 210 mm long axis as the OPTICAL-AXIS DEPTH (lz): the lens
-# exits a short end face, so the body hangs long / vertical and lens-down at
-# theta=0. The wider face dim (84) is image-horizontal, matching the lenses'
-# wider-than-tall FOV (e.g. 65.6 x 41, 131.2 x 82 mm). Lens dia/len ~20/5 mm
-# are PLACEHOLDERS (refine when the unit is mounted). Lens CENTERED on the
-# face (0% offset) with ~2 mm recess (observed indentation); centered + recess
-# are cosmetic-only and mount-time-refinable per PROJECT_CONTEXT Sec 7.11 —
-# non-blocking. NOT yet displayed: HardwareScene still builds Pico (commit 1).
+# Wintech PRO4500 (TI DLP LightCrafter 4500 optical engine). MEASURED true
+# geometry: body 84 x 54 x 145 mm with the 145 mm long axis as the OPTICAL-AXIS
+# DEPTH (lz); the lens exits a short end face, so the body hangs long / vertical
+# and lens-down at theta=0. The wider face dim (84) is image-horizontal, matching
+# the lenses' wider-than-tall FOV (e.g. 65.6 x 41, 131.2 x 82 mm). The earlier
+# 210 mm depth conflated body + barrel: the real protruding optic is a 30 mm-dia
+# x 65 mm barrel (145 body + 65 barrel = 210 total optical-axis reach), modeled
+# as the lens mesh (lens_diameter_mm=30, lens_length_mm=65) so make_projector_lens
+# auto-builds it and the SAT / cross-arm-obstruction checks track its real
+# protruding extent. Lens CENTERED horizontally on the 84 mm edge (face_x=0); 20
+# mm up from the bottom of the 54 mm height = 7 mm BELOW the vertical center, so
+# face_vertical=-7 (body-local +Y is "up the face"; SIGN flagged for physical
+# confirmation at mount per hardware_scene's face_vertical note). ~2 mm recess
+# (observed indentation) is the optical-exit setback; UNCHANGED — the lens-front /
+# throw cancellation (body-depth and lens-length cancel in both the body-distance
+# and cone-apex consumers) keeps the readout at throw + recess.
 #
 # lens_options (commit 2): the two PRO4500 field-swappable lenses in the
 # work-area range. 92 mm under-fills the 68 x 55 mm camera footprint (a dead
@@ -265,10 +272,10 @@ PICO_GENIE = ProjectorProfile(
 # 400 x 250 mm lens is out of work-area range and is omitted (docs-only).
 WINTECH_PRO4500 = ProjectorProfile(
     name="Wintech PRO4500",
-    body_dims_mm=(84.0, 54.0, 210.0),
-    lens_diameter_mm=20.0,
-    lens_length_mm=5.0,
-    lens_face_offset_mm=(0.0, 0.0, 2.0),
+    body_dims_mm=(84.0, 54.0, 145.0),
+    lens_diameter_mm=30.0,
+    lens_length_mm=65.0,
+    lens_face_offset_mm=(0.0, -7.0, 2.0),
     lens_options=(
         LensOption(92.0, 65.6, 41.0, 50.0),     # under-fills 68x55 camera (dead band)
         LensOption(184.0, 131.2, 82.0, 100.0),  # full camera coverage

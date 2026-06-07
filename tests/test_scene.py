@@ -70,13 +70,13 @@ from scene import (
 BUILDERS = [
     (make_camera_body,    (29.0, 29.0, 30.0),    8,  12, "camera_body"),
     (make_projector_body, (55.0, 55.0, 55.0),    8,  12, "projector_body"),
-    # PRO4500 body via its profile: 84 x 54 x 210 mm box (lz=210 optical-axis
-    # depth). Constructible + universally checked, but NOT displayed (commit 1).
+    # PRO4500 body via its profile: 84 x 54 x 145 mm box (lz=145 optical-axis
+    # depth; the protruding barrel is the lens mesh, not part of the body).
     (lambda: make_projector_body(WINTECH_PRO4500),
-                          (84.0, 54.0, 210.0),   8,  12, "projector_body_pro4500"),
-    # PRO4500 lens via its profile: 20 x 5 mm stub cylinder (same as Pico).
+                          (84.0, 54.0, 145.0),   8,  12, "projector_body_pro4500"),
+    # PRO4500 lens via its profile: 30 mm-dia x 65 mm protruding barrel cylinder.
     (lambda: make_projector_lens(WINTECH_PRO4500),
-                          (20.0, 20.0, 5.0),     66, 128, "projector_lens_pro4500"),
+                          (30.0, 30.0, 65.0),    66, 128, "projector_lens_pro4500"),
     # _cylinder reference: 40 dia x 100 long, n=32 -> 2*32+2=66 verts, 4*32=128 tris
     (lambda: _cylinder(40.0, 100.0),
                           (40.0, 40.0, 100.0),   66, 128, "cylinder_ref"),
@@ -370,15 +370,16 @@ def test_pro4500_body_differs_from_pico():
     """The PRO4500 body is genuinely a different (oriented) box, not the cube.
 
     Sanity that the profile actually drives the mesh: same vert/face counts,
-    but the bounding box is the 84 x 54 x 210 mm oriented box (lz=210 is the
-    optical-axis depth) — distinct from Pico's 55^3 cube.
+    but the bounding box is the 84 x 54 x 145 mm oriented box (lz=145 is the
+    optical-axis depth; the barrel is the lens mesh) — distinct from Pico's
+    55^3 cube.
     """
     pico_v, _ = make_projector_body(PICO_GENIE)
     pro_v, _ = make_projector_body(WINTECH_PRO4500)
     assert pro_v.shape == pico_v.shape  # both 8-vertex boxes
     assert not np.array_equal(pro_v, pico_v)
     span = (pro_v.max(axis=0) - pro_v.min(axis=0)).astype(np.float64)
-    np.testing.assert_allclose(span, [84.0, 54.0, 210.0], atol=1e-4)
+    np.testing.assert_allclose(span, [84.0, 54.0, 145.0], atol=1e-4)
 
 
 def test_projector_registry_order_and_membership():
@@ -400,12 +401,13 @@ def test_profile_field_values():
     assert PICO_GENIE.lens_length_mm == 5.0
     assert PICO_GENIE.lens_face_offset_mm == (-6.5, 17.5, 1.5)
 
-    # PRO4500: 84 x 54 x 210 body (lz=210 optical-axis depth), centered lens
-    # (0% offset) with ~2 mm recess.
-    assert WINTECH_PRO4500.body_dims_mm == (84.0, 54.0, 210.0)
-    assert WINTECH_PRO4500.lens_diameter_mm == 20.0
-    assert WINTECH_PRO4500.lens_length_mm == 5.0
-    assert WINTECH_PRO4500.lens_face_offset_mm == (0.0, 0.0, 2.0)
+    # PRO4500: 84 x 54 x 145 body (lz=145 optical-axis depth); 30 mm-dia x 65 mm
+    # protruding barrel as the lens mesh; lens centered horizontally but 7 mm
+    # below the face vertical center (face_vertical=-7) with ~2 mm recess.
+    assert WINTECH_PRO4500.body_dims_mm == (84.0, 54.0, 145.0)
+    assert WINTECH_PRO4500.lens_diameter_mm == 30.0
+    assert WINTECH_PRO4500.lens_length_mm == 65.0
+    assert WINTECH_PRO4500.lens_face_offset_mm == (0.0, -7.0, 2.0)
 
     # cone_params slot stays None this commit for both.
     for prof in (PICO_GENIE, WINTECH_PRO4500):

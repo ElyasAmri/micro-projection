@@ -92,19 +92,20 @@ def _body_extents(hs) -> np.ndarray:
 
 def test_set_projector_profile_rebuilds_mesh(qapp):
     """set_projector_profile swaps the projector body/lens mesh in place:
-    PRO4500 -> 84 x 54 x 210 box; back to PICO_GENIE -> 55^3 cube."""
+    PRO4500 -> 84 x 54 x 145 box + 30 x 65 barrel lens; back to PICO_GENIE ->
+    55^3 cube + 20 x 5 lens."""
     view = gl.GLViewWidget()
     hs = HardwareScene(view)
     # Built Pico by default.
     np.testing.assert_allclose(_body_extents(hs), [55.0, 55.0, 55.0], atol=1e-4)
 
     hs.set_projector_profile(WINTECH_PRO4500)
-    np.testing.assert_allclose(_body_extents(hs), [84.0, 54.0, 210.0], atol=1e-4)
+    np.testing.assert_allclose(_body_extents(hs), [84.0, 54.0, 145.0], atol=1e-4)
     lens_v = np.asarray(
         hs._items[KEY_PROJECTOR_LENS].opts["meshdata"].vertexes(), dtype=float
     )
     np.testing.assert_allclose(
-        lens_v.max(axis=0) - lens_v.min(axis=0), [20.0, 20.0, 5.0], atol=1e-4
+        lens_v.max(axis=0) - lens_v.min(axis=0), [30.0, 30.0, 65.0], atol=1e-4
     )
 
     hs.set_projector_profile(PICO_GENIE)
