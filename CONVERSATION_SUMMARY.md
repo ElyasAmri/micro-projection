@@ -1167,6 +1167,32 @@ The docs commit (this one, sixth) lands first; then strategy chat presents the n
 
 ---
 
+## Stage 6 — Projector-swap arc + GUI refinements (local branch `projector-wintech-husam`)
+
+This session built the Wintech PRO4500 swap the §2 notes had reserved for Ilyas/Stage 7 — the user did it themselves on a LOCAL branch forked from `main`@`7c96ded`, kept off main so Ilyas could reference a clean main, then pushed to `origin/projector-wintech-husam` for backup + as Ilyas's reference (Ilyas branches OFF it, doesn't commit onto it). 7 commits, 441 tests at close, `[pipeline] std_err` byte-identical 1.764505e-05. Two-role workflow held throughout (recon → halt-and-confirm plan → build → GUI eyeball → commit).
+
+Commits: `d898b9e` swap-1 (profile spine + PRO4500 mesh) → `a860c45` swap-2 (lens table + FOV cone) → `10e0db2` swap-3a (active-profile plumbing, byte-identical) → `406862f` swap-3b (PRO4500 on-display: dropdown, mesh rebuild, profile-aware collision/coverage/coords, lens-fixed WD) → `fe1a27e` swap-4 (lens selector 92/184mm) → `25d93b5` STL-browser freeze fix → `28a63cc` FOV custom H×W entry.
+
+### Working-model lessons confirmed / added this session
+
+- **Option-A visual swap kept the math sealed.** The projector's measurement role is `theta_projector` + abstract pixel-space p/a — NOT projector-derived. So swapping Pico→PRO4500 is a visual/parameterization change; the sealed core never moved (1.764505e-05 throughout). This is the §7.11 parameters-not-mesh architecture paying off exactly as predicted in §2.
+- **Both PRO4500 lenses share a cone half-angle (0.3565).** A falsified test premise caught mid-build: the planned "92 slopes differ from 184 slopes" test was wrong — the lenses are the same optical design at 2× standoff (double WD, double FOV, double pixel, same angle). Claude Code replaced the false-premise test with (a) a test documenting the shared half-angle and (b) a coverage test that discriminates via WD/apex-height. The honest way to handle a falsified premise: don't delete the test, replace it with one capturing WHY.
+- **Canonical-profile-not-replace().** Encoding the active lens via `dataclasses.replace(profile, default_lens_index=...)` would have been zero-threading but broke the mesh-rebuild identity guard and the `is WINTECH_PRO4500` test, and created two notions of "the profile." Chose explicit `_active_lens_index` threading instead — more plumbing, but one canonical object, debuggable. Explicit beat clever.
+- **`_saved_projector_throw_mm` ownership boundary.** The single most bug-prone spot: the projector handler saves/restores the Pico free-throw on Pico↔PRO4500; the lens handler re-locks among lens WDs but must NEVER touch the saved value. The load-bearing test is the full round-trip ordering (Pico T → PRO4500 184 → pick 92 → back to Pico restores T, not 92/184) — the ONE ordering that exercises the boundary.
+- **The STL-browser freeze was a Qt-swallowed IndexError, not a soft skip.** Switching browser-STL→procedural left a stale flag + shrunken `_fov_shape`; a `_fov_shape`-sized mask hit a SURFACE_SHAPE array → IndexError that Qt swallowed (app survives, view frozen, re-crashes every slider tick until restart). The recon found a FOURTH browser block (the 3D-Scene recovered leg) the brief missed — gating only three would have left a latent crash. Fix gated all four on `currentText()==STL_LABEL`. Reproduce-then-fix proven: tests FAIL without the gate (IndexError / contamination), pass with it.
+- **FOV custom-entry landmines.** Two caught at recon: (1) the existing preset labels are HEIGHT-FIRST ("55 × 68 mm"), so the custom widget had to be height-first too or it would read inconsistently and risk a wrong-axis bug; (2) the SIM grid is 0.1mm/px (100µm), NOT the real camera's 53µm — snap is px=round(mm×10). Both nailed in the design before code.
+- **A shared helper extraction needs a byte-identity proof.** `_apply_fov_shape` was extracted from the inline preset path and reused by custom entry; a parametrized per-index test asserts the post-refactor preset path produces the IDENTICAL `_fov_shape`/origin/slice vs an INDEPENDENT inline recompute (not the production helper) — the direct proof the extraction didn't shift preset behavior.
+- **Commit-sequencing recovery.** swap-4 was left uncommitted while pivoting to the STL bug, so `main_window.py` carried both. Resolved by committing swap-4 wholesale first (backup the dual file → revert the bugfix hunks → commit swap-4 verified bugfix-free → restore the bugfix from backup → commit it verified swap-4-free), each commit verified byte-identical to the 441-passing tree. Lesson: commit each verified unit before pivoting to the next.
+
+### Pending for the NEXT chat (so the user need not re-explain)
+
+- **Two lab-measurement geometry fixes** (gated on lab numbers): (1) PRO4500 lens barrel — real protruding cylinder, additive commit, no published dimension online so must be measured; barrel-tip clearance not trustworthy until then. (2) Camera + telecentric lens scale — #58-259 length 200mm CONFIRMED, but diameter (~110mm front / 55mm rear) likely modeled too thin; verify against the unit. Camera-side, separate from the projector branch.
+- **Doc redesign** (at the closed-arc boundary, AFTER the lab fixes): frozen sim-description doc + single sectioned `handoff` file replacing this split + archive these two in VS Code but remove from the Claude project knowledge (new docs added before old ones removed).
+- **Branch disposition:** merge `projector-wintech-husam` to main when the arc fully closes (watch `scene.py` conflicts vs Ilyas's hardware work).
+- **Then:** hardware bring-up + literature survey in parallel (Spinnaker/PySpin installed; lower rungs = basic FPP → confirm inverse-FPP on real optics, which is what the sim already does; the adaptive closed loop = the paper's genuine novelty, fed by the literature survey as it matures; keep hardware-execution and literature-survey in SEPARATE sessions).
+
+---
+
 *End of summary. For the structured project context, see PROJECT_CONTEXT.md.*
 
 ### Stage 5 refinement: read-only recon before geometry-critical edits

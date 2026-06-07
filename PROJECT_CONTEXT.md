@@ -1460,6 +1460,49 @@ def _obb_overlap(transform_a, local_corners_a, transform_b, local_corners_b):
 
 ---
 
+### Stage 6 — Projector-swap arc + GUI refinements (LOCAL BRANCH, this session)
+
+**Branch `projector-wintech-husam`** — forked from `main`@`7c96ded`, LOCAL-ONLY
+then pushed to `origin/projector-wintech-husam` for backup + as Ilyas's
+reference. Ilyas references this branch for his OWN branch; he does not commit
+onto it. Likely merged to `main` later, once the two pending lab-measurement
+geometry fixes land (watch for `scene.py` conflicts if Ilyas's hardware work
+touched it). This is the arc the §2 Wintech PRO4500 notes anticipated as
+"Stage 7 / relay to Ilyas" — the USER built it this session instead; §2 stays as
+the spec capture, this section is the as-built record.
+
+7 commits, 441 tests passing at the FOV commit, `[pipeline] std_err` byte-
+identical 1.764505e-05 throughout (Option A visual-swap: the abstract math
+placeholders p / theta_projector / a are UNCHANGED — they are pixel-space
+calibration values measured at hardware in Stage 7, shared by Pico and PRO4500).
+
+| # | Commit | What landed |
+|---|---|---|
+| swap-1 | `d898b9e` | `ProjectorProfile` frozen dataclass + `PICO_GENIE`/`WINTECH_PRO4500` + `PROJECTOR_PROFILES` registry in `scene.py`. Builders `make_projector_body/lens(profile=PICO_GENIE)` — no-arg byte-identical. PRO4500 body (84,54,210)mm, lz=210=optical-axis depth (lens exits short face, hangs lens-down at θ=0), lens centered (0% offset) 2mm recess, lens stub 20×5. |
+| swap-2 | `a860c45` | `LensOption` NamedTuple (WD, fov_w, fov_h, projected_px_um) + PRO4500 lens_options ((92,65.6,41,50),(184,131.2,82,100)), default_lens_index=1 (184mm=full coverage). 700mm lens excluded (out of work-area range). `make_projection_cone_from_fov` (base=rated FOV at WD). |
+| swap-3a | `10e0db2` | Active-profile plumbing (byte-identical, default Pico). compute_arm_transforms/_projector_cone_world/update_pose gain profile=PICO_GENIE; detect_clips gains projector_profile=None. MainWindow._projector_profile state. |
+| swap-3b | `406862f` | PRO4500 ON-DISPLAY. Projector QComboBox; HardwareScene.set_projector_profile (mesh rebuild); profile-aware bbox + cone-coverage slopes + coordinates; info-panel dynamic ("—" throw ratio for PRO4500); "lens fixes the WD" mechanic (lock throw slider to lens WD on PRO4500, restore for Pico). 418 tests. GUI-reviewed. |
+| swap-4 | `fe1a27e` | PRO4500 lens selector (92/184mm). `self._active_lens_index` (profile stays CANONICAL — NO dataclasses.replace). active_lens_index threaded through update_pose/detect_clips (None→default_lens_index, byte-identical to 3b). Lens combo hidden for Pico. `_on_lens_changed` re-locks slider to chosen WD; never touches `_saved_projector_throw_mm` (owned ONLY by `_on_projector_changed`). 423 tests. GUI-reviewed. |
+| STL-fix | `25d93b5` | Fix STL-browser state leak crashing procedural refresh. Root cause: switching browser-mode STL→procedural left `_stl_is_browser_mode=True` + shrunken `_fov_shape` → `_fov_shape`-sized mask applied to SURFACE_SHAPE array → IndexError Qt swallowed (view froze, re-crashed every slider move). Fix: gate ALL FOUR browser blocks in `_refresh_surface_preview` on `currentText()==STL_LABEL` (not the flag alone). 429 tests. GUI-verified. |
+| FOV-custom | `28a63cc` | FOV custom H×W entry — selectable custom ROI (10–55 × 10–68 mm) alongside the symmetric presets. "Custom…" combo entry reveals H×W QDoubleSpinBox row (HEIGHT-FIRST, matching preset labels); 0.1mm/px SIM grid (px=round(mm×10), NOT 53µm); shared `_apply_fov_shape` helper extracted byte-identically from the preset path; snap-back; persist-not-reset; browser-only. 441 tests. GUI-reviewed. |
+
+**Locked decisions (do not re-litigate):**
+- **PRO4500 lens physics:** both lenses share cone half-angle ((65.6/2)/92 == (131.2/2)/184 == 0.3565). Lens choice changes WD/footprint/apex-height, NOT cone slope.
+- **Lens-fixes-WD mechanic (a):** PRO4500 active → throw slider set+locked to active lens WD; Pico restores saved free-throw. `_saved_projector_throw_mm` owned ONLY by the projector handler; the lens handler re-locks among lens WDs but never writes the saved value.
+- **Canonical profile, not replace():** `_projector_profile` stays the literal PICO_GENIE/WINTECH_PRO4500 object (preserves mesh-rebuild identity guard + tests); active lens carried by `_active_lens_index`, threaded as int (None→default_lens_index = byte-identical).
+- **FOV custom entry:** HEIGHT-FIRST throughout (`_fov_shape=(H_px,W_px)`); 0.1mm/px grid; persist-not-reset (consistent with presets — `_fov_shape` does NOT reset on surface switch); browser-only; camera prism stays hardcoded 68×55 (custom FOV is a measurement-planning ROI, not the prism).
+- **STL-browser invariant:** gate browser blocks on `currentText()==STL_LABEL`, never on the `_stl_is_browser_mode` flag alone.
+
+**PENDING — two lab-measurement geometry fixes (NEXT chat, gated on lab numbers):**
+1. **PRO4500 lens barrel.** The lens is still the 20×5mm stub. The real protruding barrel (the field-swap barrel Wintech deliberately extended — no published dimension found online) is a SEPARATE additive cylinder commit once the user measures length/diameter at the lab. Until then PRO4500 barrel-tip clearance is NOT trustworthy (body-box collision IS faithful). The barrel attaches at the already-correct centered lens-face position.
+2. **Camera + telecentric lens scale.** The user observed in-GUI that the camera/lens looks wrong-scaled vs the PRO4500. The Edmund #58-259 OVERALL LENGTH 200mm is CONFIRMED correct (matches `_CAMERA_LENS_LENGTH_MM=200.0` + the Edmund GoldTL 0.125X/0.09X column). The likely issue is DIAMETER: max outer ~110mm front tapering to ~55mm rear — the lens is probably modeled too THIN, not too short. Verify 200/110/55 against the actual unit at the lab. Camera-side, separate from the projector branch.
+
+**Doc-redesign plan (NEXT chat, at the closed arc boundary — NOT yet done):** once the two lab fixes land, restructure the passdown: (a) a NEW frozen in-depth simulation-description doc (what the GUI sim does/proves — the paper methods + onboarding reference; does not grow); (b) a single sectioned `handoff` file replacing the PROJECT_CONTEXT + CONVERSATION_SUMMARY split for the hardware phase (keep a stable "setup/conventions/settled-decisions" section + a running "current status" section); (c) KEEP the existing two files in the VS Code repo as the build-history archive but REMOVE them from the Claude project knowledge (they no longer feed strategy chats). Add the new docs to the project BEFORE removing the old two (never a no-passdown window).
+
+**Recovered-surface tab assessment (this session, no code change):** faithful single-shot inverse-FPP for the modeled physics (A.3 validates the structure non-tautologically); sensor-noise toggle is valuable (reveals realistic sampling-fade degradation only per-frame-independent read noise produces — keeps the demo honest about limits); demo-defect is valuable (turns reconstruction into the AM defect-detection use case). No sim-fidelity improvements worth chasing (diminishing returns per project stance). ONE paper-text note for Stage 7 (not code): the sim's perfect angle-invariant nulling is genuine for MODELED physics but real hardware will leave residual — the same-model-builds-and-corrects setup is why the sim nulls perfectly; avoid over-claiming this maps to hardware. Address via dedicated hardware tabs in Stage 7.
+
+---
+
 ### Web port (next phase, planned)
 
 Parking-lot #6: port the PyQt6 GUI to HTML/web for larger screens, shareability without a Python install, and more visual real estate. **The PyQt6 implementation is the reference implementation** — every UX target validated in PyQt6 (the 4-tab layout, the lab-view XOR toggle, the comparison view, the labeled grid, the hardware-coordinate readout, the clip/coverage/obstruction advisories) becomes a requirement for the web port. The math layer (pure NumPy) is reused as-is or reimplemented to match; the visualization layer is rebuilt for the browser (Three.js or similar — note the earlier "no Three.js embed inside PyQt6" rejection does NOT apply here; the web port is the appropriate venue for browser-based 3D). Hardware integration (Stages 6/7) follows the web port.
