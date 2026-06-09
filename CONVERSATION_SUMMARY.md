@@ -1334,3 +1334,39 @@ Three arcs landed after the `stage-6-b3b-complete` tag, **landed** on `main`: (1
 - **Physical sanity anchors make a big headline trustworthy.** The 219×/37691× ratios are extreme by construction (straight-fringe fails catastrophically beyond Nyquist, inverse recovers near-perfectly), so the pre-commit check leaned on two physical anchors instead: `max_abs 29.92 ≈ the 30 px defect amplitude` (the recovered defect) and `recovered max 5999.5 ≈ the 6000 dome amplitude`. Both held — which is what licenses trusting the headline integers.
 
 *End of Stage 6 B.3b-labview + FOV presets + B.4 summary. **Stage closed and pushed — tagged `stage-6-b4-complete`. The stack past `stage-6-b3b-complete` is 10 commits: 8 substantive (`961709a` labview.1 → `bb3ee56` B.4.2b), the mid-stage docs commit (`2b57636`), and this docs-close commit. 357 tests passing, `[pipeline] std_err` byte-identical 1.764505e-05. Open: FOV-margin-for-tilt, the ~2× lab-view pipeline-cost gating, A.3 consistency hygiene, and Stage 7 (hardware + the real-time novelty).***
+
+---
+
+## Stage 6 — Projector-swap lab-geometry close + 🏁 PHASE 1 COMPLETE (branch `projector-wintech-husam`)
+
+This chat closed the projector-swap arc with the two lab-measurement geometry fixes, then marked Phase 1 (the GUI digital twin) complete. Commits **5a `b28da6b`** (PRO4500 true body+barrel+offset geometry) → **5b `3ee8f68`** (disc-clearance profile-awareness) → **5c** (this docs-close). Full suite **442 passing**, `[pipeline] std_err` byte-identical 1.764505e-05 through both code commits.
+
+### What landed, and why it was safe
+
+- **The reshape (5a).** The lab measurement revealed the real PRO4500 is an **84×54×145 body + a 30 mm-dia × 65 mm protruding barrel** (145 + 65 = 210 total reach) with the lens **7 mm below the face vertical center**. Expressed entirely through existing `ProjectorProfile` fields — `body_dims_mm` 210→145, `lens_diameter_mm` 20→30, `lens_length_mm` 5→65, `lens_face_offset_mm` (0,0,2)→(0,−7,2). **No new field, no new builder:** the barrel IS the lens mesh (`make_projector_lens` auto-builds it), so SAT body-overlap (check 3) and cross-arm obstruction (check 6) auto-tracked the real protruding extent for free.
+- **Why byte-identical was provable, not hoped.** The recon proved a **structural cancellation**: the projector lens-front world position is consumed in two places (the body-distance `throw + lens_length + body_depth/2`, and the cone-apex offset `body_depth/2 + lens_length − recess`), and `body_depth` + `lens_length` cancel in both — so the lens-front holds at `throw + recess` (= 186 at WD 184) regardless of how the 210 is partitioned into body vs barrel. The body correctly moves back; the barrel tip fills forward to `z = throw`. The two `[0,0,186]` canary tests stayed green unchanged — the canary that would have caught a wrong cancellation assumption.
+- **Why the camera "fix" was a no-op.** The user's in-GUI "camera looks wrong-scaled" impression was the PRO4500 being correctly *shorter* once reshaped — not a camera error. The Edmund #58-259 200/110/55 geometry was verified against the **official GoldTL spec table** (Overall Length 200.0, Mounting 76.4, Taper 59.2, Max OD 110.0, Rear OD 55.0), not just the project docs, and was already spec-accurate. Closed with no commit. *Lesson: a "looks wrong" report is a hypothesis; check it against the primary spec before modeling anything.*
+
+### Recon-before-build overturned the plan again — with evidence
+
+- The **first** recon assumed the original plan: an additive barrel cylinder bolted onto an **unchanged** 210 body. The lab measurement contradicted that — the body was **65 mm too long** (the brochure 210 conflated body + barrel) — so the **second** recon *superseded* the first: shorten the body to 145 and make the barrel the lens mesh.
+- The decisive second-recon finding was that the **disc-vs-surface check was profile-BLIND**. The active profile reached SAT and the cone slopes, but **not** `_lens_front_disc_lowest_z` — it read hardcoded Pico literals (front-z 2.5, r 10) regardless of profile. That is *why* 5b needed real override-wiring, not just a constant edit: SAT/obstruction auto-tracked the barrel, but the one check measuring the protruding tip's clearance to the surface did not. Another case of recon catching a load-bearing wrong assumption (here, "the profile already reaches the disc check") before a line of code was written.
+
+### The two-commit split, and single source of truth
+
+- **5a = the reshape** (geometry + the checks that auto-track it: SAT, obstruction, arm, cone, readout). **5b = the one check that didn't auto-track** (disc-vs-surface). Splitting them kept each commit one concept and left an honest, named intermediate state (after 5a, SAT/obstruction were trustworthy for the barrel but the disc check was still Pico-stale).
+- 5b derives the disc front-z / radius from the **same** `local_corners[KEY_PROJECTOR_LENS]` the SAT box uses (front-z = max local-Z = lens_length/2 = 32.5; radius = max local-X = lens_diameter/2 = 15) — a single source of truth, so the disc tip/radius can never disagree with the SAT box. The `None` path preserves the module-dict Pico literals, so the camera disc and the no-profile Pico path are byte-identical. The new test pins it at a θ_proj=80 / throw=50 pose where the true barrel tip clips but the old 2.5/10 stub would not — an assertion that fails against the pre-fix profile-blind path.
+
+### The −7 vertical offset — sign confirmed by render
+
+The earlier `ProjectorLensOffset` face-vertical sign was inherited from the Pico as UNVERIFIED. For the PRO4500, "20 mm up from the 54 mm-height bottom = 7 mm below center" fixes the body-local sign as `lens_face_offset_mm[1] = −7` (body-local +Y is "up the face"). Confirmed by eye in the GUI — the lens renders visibly below the body center. The PRO4500 sign is now settled; the Pico's stays separately unverified.
+
+### Sealed core held
+
+`[pipeline] std_err` stayed byte-identical at 1.764505e-05 through both code commits (re-confirmed explicitly and via the 328-test non-app subset and the full 442). The reshaped fields live in `scene.py` (profile literal) + `clip_detection.py` (disc constants); a grep re-confirmed zero import path from those to `pipeline.py` or the math modules — the visualization/collision layer is strictly downstream (§7.11).
+
+### 🏁 Phase 1 complete
+
+The GUI simulation is feature-complete and math-faithful to the thesis (forward FPP + inverse-FPP correction, two-angle λ_eq): lab view (arbitrary arm angles, honest-scale bodies, projector swap Pico⇄PRO4500, cones/prism, clip/coverage/obstruction advisories, hardware-coordinate readout, FOV presets + custom ROI), Pipeline-Stages view, STL Browser mode, and the Recovered Surface tab (quantitative comparison, sensor-noise toggle, AM defect-detection demo, B.4 serializable reference). **Phase 2 is two tracks:** (1) hardware integration — physical FLIR Blackfly S + Wintech PRO4500, real captures, recover-and-compare against ground truth (B.4 is the validation target; the `Camera`/`Projector` protocols get designed against the real SDK here); and (2) the state-of-the-art abstract-proposal model (real-time adaptive nulling for in-situ AM defect detection) after a literature review, then its hardware implementation.
+
+*End of Stage 6 projector-swap lab-geometry close + Phase 1 close. **5a `b28da6b` + 5b `3ee8f68` committed (not pushed at write time — end-of-stage push is a separate explicit call once the new Phase 2 docs exist). 442 tests passing, `[pipeline] std_err` byte-identical 1.764505e-05. After the 5c docs commit, PROJECT_CONTEXT.md + CONVERSATION_SUMMARY.md are FROZEN — repo build-history archive, removed from strategy-chat project knowledge; Phase 2 moves to a new frozen GUI-analysis doc + a sectioned `handoff` doc.***

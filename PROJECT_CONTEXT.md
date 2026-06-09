@@ -40,7 +40,7 @@ The user has an existing Jupyter notebook (`notebooks/Fringe_Projection_Python.i
 - 132–182 mm working distance (focusable)
 - < 0.2° telecentricity
 - 1/2" sensor format
-- **Physical lens profile (Stage 4b):** stepped 3-section, 200 mm total length. 76 mm rear (55 mm diameter) + 59 mm taper + 65 mm front (110 mm diameter front element).
+- **Physical lens profile (Stage 4b) — ✅ VERIFIED against the official Edmund #58-259 GoldTL spec table** (0.125X / 0.09X column: Overall Length 200.0, Mounting Length 76.4, Taper 59.2, Max OD 110.0, Rear OD 55.0). Stepped 3-section, 200 mm total length: 76 mm rear (55 mm diameter) + 59 mm taper + 65 mm front (110 mm diameter front element). **No model change was needed — the camera lens was already spec-accurate.** The Stage-6 in-GUI "camera looks too thin / wrong-scaled" impression turned out to be the PRO4500 being correctly *shorter* once reshaped (5a), not a camera error — so the second of the two pending lab-geometry fixes was a confirmed no-op (see the Stage-6 closing section).
 - **Confirmed telecentric.** Note: telecentric means **M is constant regardless of object distance** (the lens's defining property). It does NOT mean the camera body must be mounted vertical or at any specific tilt — the camera body's physical tilt angle (θ_camera) is independent of the lens's optical properties.
 
 **Projector (placeholder unit, will be upgraded): Pico Genie Impact 2.0 Plus Elite**
@@ -100,7 +100,7 @@ The upgraded projector (long-awaited) is the **Wintech PRO4500 Production Ready 
 
   Throw is *derivable per lens* (FOV width / WD) — better than a single nominal throw ratio.
 - **Pattern rates:** 2,880 Hz binary / 120 Hz 8-bit grayscale streaming (mini-HDMI); up to 4,255 Hz binary from 32 MB onboard memory. Relevant to the **real-time closed-loop** framing (the paper's "Real-Time / Adaptive" novelty, Stage 7).
-- **Body dimensions:** 210 × 84 × 54 mm.
+- **Body dimensions:** 210 × 84 × 54 mm *(brochure form-factor — conflates body + protruding lens barrel)*. **As-built digital twin (Stage-6 5a, lab-measured):** the brochure 210 mm = body (145 mm) + protruding lens barrel (65 mm), so the modeled body box is **84 × 54 × 145 mm** with a **30 mm-dia × 65 mm barrel as the lens mesh** (145 + 65 = 210 total optical-axis reach). The lens centers horizontally on the 84 mm edge but sits **7 mm below the 54 mm-height center** (20 mm up from the bottom). The brochure 210 figure is kept (it's what the spec sheet says); the model splits it into body + barrel — see the Stage-6 closing section.
 
 **RESOLVED — diamond-pixel layout is a non-issue for fringe projection.** The "diamond pixel" array means the columns of each odd row are offset by half a pixel from the even rows (a brick-laid / quincunx stagger), whole array diagonally oriented (TI DLPS028, DLPU011). This stagger is **sub-pixel (½ of 7.6 µm at the DMD)** and matters only for single-pixel-width hard lines (vertical/horizontal/diagonal). A fringe pattern is a smooth low-frequency sinusoid spanning many DMD pixels per cycle, so the half-pixel row stagger **averages out completely** in the projected sinusoid. **Model the PRO4500 as a plain 912 × 1140 rectangular grid** — the diamond stagger does NOT need modelling for fringe projection.
 
@@ -1465,16 +1465,18 @@ def _obb_overlap(transform_a, local_corners_a, transform_b, local_corners_b):
 **Branch `projector-wintech-husam`** — forked from `main`@`7c96ded`, LOCAL-ONLY
 then pushed to `origin/projector-wintech-husam` for backup + as Ilyas's
 reference. Ilyas references this branch for his OWN branch; he does not commit
-onto it. Likely merged to `main` later, once the two pending lab-measurement
-geometry fixes land (watch for `scene.py` conflicts if Ilyas's hardware work
-touched it). This is the arc the §2 Wintech PRO4500 notes anticipated as
+onto it. Likely merged to `main` later; the two pending lab-measurement geometry
+fixes have now **LANDED** (5a/5b below), so the arc is complete (watch for
+`scene.py` conflicts if Ilyas's hardware work touched it). This is the arc the §2 Wintech PRO4500 notes anticipated as
 "Stage 7 / relay to Ilyas" — the USER built it this session instead; §2 stays as
 the spec capture, this section is the as-built record.
 
-7 commits, 441 tests passing at the FOV commit, `[pipeline] std_err` byte-
-identical 1.764505e-05 throughout (Option A visual-swap: the abstract math
-placeholders p / theta_projector / a are UNCHANGED — they are pixel-space
-calibration values measured at hardware in Stage 7, shared by Pico and PRO4500).
+9 commits, **442 tests passing** (the FOV commit closed at 441; 5a/5b added the
+two PRO4500 lab-geometry fixes + one new disc-clearance test), `[pipeline]
+std_err` byte-identical 1.764505e-05 throughout (Option A visual-swap: the
+abstract math placeholders p / theta_projector / a are UNCHANGED — they are
+pixel-space calibration values measured at hardware in Stage 7, shared by Pico
+and PRO4500).
 
 | # | Commit | What landed |
 |---|---|---|
@@ -1485,6 +1487,8 @@ calibration values measured at hardware in Stage 7, shared by Pico and PRO4500).
 | swap-4 | `fe1a27e` | PRO4500 lens selector (92/184mm). `self._active_lens_index` (profile stays CANONICAL — NO dataclasses.replace). active_lens_index threaded through update_pose/detect_clips (None→default_lens_index, byte-identical to 3b). Lens combo hidden for Pico. `_on_lens_changed` re-locks slider to chosen WD; never touches `_saved_projector_throw_mm` (owned ONLY by `_on_projector_changed`). 423 tests. GUI-reviewed. |
 | STL-fix | `25d93b5` | Fix STL-browser state leak crashing procedural refresh. Root cause: switching browser-mode STL→procedural left `_stl_is_browser_mode=True` + shrunken `_fov_shape` → `_fov_shape`-sized mask applied to SURFACE_SHAPE array → IndexError Qt swallowed (view froze, re-crashed every slider move). Fix: gate ALL FOUR browser blocks in `_refresh_surface_preview` on `currentText()==STL_LABEL` (not the flag alone). 429 tests. GUI-verified. |
 | FOV-custom | `28a63cc` | FOV custom H×W entry — selectable custom ROI (10–55 × 10–68 mm) alongside the symmetric presets. "Custom…" combo entry reveals H×W QDoubleSpinBox row (HEIGHT-FIRST, matching preset labels); 0.1mm/px SIM grid (px=round(mm×10), NOT 53µm); shared `_apply_fov_shape` helper extracted byte-identically from the preset path; snap-back; persist-not-reset; browser-only. 441 tests. GUI-reviewed. |
+| **5a** | `b28da6b` | **PRO4500 TRUE body+barrel+offset geometry (lab-measured).** `body_dims_mm` (84,54,210)→(84,54,**145**); lens 20×5 stub → **30-dia × 65 barrel as the lens mesh** (NO new field / NO new builder — `make_projector_lens` auto-builds it from `lens_diameter_mm`/`lens_length_mm`, so SAT check-3 + cross-arm obstruction check-6 auto-track the real protruding extent); `lens_face_offset_mm` (0,0,2)→(0,**−7**,2) (lens 7 mm below the face vertical center). **Lens-front / throw semantics BYTE-IDENTICAL**: body-depth and lens-length cancel structurally in BOTH the body-distance and cone-apex consumers → readout holds at throw+recess (=186 at WD 184); the `[0,0,186]` canary tests stayed green unchanged. Dimension-pin tests updated (210→145, 20×5→30×65, (0,0,2)→(0,−7,2)). GUI-verified (barrel + offset render). |
+| **5b** | `3ee8f68` | **PRO4500 disc-clearance profile-awareness** (closes the 5a deferral). `_lens_front_disc_lowest_z` gains optional `front_z`/`radius` overrides; `None` → module dicts, so the **camera disc + no-profile Pico path stay byte-identical**. The projector disc call derives the overrides from the SAME `local_corners[KEY_PROJECTOR_LENS]` the SAT box uses (single source of truth: front-z = max local-Z = lens_length/2 = **32.5**, radius = max local-X = lens_diameter/2 = **15**). Barrel-tip surface clearance is now trustworthy. +1 PRO4500 disc test (a θ_proj=80/throw=50 pose where the barrel tip clips but the old 2.5/10 stub would not — pins the fix). 441 → **442 tests**. |
 
 **Locked decisions (do not re-litigate):**
 - **PRO4500 lens physics:** both lenses share cone half-angle ((65.6/2)/92 == (131.2/2)/184 == 0.3565). Lens choice changes WD/footprint/apex-height, NOT cone slope.
@@ -1492,14 +1496,35 @@ calibration values measured at hardware in Stage 7, shared by Pico and PRO4500).
 - **Canonical profile, not replace():** `_projector_profile` stays the literal PICO_GENIE/WINTECH_PRO4500 object (preserves mesh-rebuild identity guard + tests); active lens carried by `_active_lens_index`, threaded as int (None→default_lens_index = byte-identical).
 - **FOV custom entry:** HEIGHT-FIRST throughout (`_fov_shape=(H_px,W_px)`); 0.1mm/px grid; persist-not-reset (consistent with presets — `_fov_shape` does NOT reset on surface switch); browser-only; camera prism stays hardcoded 68×55 (custom FOV is a measurement-planning ROI, not the prism).
 - **STL-browser invariant:** gate browser blocks on `currentText()==STL_LABEL`, never on the `_stl_is_browser_mode` flag alone.
+- **PRO4500 body is 145 deep + a 65 mm barrel = 210 total reach (5a).** The barrel is the **lens mesh** (via `lens_diameter_mm=30`, `lens_length_mm=65`), NOT a separate field or builder. The brochure 210 is body+barrel; never re-model the body as 210.
+- **The −7 mm vertical lens offset is CONFIRMED via in-GUI render (5a).** Lens center 20 mm up from the 54 mm-height bottom = 7 mm below center; `lens_face_offset_mm[1] = −7` (body-local +Y is "up the face"). Confirmed by eye in the GUI (lens visibly below body center) — this is the PRO4500 sign, no longer the Pico's inherited-UNVERIFIED guess. (The Pico face-vertical sign stays separately UNVERIFIED.)
+- **Disc front-z / radius derive from the lens-mesh bbox corners, never hardcoded per-profile (5b).** `front_z = max local-Z` (= lens_length/2), `radius = max local-X` (= lens_diameter/2), read from the SAME `local_corners[KEY_PROJECTOR_LENS]` the SAT box uses — single source of truth, so the disc tip/radius can never disagree with the SAT box. The `None` path keeps the module-dict Pico literals (byte-identical).
 
-**PENDING — two lab-measurement geometry fixes (NEXT chat, gated on lab numbers):**
-1. **PRO4500 lens barrel.** The lens is still the 20×5mm stub. The real protruding barrel (the field-swap barrel Wintech deliberately extended — no published dimension found online) is a SEPARATE additive cylinder commit once the user measures length/diameter at the lab. Until then PRO4500 barrel-tip clearance is NOT trustworthy (body-box collision IS faithful). The barrel attaches at the already-correct centered lens-face position.
-2. **Camera + telecentric lens scale.** The user observed in-GUI that the camera/lens looks wrong-scaled vs the PRO4500. The Edmund #58-259 OVERALL LENGTH 200mm is CONFIRMED correct (matches `_CAMERA_LENS_LENGTH_MM=200.0` + the Edmund GoldTL 0.125X/0.09X column). The likely issue is DIAMETER: max outer ~110mm front tapering to ~55mm rear — the lens is probably modeled too THIN, not too short. Verify 200/110/55 against the actual unit at the lab. Camera-side, separate from the projector branch.
+**✅ DONE — the two lab-measurement geometry fixes (5a/5b above; do not re-open):**
+1. **PRO4500 lens barrel — LANDED (5a `b28da6b` + 5b `3ee8f68`).** The lab measurement *superseded* the original "additive cylinder on an unchanged 210 body" plan: the body was 65 mm too long (the 210 conflated body + barrel). Resolved as one reshape — body 210→145 + a 30×65 barrel **as the lens mesh** (not a separate field) + the −7 vertical offset (5a), then the disc-vs-surface check made profile-aware so barrel-tip clearance is now trustworthy (5b). Body-box collision (SAT) and cross-arm obstruction auto-tracked the barrel from 5a; the disc check was the one path that needed wiring (it was profile-BLIND — the profile reached SAT/cone but not `_lens_front_disc_lowest_z`).
+2. **Camera + telecentric lens scale — CONFIRMED NO-OP (no commit).** The in-GUI "looks wrong-scaled" impression was the PRO4500 being correctly *shorter* once reshaped, NOT a camera error. The Edmund #58-259 200/110/55 geometry was verified against the official GoldTL spec table (Overall Length 200.0, Mounting 76.4, Taper 59.2, Max OD 110.0, Rear OD 55.0 — see §2) and was already spec-accurate. No model change. Closed.
 
-**Doc-redesign plan (NEXT chat, at the closed arc boundary — NOT yet done):** once the two lab fixes land, restructure the passdown: (a) a NEW frozen in-depth simulation-description doc (what the GUI sim does/proves — the paper methods + onboarding reference; does not grow); (b) a single sectioned `handoff` file replacing the PROJECT_CONTEXT + CONVERSATION_SUMMARY split for the hardware phase (keep a stable "setup/conventions/settled-decisions" section + a running "current status" section); (c) KEEP the existing two files in the VS Code repo as the build-history archive but REMOVE them from the Claude project knowledge (they no longer feed strategy chats). Add the new docs to the project BEFORE removing the old two (never a no-passdown window).
+**Doc-redesign plan — ▶ NOW BEING EXECUTED (Phase 1 close).** The two lab fixes have landed, so this is the closed-arc boundary. The restructure: (a) a NEW frozen in-depth simulation-description / GUI-analysis doc (what the GUI sim does/proves — the paper methods + onboarding reference; does not grow); (b) a single sectioned `handoff` file replacing the PROJECT_CONTEXT + CONVERSATION_SUMMARY split for the hardware phase (keep a stable "setup/conventions/settled-decisions" section + a running "current status" section); (c) KEEP these two files in the VS Code repo as the build-history archive but REMOVE them from the Claude project knowledge (they no longer feed strategy chats). Add the new docs to the project BEFORE removing the old two (never a no-passdown window). **This commit (5c) is the final update to PROJECT_CONTEXT.md + CONVERSATION_SUMMARY.md — after it they are FROZEN archive.**
 
 **Recovered-surface tab assessment (this session, no code change):** faithful single-shot inverse-FPP for the modeled physics (A.3 validates the structure non-tautologically); sensor-noise toggle is valuable (reveals realistic sampling-fade degradation only per-frame-independent read noise produces — keeps the demo honest about limits); demo-defect is valuable (turns reconstruction into the AM defect-detection use case). No sim-fidelity improvements worth chasing (diminishing returns per project stance). ONE paper-text note for Stage 7 (not code): the sim's perfect angle-invariant nulling is genuine for MODELED physics but real hardware will leave residual — the same-model-builds-and-corrects setup is why the sim nulls perfectly; avoid over-claiming this maps to hardware. Address via dedicated hardware tabs in Stage 7.
+
+---
+
+### 🏁 PHASE 1 COMPLETE — GUI simulation feature-complete and math-faithful
+
+With 5a/5b landed and the lab-geometry arc closed, **Phase 1 (the GUI digital twin) is complete.** The simulation is feature-complete and math-faithful to the thesis (Samara Ch.2/4 FPP + the inverse-FPP correction):
+
+- **Math core** — forward FPP + inverse-FPP reconstruction, two-angle λ_eq (Eq. 2-51), exact + Taylor models, `[pipeline] std_err` byte-identical 1.764505e-05 (sealed core, 442 tests).
+- **Lab view (3D Scene)** — camera + projector arms at arbitrary (θ_camera, θ_projector), honest-scale hardware bodies, projection cone + viewing prism, clip / coverage / cross-arm-obstruction advisories, hardware-coordinate readout, projector swap (Pico ⇄ PRO4500 with lens selector), FOV presets + custom ROI. Shows the SAME angle-invariant inverse-FPP recovery as the Recovered Surface tab (§7.18).
+- **Pipeline-Stages view** — per-stage visualization of the forward/inverse pipeline.
+- **STL Browser mode** — full-scale specimen import, minimap + windowed slice + FOV overlay.
+- **Recovered Surface tab** — quantitative recovered-vs-ground-truth comparison, sensor-noise toggle, AM defect-detection demo; B.4 serializable reference for the hardware-phase validation target.
+
+**Phase 2 (two tracks):**
+1. **Hardware integration** — physical FLIR Blackfly S + Wintech PRO4500 setup, real captures, recover-and-compare against ground truth (the B.4 reference is the validation target); the `Camera`/`Projector` protocols + mocks get designed against the real SDK here (deferred since Stage 4, §7.3).
+2. **The state-of-the-art abstract-proposal model** — after a literature review, build the abstract's real-time adaptive-nulling in-situ AM defect-detection model, then its hardware implementation.
+
+**After this commit (5c), PROJECT_CONTEXT.md + CONVERSATION_SUMMARY.md are FROZEN** — kept in the repo as the Phase-1 build-history archive, removed from the strategy-chat project knowledge. Phase 2 moves to the new frozen GUI-analysis doc + the sectioned `handoff` doc.
 
 ---
 
