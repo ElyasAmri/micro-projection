@@ -1,0 +1,3 @@
+- understand what is referred to by the tilt, phase shift, phase unwrap, 
+- propose a nice user interface
+- physical access determination
