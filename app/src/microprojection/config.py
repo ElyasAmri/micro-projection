@@ -92,6 +92,9 @@ class AppConfig:
         self._settings.setValue(
             self._KEY_CAMERA_SETTINGS, json.dumps(asdict(settings))
         )
+        # Flush now so a change survives even if the app is killed or crashes
+        # before QSettings' periodic/at-exit flush.
+        self._settings.sync()
 
     @property
     def sidebar_width(self) -> int | None:
