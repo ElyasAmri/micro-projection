@@ -39,6 +39,9 @@ def _to_qimage(arr) -> QImage | None:
 class PreviewDialog(QDialog):
     """Modal window showing the live camera feed, scaled to fit."""
 
+    # bounding box the window is sized to fit on the first frame
+    _FIT_BOX = (960, 720)
+
     def __init__(self, parent=None, *, camera_running: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Camera preview")
@@ -56,16 +59,34 @@ class PreviewDialog(QDialog):
         layout.addWidget(self._label)
 
         self._pixmap: QPixmap | None = None
+        self._aspect: float | None = None
+        self._adjusting = False
 
     def update_frame(self, frame) -> None:
         image = _to_qimage(getattr(frame, "image", None))
         if image is None:
             return
         self._pixmap = QPixmap.fromImage(image)
+        # lock the window to the frame's aspect ratio on the first frame
+        if self._aspect is None:
+            self._size_to_frame(image.width(), image.height())
         self._rescale()
+
+    def _size_to_frame(self, frame_w: int, frame_h: int) -> None:
+        if frame_w <= 0 or frame_h <= 0:
+            return
+        self._aspect = frame_w / frame_h
+        box_w, box_h = self._FIT_BOX
+        scale = min(box_w / frame_w, box_h / frame_h)
+        self.resize(round(frame_w * scale), round(frame_h * scale))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        # keep a fixed aspect ratio: height follows width
+        if self._aspect and not self._adjusting:
+            self._adjusting = True
+            self.resize(self.width(), round(self.width() / self._aspect))
+            self._adjusting = False
         self._rescale()
 
     def _rescale(self) -> None:

@@ -31,7 +31,7 @@ class Sidebar(QWidget):
         super().__init__(parent)
         self.setObjectName("sidebar")
         # resizable via the splitter; keep it usable
-        self.setMinimumWidth(160)
+        self.setMinimumWidth(240)
         # A plain QWidget ignores QSS background-color unless told to style it.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -63,6 +63,9 @@ class Sidebar(QWidget):
         self._preview_btn = QPushButton(".")
         self._preview_btn.setToolTip("Open camera preview")
         self._preview_btn.setEnabled(False)
+        # square button: side = the row/line height (the selector's height)
+        side = self._camera_combo.sizeHint().height()
+        self._preview_btn.setFixedSize(side, side)
         self._preview_btn.clicked.connect(self.previewRequested)
         row.addWidget(self._preview_btn)
 
