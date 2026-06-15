@@ -30,9 +30,18 @@ class ParameterPanel(QWidget):
 
         self._period = QDoubleSpinBox()
         self._period.setRange(4.0, 512.0)
-        self._period.setValue(16.0)
+        self._period.setValue(128.0)  # 1/8 the spatial frequency of the 16 px default
         self._period.setSuffix(" px")
         capture_layout.addRow("Fringe period:", self._period)
+
+        # Live display pattern: fringes for measurement, or a Siemens star
+        # focus target for manually focusing the projector/camera. Only affects
+        # the live projection; a capture always projects fringes.
+        self._display_pattern = QComboBox()
+        self._display_pattern.addItems(
+            ["Fringe", "Siemens star (focus)", "Crosshair + rings (align)"]
+        )
+        capture_layout.addRow("Display pattern:", self._display_pattern)
 
         # -- Phase group --
         phase_group = QGroupBox("Phase Extraction")
@@ -85,6 +94,7 @@ class ParameterPanel(QWidget):
         # Connect change signals
         self._n_steps.valueChanged.connect(self._emit_params)
         self._period.valueChanged.connect(self._emit_params)
+        self._display_pattern.currentIndexChanged.connect(self._emit_params)
         self._psa_algorithm.currentIndexChanged.connect(self._emit_params)
         self._unwrap_method.currentIndexChanged.connect(self._emit_params)
         self._filter_method.currentIndexChanged.connect(self._emit_params)
@@ -103,4 +113,7 @@ class ParameterPanel(QWidget):
             "filter_method": self._filter_method.currentText().lower(),
             "filter_cutoff": self._filter_cutoff.value(),
             "lambda_eq": period / 50.0,
+            "display_pattern": (
+                ["fringe", "siemens", "crosshair"][self._display_pattern.currentIndex()]
+            ),
         }

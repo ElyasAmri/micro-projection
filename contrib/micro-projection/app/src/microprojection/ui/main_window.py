@@ -434,12 +434,55 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg, 4000)
         self._projector_panel.set_status(msg)
 
+    def _pattern_size(self) -> tuple[int, int]:
+        """(w, h) of the projector output, falling back to a preview size."""
+        if self._projector_window is not None and hasattr(self._projector_window, '_screen_size'):
+            return self._projector_window._screen_size
+        return 640, 480
+
+    def _generate_siemens_star(self, params: dict) -> np.ndarray:
+        """Siemens-star focus target: alternating wedges on a centered disk.
+
+        Frequency rises toward the center, so the diameter of the gray "blur
+        disk" where spokes merge is a direct, frequency-independent read of
+        focus quality. Surround is mid-gray so the projector lights uniformly.
+        """
+        w, h = self._pattern_size()
+        spokes = int(params.get("star_spokes", 36))  # 36 white + 36 black wedges
+        cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+        yy, xx = np.ogrid[:h, :w]
+        theta = np.arctan2(yy - cy, xx - cx)
+        star = np.cos(spokes * theta) > 0
+        img = np.where(star, 255, 0).astype(np.uint8)
+        r = np.hypot(yy - cy, xx - cx)
+        img[r > 0.48 * min(w, h)] = 128
+        return img
+
+    def _generate_crosshair_rings(self, params: dict) -> np.ndarray:
+        """Centering/alignment target: full-frame crosshair + concentric rings.
+
+        White lines on black, centered on the projector output. The crosshair
+        marks the optical center for alignment; the evenly-spaced rings help
+        check for keystone/centering (they should stay circular and concentric).
+        """
+        w, h = self._pattern_size()
+        img = np.zeros((h, w), dtype=np.uint8)
+        cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+        yy, xx = np.ogrid[:h, :w]
+        t = max(1, int(round(min(w, h) * 0.004)))  # line half-thickness in px
+        # Crosshair (full-frame horizontal + vertical lines).
+        img[np.abs(yy - cy) <= t, :] = 255
+        img[:, np.abs(xx - cx) <= t] = 255
+        # Concentric rings every `spacing` px from the center.
+        r = np.hypot(yy - cy, xx - cx)
+        spacing = float(params.get("ring_spacing", min(w, h) / 12.0))
+        dist_to_ring = np.minimum(r % spacing, spacing - (r % spacing))
+        img[(dist_to_ring <= t) & (r >= spacing * 0.5)] = 255
+        return img
+
     def _generate_fringe(self, params: dict) -> np.ndarray:
         """Generate a sinusoidal fringe pattern from current parameters."""
-        if self._projector_window is not None and hasattr(self._projector_window, '_screen_size'):
-            w, h = self._projector_window._screen_size
-        else:
-            w, h = 640, 480
+        w, h = self._pattern_size()
         period = params.get("period", 16.0)
         n_steps = params.get("n_steps", 4)
         step = params.get("current_step", 0)
@@ -454,7 +497,13 @@ class MainWindow(QMainWindow):
     def _update_fringe_pattern(self, params: dict = None):
         if params is None:
             params = self._parameter_panel.get_params()
-        pattern = self._generate_fringe(params)
+        dp = params.get("display_pattern")
+        if dp == "siemens":
+            pattern = self._generate_siemens_star(params)
+        elif dp == "crosshair":
+            pattern = self._generate_crosshair_rings(params)
+        else:
+            pattern = self._generate_fringe(params)
         self._projection_view.update_pattern(pattern)
         if self._projector_window is not None and self._projector_window.isVisible():
             self._projector_window.update_pattern(pattern)

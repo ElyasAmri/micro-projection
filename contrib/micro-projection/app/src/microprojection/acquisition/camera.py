@@ -133,15 +133,51 @@ class PySpinCameraThread(QThread):
         try:
             cam.Init()
 
+            # Self-heal: if a previous session was killed mid-acquisition, the
+            # camera is left streaming, which makes PixelFormat read-only
+            # ("Node is not writable"). Reboot the device once to clear it.
+            if not PySpin.IsWritable(cam.PixelFormat):
+                cam.DeviceReset()
+                del cam
+                cam_list.Clear()
+                system.ReleaseInstance()
+                cam = None
+                for _ in range(20):  # wait for USB re-enumeration (~up to 20s)
+                    time.sleep(1.0)
+                    system = PySpin.System.GetInstance()
+                    cam_list = system.GetCameras()
+                    if cam_list.GetSize() > self.device_index:
+                        cam = cam_list[self.device_index]
+                        cam.Init()
+                        break
+                    cam_list.Clear()
+                    system.ReleaseInstance()
+                if cam is None or not PySpin.IsWritable(cam.PixelFormat):
+                    self.error.emit(
+                        "Camera was locked (prior session not closed cleanly); "
+                        "auto-reset failed. Replug the USB cable."
+                    )
+                    if cam is not None:
+                        cam.DeInit()
+                        del cam
+                    cam_list.Clear()
+                    system.ReleaseInstance()
+                    return
+
             # Pixel format
             cam.PixelFormat.SetValue(PySpin.PixelFormat_Mono8)
 
             # Continuous acquisition
             cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
 
-            # Auto exposure with a reasonable upper limit
-            cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Continuous)
-            cam.AutoExposureExposureTimeUpperLimit.SetValue(30000.0)  # 30ms max
+            # Fixed exposure/gain (flicker-safe): auto hunting causes
+            # frame-to-frame brightness flicker, and an exposure that is an
+            # integer multiple of the 50 Hz mains period (20 ms) avoids light
+            # banding. Gain at 0 dB for lowest noise.
+            cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Off)
+            cam.ExposureTime.SetValue(20000.0)  # 20 ms
+            cam.GainAuto.SetValue(PySpin.GainAuto_Off)
+            cam.Gain.SetValue(0.0)
 
             # Framerate: enable manual control, target 30 fps
             cam.AcquisitionFrameRateEnable.SetValue(True)
