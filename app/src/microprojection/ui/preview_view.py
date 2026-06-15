@@ -5,13 +5,19 @@ keeping aspect ratio. MainWindow keeps ``CameraController.frameReady`` connected
 to ``update_frame`` for the life of the window; the camera only emits while
 running, and ``clear`` resets to the placeholder when it stops.
 
+``update_frame`` only stores the most recent frame; a timer renders it at a
+capped rate and drops any frames that arrived in between. Rendering every frame
+synchronously would let the GUI fall behind the camera and the latency grow
+without bound (visible as preview lag), so the preview is deliberately decoupled
+from the camera's frame rate.
+
 Handles both frame shapes the cameras produce: RGB (HxWx3) from OpenCV and raw
 mono (HxW) from PySpin, in 8- or 16-bit.
 """
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -56,8 +62,24 @@ class PreviewView(QWidget):
         layout.addWidget(self._label)
 
         self._pixmap: QPixmap | None = None
+        self._latest = None  # most recent frame awaiting render
+
+        # Render at ~30 Hz from the latest frame only; intermediate frames are
+        # dropped so a slow render never lets latency accumulate.
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._render_latest)
+        self._timer.start()
 
     def update_frame(self, frame) -> None:
+        # Cheap: just keep the newest frame; the timer does the actual render.
+        self._latest = frame
+
+    def _render_latest(self) -> None:
+        if self._latest is None:
+            return
+        frame = self._latest
+        self._latest = None
         image = _to_qimage(getattr(frame, "image", None))
         if image is None:
             return
@@ -66,6 +88,7 @@ class PreviewView(QWidget):
 
     def clear(self) -> None:
         """Drop the current frame and show the placeholder (camera stopped)."""
+        self._latest = None
         self._pixmap = None
         self._label.setText(self._PLACEHOLDER)
 
