@@ -2,7 +2,7 @@
 
 First-class UI for the PRO4500 integration. Exposes device detection, power and
 display-mode control over USB (DLPC350 / pycrafter4500), pattern-sequence
-parameters, and the HDMI synced-capture action. The panel only *emits intent* —
+parameters, and the HDMI synced-capture action. The panel only *emits intent* -
 MainWindow owns the controller, camera, and pipeline and does the orchestration.
 
 USB controls disable themselves when pycrafter4500 is unavailable; the HDMI
@@ -137,7 +137,7 @@ class ProjectorPanel(QWidget):
             for w in self._usb_widgets:
                 w.setEnabled(False)
             self.set_status(
-                "pycrafter4500 not installed — USB control disabled. "
+                "pycrafter4500 not installed - USB control disabled. "
                 "HDMI synced capture still works. Install: pip install -e .[hardware]"
             )
 

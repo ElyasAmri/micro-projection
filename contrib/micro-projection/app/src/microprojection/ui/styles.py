@@ -18,9 +18,9 @@ _ACCENT = "#4a9eff"
 _ACCENT_DIM = "#2f7ed0"
 
 
-# Stylesheet cleared out -- the previous QSS looked weak. Rebuild from scratch.
+# Stylesheet cleared out. The previous QSS looked weak. Rebuild from scratch.
 # Only the structural sidebar surface is kept so it reads as a full-height panel
-# (not a floating card). The app also applies the Fusion dark palette + base
+# (not a floating card). The app also applies the Fusion dark palette and base
 # font (see app.py).
 STYLESHEET = f"""
 QWidget#sidebar {{
@@ -30,9 +30,7 @@ QWidget#sidebar {{
 """
 
 
-# ---------------------------------------------------------------------------
-# Palette + font
-# ---------------------------------------------------------------------------
+# Palette and font.
 
 BASE_FONT = QFont("Segoe UI", 10)
 

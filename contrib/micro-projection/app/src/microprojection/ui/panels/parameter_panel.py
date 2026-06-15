@@ -72,7 +72,7 @@ class ParameterPanel(QWidget):
         self._filter_cutoff.setValue(0.8)
         self._filter_cutoff.setDecimals(2)
         self._filter_cutoff.setSuffix(" mm")
-        filter_layout.addRow("Cutoff λc:", self._filter_cutoff)
+        filter_layout.addRow("Cutoff lambda_c:", self._filter_cutoff)
 
         # -- Assemble into scroll area --
         inner = QWidget()

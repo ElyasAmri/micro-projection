@@ -14,24 +14,35 @@ from PySide6.QtCore import QSettings
 class AppConfig:
     """Remembers the last user configuration across runs."""
 
-    _KEY_LAST_CAMERA = "camera/last_name"
+    _KEY_LAST_BACKEND = "camera/last_backend"
+    _KEY_LAST_INDEX = "camera/last_index"
     _KEY_SIDEBAR_WIDTH = "ui/sidebar_width"
 
     def __init__(self):
         self._settings = QSettings()
 
     @property
-    def last_camera(self) -> str | None:
-        """Name of the camera selected when the app last closed, or None."""
-        value = self._settings.value(self._KEY_LAST_CAMERA, None)
-        return value or None
+    def last_camera(self) -> tuple[str, int] | None:
+        """Device coordinates (backend, index) of the last camera, or None.
+
+        Identified by coordinates rather than display name so we never persist
+        an encoded device-name string.
+        """
+        backend = self._settings.value(self._KEY_LAST_BACKEND, None)
+        index = self._settings.value(self._KEY_LAST_INDEX, None)
+        if not backend or index is None:
+            return None
+        return (str(backend), int(index))
 
     @last_camera.setter
-    def last_camera(self, name: str | None) -> None:
-        if name:
-            self._settings.setValue(self._KEY_LAST_CAMERA, name)
+    def last_camera(self, value: tuple[str, int] | None) -> None:
+        if value is None:
+            self._settings.remove(self._KEY_LAST_BACKEND)
+            self._settings.remove(self._KEY_LAST_INDEX)
         else:
-            self._settings.remove(self._KEY_LAST_CAMERA)
+            backend, index = value
+            self._settings.setValue(self._KEY_LAST_BACKEND, backend)
+            self._settings.setValue(self._KEY_LAST_INDEX, int(index))
 
     @property
     def sidebar_width(self) -> int | None:

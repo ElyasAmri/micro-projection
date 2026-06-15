@@ -19,6 +19,7 @@ from microprojection.acquisition.camera import (
 class CameraController(QObject):
     """Lifecycle manager for the single active camera thread."""
 
+    frameReady = Signal(object)   # CaptureFrame
     fpsUpdated = Signal(float)
     error = Signal(str)
 
@@ -37,7 +38,7 @@ class CameraController(QObject):
             self._thread = PySpinCameraThread(device_index=index, parent=self)
         else:
             self._thread = OpenCVCameraThread(device_index=index, parent=self)
-        # No view wired yet -- frame_ready is available for the new design.
+        self._thread.frame_ready.connect(self.frameReady)
         self._thread.fps_updated.connect(self.fpsUpdated)
         self._thread.error.connect(self.error)
         self._thread.start()

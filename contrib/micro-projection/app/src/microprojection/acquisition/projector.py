@@ -128,7 +128,7 @@ class ProjectorController:
 
         Args:
             num_pats: number of distinct patterns per sequence (e.g. the phase
-                step count) — these must be present in the HDMI frames.
+                step count) - these must be present in the HDMI frames.
             fps: sequence rate in frames per second; the DLPC350 derives the
                 per-pattern exposure/period from this.
             bit_depth: bits per pattern (1 for binary, up to 8 for grayscale
