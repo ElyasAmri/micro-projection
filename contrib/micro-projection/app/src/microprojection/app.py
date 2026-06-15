@@ -12,6 +12,7 @@ from microprojection.ui.styles import BASE_FONT, STYLESHEET, dark_palette
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("MicroProjection")
+    app.setOrganizationName("MicroProjection")  # gives QSettings a stable location
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
     app.setFont(BASE_FONT)
