@@ -113,13 +113,15 @@ class MainWindow(QMainWindow):
         self._acquisition.status.connect(self._status)
         self._sidebar.phaseShiftRequested.connect(self._acquisition.run_phase_shift)
         self._sidebar.noiseTestRequested.connect(self._acquisition.run_noise_test)
+        # Restore the projector first so its refresh rate is known before the
+        # camera starts; the camera then starts once with the flicker-safe
+        # exposure instead of being restarted right after to apply it.
+        self._sidebar.set_projectors(
+            self._enumerate_screens(), prefer_index=self._config.last_projector
+        )
         # Default to no camera (off); restore the last-used one if it's present.
         self._sidebar.set_cameras(
             self._available_cameras, prefer_key=self._config.last_camera
-        )
-        # Default to no projector; restore the last-used screen if present.
-        self._sidebar.set_projectors(
-            self._enumerate_screens(), prefer_index=self._config.last_projector
         )
 
         # Main content area: the live camera preview fills the viewport.
@@ -143,8 +145,17 @@ class MainWindow(QMainWindow):
         self._config.sidebar_width = self._splitter.sizes()[0]
 
     def _rescan_cameras(self):
-        """Re-enumerate after a hot-plug event; sidebar keeps the active device
-        selected if it survived, so this won't disturb a running camera."""
+        """Re-enumerate cameras after a USB hot-plug event.
+
+        Skipped while a camera is streaming: PySpin cannot be safely
+        re-enumerated during acquisition (a fresh GetCameras returns nothing and
+        destabilizes the running device), and a USB3 camera starting
+        acquisition itself raises a device-change event. enumerating then would
+        drop and crash the active camera. A disconnect of the running camera
+        surfaces through its error signal instead.
+        """
+        if self._camera.running:
+            return
         self._available_cameras = enumerate_cameras()
         self._sidebar.set_cameras(
             self._available_cameras, prefer_key=self._config.last_camera

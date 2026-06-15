@@ -69,7 +69,9 @@ class OpenCVCameraThread(QThread):
     def __init__(self, device_index: int = 0, parent=None):
         super().__init__(parent)
         self.device_index = device_index
-        self._running = False
+        # Set once in stop(); never re-set in run(), so a stop requested while
+        # the thread is still starting up is not lost (which would orphan it).
+        self._stop_requested = False
 
     def run(self):
         cap = cv2.VideoCapture(self.device_index, cv2.CAP_DSHOW)
@@ -77,11 +79,10 @@ class OpenCVCameraThread(QThread):
             self.error.emit(f"Cannot open OpenCV camera {self.device_index}")
             return
 
-        self._running = True
         frame_count = 0
         fps_timer = time.time()
 
-        while self._running:
+        while not self._stop_requested:
             ret, frame = cap.read()
             if not ret:
                 self.msleep(1)
@@ -104,7 +105,7 @@ class OpenCVCameraThread(QThread):
         cap.release()
 
     def stop(self):
-        self._running = False
+        self._stop_requested = True
         self.wait(3000)
 
 
@@ -119,7 +120,9 @@ class PySpinCameraThread(QThread):
         super().__init__(parent)
         self.device_index = device_index
         self._settings = settings or CameraSettings()
-        self._running = False
+        # Set once in stop(); never re-set in run(), so a stop requested while
+        # the thread is still starting up is not lost (which would orphan it).
+        self._stop_requested = False
 
     def run(self):
         system = PySpin.System.GetInstance()
@@ -180,11 +183,10 @@ class PySpinCameraThread(QThread):
             system.ReleaseInstance()
             return
 
-        self._running = True
         frame_count = 0
         fps_timer = time.time()
 
-        while self._running:
+        while not self._stop_requested:
             try:
                 # In software-trigger mode the camera only exposes when told to.
                 if self._settings.trigger_mode == "Software":
@@ -212,7 +214,7 @@ class PySpinCameraThread(QThread):
                     fps_timer = time.time()
 
             except PySpin.SpinnakerException:
-                if self._running:
+                if not self._stop_requested:
                     self.msleep(1)
 
         try:
@@ -225,5 +227,5 @@ class PySpinCameraThread(QThread):
         system.ReleaseInstance()
 
     def stop(self):
-        self._running = False
+        self._stop_requested = True
         self.wait(5000)
