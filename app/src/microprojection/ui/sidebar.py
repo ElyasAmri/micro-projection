@@ -25,7 +25,6 @@ class Sidebar(QWidget):
 
     # (backend, index); selecting a device turns it on
     deviceSelected = Signal(str, int)
-    previewRequested = Signal()
     # open the camera configuration modal
     cameraSettingsRequested = Signal()
     # screen index to project onto, or -1 for no projector
@@ -66,18 +65,10 @@ class Sidebar(QWidget):
         # hot-plug (see DeviceWatcher).
         row.addWidget(self._camera_combo, stretch=1)
 
-        # Preview button on the same row, after the selector. Labeled with a
-        # literal dot. Disabled until a camera is selected.
-        self._preview_btn = QPushButton(".")
-        self._preview_btn.setToolTip("Open camera preview")
-        self._preview_btn.setEnabled(False)
         # square button: side = the row/line height (the selector's height)
         side = self._camera_combo.sizeHint().height()
-        self._preview_btn.setFixedSize(side, side)
-        self._preview_btn.clicked.connect(self.previewRequested)
-        row.addWidget(self._preview_btn)
 
-        # Camera settings (gear) button, same square size. Disabled until a
+        # Camera settings (gear) button, sized to the row. Disabled until a
         # camera is selected.
         self._camera_settings_btn = QPushButton()
         self._camera_settings_btn.setIcon(gear_icon(side - 6))
@@ -165,7 +156,6 @@ class Sidebar(QWidget):
 
         new_key = self._current_key()
         self._camera_combo.setToolTip(self._camera_combo.currentText())
-        self._preview_btn.setEnabled(new_key is not None)
         self._camera_settings_btn.setEnabled(new_key is not None)
         if new_key != prev_key:
             self._emit_selection(new_key)
@@ -240,6 +230,5 @@ class Sidebar(QWidget):
     def _on_index_changed(self, combo_index: int) -> None:
         cam = self._camera_combo.itemData(combo_index)
         self._camera_combo.setToolTip(cam["name"] if cam else "No camera")
-        self._preview_btn.setEnabled(cam is not None)
         self._camera_settings_btn.setEnabled(cam is not None)
         self._emit_selection((cam["backend"], cam["index"]) if cam else None)

@@ -22,13 +22,14 @@ from PySide6.QtWidgets import (
 )
 
 from microprojection.acquisition.camera import enumerate_cameras
+from microprojection.acquisition.camera_settings import CameraSettings
 from microprojection.acquisition.projector import ProjectorController
 from microprojection.config import AppConfig
 from microprojection.patterns import generate_pattern
 from microprojection.ui.camera_controller import CameraController
 from microprojection.ui.camera_settings_dialog import CameraSettingsDialog
 from microprojection.ui.device_watch import DeviceWatcher
-from microprojection.ui.preview_dialog import PreviewDialog
+from microprojection.ui.preview_view import PreviewView
 from microprojection.ui.projector_settings_dialog import ProjectorSettingsDialog
 from microprojection.ui.projector_window import ProjectorWindow
 from microprojection.ui.screens import projector_screens
@@ -49,6 +50,10 @@ class MainWindow(QMainWindow):
         self._camera = CameraController(parent=self)
         self._camera.fpsUpdated.connect(self._on_fps_updated)
         self._camera.error.connect(self._on_camera_error)
+        # Live frames feed the viewport preview directly (no separate window).
+        self._camera.frameReady.connect(self._on_frame_ready)
+        # Current camera configuration, edited via the settings dialog.
+        self._camera_settings = CameraSettings()
 
         # Populate the device list eagerly so the selector is ready.
         self._available_cameras = enumerate_cameras()
@@ -78,7 +83,6 @@ class MainWindow(QMainWindow):
 
         self._sidebar = Sidebar()
         self._sidebar.deviceSelected.connect(self._select_device)
-        self._sidebar.previewRequested.connect(self._show_preview)
         self._sidebar.cameraSettingsRequested.connect(self._show_camera_settings)
         self._sidebar.projectorSelected.connect(self._select_projector)
         self._sidebar.projectorSettingsRequested.connect(self._show_projector_settings)
@@ -91,8 +95,8 @@ class MainWindow(QMainWindow):
             self._enumerate_screens(), prefer_index=self._config.last_projector
         )
 
-        # Main content area (to be designed. preview, results, etc.).
-        self._content = QWidget()
+        # Main content area: the live camera preview fills the viewport.
+        self._content = PreviewView()
 
         # Resizable split between the sidebar and the content area.
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -140,6 +144,7 @@ class MainWindow(QMainWindow):
         # Sentinel from the sidebar: "No camera" (or the active one unplugged).
         if index < 0 or not backend:
             self._camera.stop()
+            self._content.clear()
             self._config.last_camera = None
             self._status("No camera")
             return
@@ -148,18 +153,22 @@ class MainWindow(QMainWindow):
         self._config.last_camera = (backend, index)
         self._status(f"Camera on: {backend} {index}")
 
-    def _show_preview(self):
-        """Open a modal live preview fed by the active camera (if any)."""
-        dialog = PreviewDialog(self, camera_running=self._camera.running)
-        self._camera.frameReady.connect(dialog.update_frame)
-        try:
-            dialog.exec()
-        finally:
-            self._camera.frameReady.disconnect(dialog.update_frame)
+    def _on_frame_ready(self, frame):
+        """Render the latest camera frame into the viewport preview."""
+        self._content.update_frame(frame)
 
     def _show_camera_settings(self):
-        """Open the (currently empty) camera configuration modal."""
-        CameraSettingsDialog(self).exec()
+        """Open the camera configuration modal seeded with the current settings."""
+        dialog = CameraSettingsDialog(self._camera_settings, self)
+        dialog.settingsChanged.connect(self._apply_camera_settings)
+        dialog.exec()
+
+    def _apply_camera_settings(self, settings: CameraSettings):
+        """Store the edited settings and push them to the camera (restarts a
+        running camera so structural changes take effect)."""
+        self._camera_settings = settings
+        self._camera.apply_settings(settings)
+        self._status("Camera settings applied")
 
     def _on_fps_updated(self, fps: float):
         self._status(f"FPS: {fps:.1f}")

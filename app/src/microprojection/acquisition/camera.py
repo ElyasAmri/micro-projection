@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from microprojection.acquisition.camera_settings import CameraSettings
 from microprojection.core.datatypes import CaptureFrame
 
 try:
@@ -114,9 +115,10 @@ class PySpinCameraThread(QThread):
     error = Signal(str)
     fps_updated = Signal(float)
 
-    def __init__(self, device_index: int = 0, parent=None):
+    def __init__(self, device_index: int = 0, settings: CameraSettings = None, parent=None):
         super().__init__(parent)
         self.device_index = device_index
+        self._settings = settings or CameraSettings()
         self._running = False
 
     def run(self):
@@ -164,26 +166,11 @@ class PySpinCameraThread(QThread):
                     system.ReleaseInstance()
                     return
 
-            # Pixel format
-            cam.PixelFormat.SetValue(PySpin.PixelFormat_Mono8)
-
-            # Continuous acquisition
-            cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
-
-            # Fixed exposure/gain (flicker-safe): auto hunting causes
-            # frame-to-frame brightness flicker, and an exposure that is an
-            # integer multiple of the 50 Hz mains period (20 ms) avoids light
-            # banding. Gain at 0 dB for lowest noise.
-            cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Off)
-            cam.ExposureTime.SetValue(20000.0)  # 20 ms
-            cam.GainAuto.SetValue(PySpin.GainAuto_Off)
-            cam.Gain.SetValue(0.0)
-
-            # Framerate: enable manual control, target 30 fps
-            cam.AcquisitionFrameRateEnable.SetValue(True)
-            cam.AcquisitionFrameRate.SetValue(
-                min(30.0, cam.AcquisitionFrameRate.GetMax())
-            )
+            # Apply the user's settings (exposure, gain, format, ROI, trigger,
+            # etc.) before streaming; structural nodes are only writable here.
+            # Imported lazily: this line only runs when PySpin is present.
+            from microprojection.acquisition import camera_config
+            camera_config.configure(cam, self._settings)
 
             cam.BeginAcquisition()
         except PySpin.SpinnakerException as e:
@@ -199,6 +186,12 @@ class PySpinCameraThread(QThread):
 
         while self._running:
             try:
+                # In software-trigger mode the camera only exposes when told to.
+                if self._settings.trigger_mode == "Software":
+                    try:
+                        cam.TriggerSoftware.Execute()
+                    except PySpin.SpinnakerException:
+                        pass
                 image = cam.GetNextImage(1000)  # 1s timeout
                 if image.IsIncomplete():
                     image.Release()

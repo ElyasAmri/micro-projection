@@ -14,6 +14,7 @@ from microprojection.acquisition.camera import (
     OpenCVCameraThread,
     PySpinCameraThread,
 )
+from microprojection.acquisition.camera_settings import CameraSettings
 
 
 class CameraController(QObject):
@@ -26,6 +27,9 @@ class CameraController(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = None
+        self._settings = CameraSettings()
+        # (backend, index) of the active device, so settings can restart it
+        self._current = None
 
     @property
     def running(self) -> bool:
@@ -34,8 +38,11 @@ class CameraController(QObject):
     def select(self, backend: str, index: int) -> None:
         """Switch to (and start) the given device, replacing any current one."""
         self.stop()
+        self._current = (backend, index)
         if backend == "pyspin":
-            self._thread = PySpinCameraThread(device_index=index, parent=self)
+            self._thread = PySpinCameraThread(
+                device_index=index, settings=self._settings, parent=self
+            )
         else:
             self._thread = OpenCVCameraThread(device_index=index, parent=self)
         self._thread.frame_ready.connect(self.frameReady)
@@ -43,9 +50,17 @@ class CameraController(QObject):
         self._thread.error.connect(self.error)
         self._thread.start()
 
+    def apply_settings(self, settings: CameraSettings) -> None:
+        """Store new camera settings and, if a camera is live, restart it so
+        structural nodes (pixel format, ROI, etc.) take effect."""
+        self._settings = settings
+        if self.running and self._current is not None:
+            self.select(*self._current)
+
     def stop(self) -> None:
         """Tear down the active thread and return to the off state."""
         if self._thread is not None:
             self._thread.stop()
             self._thread.deleteLater()
             self._thread = None
+        self._current = None
