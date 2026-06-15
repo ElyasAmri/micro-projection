@@ -31,6 +31,7 @@ from microprojection.ui.camera_settings_dialog import CameraSettingsDialog
 from microprojection.ui.device_watch import DeviceWatcher
 from microprojection.ui.preview_view import PreviewView
 from microprojection.ui.projector_settings_dialog import ProjectorSettingsDialog
+from microprojection.ui.acquisition_controller import AcquisitionController
 from microprojection.ui.projector_window import ProjectorWindow
 from microprojection.ui.screens import projector_screens
 from microprojection.ui.sidebar import Sidebar
@@ -96,6 +97,16 @@ class MainWindow(QMainWindow):
         self._sidebar.cameraSettingsRequested.connect(self._show_camera_settings)
         self._sidebar.projectorSelected.connect(self._select_projector)
         self._sidebar.projectorSettingsRequested.connect(self._show_projector_settings)
+        self._acquisition = AcquisitionController(
+            self._camera, self._sidebar, self,
+            projector_window=lambda: self._projector_window,
+            settings=lambda: self._camera_settings,
+            projection=lambda: self._projection,
+            parent=self,
+        )
+        self._acquisition.status.connect(self._status)
+        self._sidebar.phaseShiftRequested.connect(self._acquisition.run_phase_shift)
+        self._sidebar.noiseTestRequested.connect(self._acquisition.run_noise_test)
         # Default to no camera (off); restore the last-used one if it's present.
         self._sidebar.set_cameras(
             self._available_cameras, prefer_key=self._config.last_camera

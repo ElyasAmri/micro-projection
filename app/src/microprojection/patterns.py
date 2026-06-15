@@ -13,16 +13,26 @@ import numpy as np
 
 
 def fringe(width: int, height: int, period: float = 32.0,
-           orientation: str = "vertical") -> np.ndarray:
-    """Sinusoidal fringe. "vertical" stripes vary along x, "horizontal" along y."""
+           orientation: str = "vertical", phase: float = 0.0) -> np.ndarray:
+    """Sinusoidal fringe. "vertical" stripes vary along x, "horizontal" along y.
+
+    ``phase`` (radians) shifts the sine, for phase-stepping acquisition.
+    """
     period = max(2.0, float(period))
     if orientation == "horizontal":
         coord = np.arange(height, dtype=np.float64)[:, None]
     else:
         coord = np.arange(width, dtype=np.float64)[None, :]
-    val = 0.5 * (1.0 + np.sin(2.0 * np.pi * coord / period))
+    val = 0.5 * (1.0 + np.sin(2.0 * np.pi * coord / period + float(phase)))
     img = np.broadcast_to(val, (height, width))
     return (img * 255.0).astype(np.uint8)
+
+
+def flat_field(width: int, height: int, level: int = 128) -> np.ndarray:
+    """Uniform gray field at ``level`` (0..255). Used for camera noise tests so
+    every pixel sits at the same mean intensity."""
+    level = int(np.clip(level, 0, 255))
+    return np.full((height, width), level, dtype=np.uint8)
 
 
 def siemens_star(width: int, height: int, spokes: int = 36) -> np.ndarray:
@@ -56,10 +66,12 @@ def crosshair(width: int, height: int, thickness: int | None = None) -> np.ndarr
 
 def generate_pattern(kind: str, width: int, height: int, *,
                      period: float = 32.0,
-                     orientation: str = "vertical") -> np.ndarray:
+                     orientation: str = "vertical",
+                     phase: float = 0.0) -> np.ndarray:
     """Dispatch by pattern key ("fringe", "star", "crosshair")."""
     if kind == "fringe":
-        return fringe(width, height, period=period, orientation=orientation)
+        return fringe(width, height, period=period, orientation=orientation,
+                      phase=phase)
     if kind == "star":
         return siemens_star(width, height)
     if kind == "crosshair":

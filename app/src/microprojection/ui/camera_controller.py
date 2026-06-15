@@ -57,6 +57,12 @@ class CameraController(QObject):
         if self.running and self._current is not None:
             self.select(*self._current)
 
+    def ensure_settings(self, settings: CameraSettings) -> None:
+        """Apply settings only if they differ from the active ones, avoiding a
+        needless camera restart when it is already configured."""
+        if settings != self._settings:
+            self.apply_settings(settings)
+
     def stop(self) -> None:
         """Tear down the active thread and return to the off state."""
         if self._thread is not None:

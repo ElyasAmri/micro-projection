@@ -31,6 +31,10 @@ class Sidebar(QWidget):
     projectorSelected = Signal(int)
     # open the projector configuration modal
     projectorSettingsRequested = Signal()
+    # run the phase-shifting capture pipeline
+    phaseShiftRequested = Signal()
+    # run the static-fringe noise pipeline
+    noiseTestRequested = Signal()
 
     WIDTH = 260
 
@@ -105,6 +109,23 @@ class Sidebar(QWidget):
         proj_row.addWidget(self._projector_settings_btn)
 
         layout.addLayout(proj_row)
+
+        # Acquisition pipelines. Enabled only once both a camera and a projector
+        # are selected (the pipelines drive both at once).
+        layout.addWidget(QLabel("Acquisition"))
+        self._phase_btn = QPushButton("Phase-shift capture")
+        self._phase_btn.setToolTip("Project stepped fringes and capture a set")
+        self._phase_btn.setEnabled(False)
+        self._phase_btn.clicked.connect(self.phaseShiftRequested)
+        layout.addWidget(self._phase_btn)
+
+        self._noise_btn = QPushButton("Noise test")
+        self._noise_btn.setToolTip("Capture many frames of a static fringe and "
+                                   "log temporal variance")
+        self._noise_btn.setEnabled(False)
+        self._noise_btn.clicked.connect(self.noiseTestRequested)
+        layout.addWidget(self._noise_btn)
+
         layout.addStretch(1)
 
     # Public API used by MainWindow.
@@ -157,6 +178,7 @@ class Sidebar(QWidget):
         new_key = self._current_key()
         self._camera_combo.setToolTip(self._camera_combo.currentText())
         self._camera_settings_btn.setEnabled(new_key is not None)
+        self._update_acquisition_enabled()
         if new_key != prev_key:
             self._emit_selection(new_key)
 
@@ -203,10 +225,30 @@ class Sidebar(QWidget):
         new = self._projector_combo.currentData()
         self._projector_combo.setToolTip(self._projector_combo.currentText())
         self._projector_settings_btn.setEnabled(new is not None)
+        self._update_acquisition_enabled()
         if new != prev:
             self.projectorSelected.emit(-1 if new is None else new)
 
     # Internal helpers and slots.
+
+    def _update_acquisition_enabled(self) -> None:
+        """Pipelines need both a camera and a projector, so enable their buttons
+        only when both are selected."""
+        ready = (
+            self._camera_combo.currentData() is not None
+            and self._projector_combo.currentData() is not None
+        )
+        self._phase_btn.setEnabled(ready)
+        self._noise_btn.setEnabled(ready)
+
+    def lock_acquisition(self) -> None:
+        """Disable the pipeline buttons while a pipeline is running."""
+        self._phase_btn.setEnabled(False)
+        self._noise_btn.setEnabled(False)
+
+    def refresh_acquisition_enabled(self) -> None:
+        """Re-enable the pipeline buttons per current readiness (after a run)."""
+        self._update_acquisition_enabled()
 
     def _on_projector_changed(self, combo_index: int) -> None:
         index = self._projector_combo.itemData(combo_index)
@@ -214,6 +256,7 @@ class Sidebar(QWidget):
             self._projector_combo.currentText() if index is not None else "No projector"
         )
         self._projector_settings_btn.setEnabled(index is not None)
+        self._update_acquisition_enabled()
         self.projectorSelected.emit(-1 if index is None else index)
 
     def _current_key(self):
@@ -231,4 +274,5 @@ class Sidebar(QWidget):
         cam = self._camera_combo.itemData(combo_index)
         self._camera_combo.setToolTip(cam["name"] if cam else "No camera")
         self._camera_settings_btn.setEnabled(cam is not None)
+        self._update_acquisition_enabled()
         self._emit_selection((cam["backend"], cam["index"]) if cam else None)
