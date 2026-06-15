@@ -4,9 +4,10 @@ Edits a CameraSettings for the FLIR/PySpin camera: exposure, gain, pixel format,
 region of interest, orientation, gamma, frame rate, trigger, and buffer handling.
 Opened from the gear button on the sidebar camera row.
 
-The dialog edits a copy of the values. Pressing Apply emits the new
-CameraSettings; MainWindow applies it to the camera (restarting acquisition so
-structural changes such as pixel format and region of interest take effect).
+There is no Apply button: changing any control applies immediately. The dialog
+emits the new CameraSettings; MainWindow applies it to the camera (restarting
+acquisition so structural changes such as pixel format and region of interest
+take effect) and persists it so it is restored next run.
 """
 from __future__ import annotations
 
@@ -74,17 +75,12 @@ class CameraSettingsDialog(QDialog):
         groups.addWidget(self._build_trigger_group())
         groups.addStretch(1)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Apply
-            | QDialogButtonBox.StandardButton.Close
-        )
-        buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(
-            self._apply
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
 
         self._refresh_enabled()
+        self._wire_auto_apply()
 
     def _build_exposure_group(self) -> QGroupBox:
         s = self._settings
@@ -256,6 +252,46 @@ class CameraSettingsDialog(QDialog):
         )
         form.addRow("Edge", self._trigger_activation)
         return group
+
+    def _wire_auto_apply(self):
+        """Apply on every change so the camera updates without an Apply button.
+
+        Spin boxes use editingFinished (commit on Enter or focus-out) so typing
+        a value does not restart the camera on every digit; combos and check
+        boxes apply on their change signal.
+        """
+        for combo in (
+            self._exposure_auto,
+            self._gain_auto,
+            self._pixel_format,
+            self._bit_depth,
+            self._buffer_mode,
+            self._trigger_mode,
+            self._trigger_source,
+            self._trigger_activation,
+        ):
+            combo.currentIndexChanged.connect(self._apply)
+        for spin in (
+            self._exposure_time,
+            self._gain,
+            self._binning_h,
+            self._binning_v,
+            self._roi_width,
+            self._roi_height,
+            self._roi_offset_x,
+            self._roi_offset_y,
+            self._frame_rate,
+            self._gamma,
+        ):
+            spin.editingFinished.connect(self._apply)
+        for check in (
+            self._reverse_x,
+            self._reverse_y,
+            self._roi_enable,
+            self._frame_rate_enable,
+            self._gamma_enable,
+        ):
+            check.toggled.connect(self._apply)
 
     def _refresh_enabled(self, *_):
         # Fixed exposure/gain fields only matter when their auto mode is off.

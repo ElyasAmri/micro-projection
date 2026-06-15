@@ -46,14 +46,24 @@ class MainWindow(QMainWindow):
         self._config = AppConfig()
         self._projector_window = None              # HDMI fringe display
         self._projector_ctl = ProjectorController()  # DLPC350 over USB
+        # Last projection choice, so the settings modal reopens on it.
+        self._projection = {
+            "key": "none",
+            "period": 32,
+            "orientation": "vertical",
+            "path": "",
+        }
 
         self._camera = CameraController(parent=self)
         self._camera.fpsUpdated.connect(self._on_fps_updated)
         self._camera.error.connect(self._on_camera_error)
         # Live frames feed the viewport preview directly (no separate window).
         self._camera.frameReady.connect(self._on_frame_ready)
-        # Current camera configuration, edited via the settings dialog.
-        self._camera_settings = CameraSettings()
+        # Current camera configuration, restored from the last run and edited
+        # via the settings dialog. Seed the controller so the first camera that
+        # starts already uses it.
+        self._camera_settings = self._config.camera_settings
+        self._camera.apply_settings(self._camera_settings)
 
         # Populate the device list eagerly so the selector is ready.
         self._available_cameras = enumerate_cameras()
@@ -164,9 +174,16 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _apply_camera_settings(self, settings: CameraSettings):
-        """Store the edited settings and push them to the camera (restarts a
-        running camera so structural changes take effect)."""
+        """Store the edited settings, persist them, and push them to the camera
+        (restarts a running camera so structural changes take effect).
+
+        Auto-apply fires on every control change, including focus-out with no
+        edit, so skip when nothing actually changed to avoid a needless restart.
+        """
+        if settings == self._camera_settings:
+            return
         self._camera_settings = settings
+        self._config.camera_settings = settings
         self._camera.apply_settings(settings)
         self._status("Camera settings applied")
 
@@ -207,7 +224,7 @@ class MainWindow(QMainWindow):
 
     def _show_projector_settings(self):
         """Open the projector modal to pick a temporary test projection."""
-        dialog = ProjectorSettingsDialog(self)
+        dialog = ProjectorSettingsDialog(self._projection, self)
         dialog.projectionRequested.connect(self._project_pattern)
         dialog.projectionCleared.connect(self._clear_projection)
         dialog.exec()
@@ -223,12 +240,18 @@ class MainWindow(QMainWindow):
             self._status("Projector size unknown")
             return
         if spec.get("source") == "image":
+            self._projection.update(key="image", path=spec.get("path", ""))
             if win.set_image_file(spec.get("path", "")):
                 self._status("Projecting image")
             else:
                 self._status("Could not load image")
             return
         kind = spec.get("pattern", "fringe")
+        self._projection.update(
+            key=kind,
+            period=spec.get("period", 32),
+            orientation=spec.get("orientation", "vertical"),
+        )
         pattern = generate_pattern(
             kind, width, height,
             period=spec.get("period", 32),
@@ -239,6 +262,7 @@ class MainWindow(QMainWindow):
 
     def _clear_projection(self):
         """Blank the projector (project black)."""
+        self._projection["key"] = "none"
         win = self._projector_window
         if win is None:
             return

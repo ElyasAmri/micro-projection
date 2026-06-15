@@ -8,7 +8,12 @@ Add further persisted settings as properties here as the app grows.
 """
 from __future__ import annotations
 
+import json
+from dataclasses import asdict, fields
+
 from PySide6.QtCore import QSettings
+
+from microprojection.acquisition.camera_settings import CameraSettings
 
 
 class AppConfig:
@@ -18,6 +23,7 @@ class AppConfig:
     _KEY_LAST_INDEX = "camera/last_index"
     _KEY_LAST_PROJECTOR = "projector/last_index"
     _KEY_SIDEBAR_WIDTH = "ui/sidebar_width"
+    _KEY_CAMERA_SETTINGS = "camera/settings"
 
     def __init__(self):
         self._settings = QSettings()
@@ -57,6 +63,35 @@ class AppConfig:
             self._settings.remove(self._KEY_LAST_PROJECTOR)
         else:
             self._settings.setValue(self._KEY_LAST_PROJECTOR, int(index))
+
+    @property
+    def camera_settings(self) -> CameraSettings:
+        """The saved camera configuration, or defaults if none/invalid.
+
+        Stored as a single JSON blob. Unknown keys are dropped so an older saved
+        value still loads after the settings schema grows.
+        """
+        raw = self._settings.value(self._KEY_CAMERA_SETTINGS, None)
+        if not raw:
+            return CameraSettings()
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return CameraSettings()
+        if not isinstance(data, dict):
+            return CameraSettings()
+        valid = {f.name for f in fields(CameraSettings)}
+        kwargs = {k: v for k, v in data.items() if k in valid}
+        try:
+            return CameraSettings(**kwargs)
+        except TypeError:
+            return CameraSettings()
+
+    @camera_settings.setter
+    def camera_settings(self, settings: CameraSettings) -> None:
+        self._settings.setValue(
+            self._KEY_CAMERA_SETTINGS, json.dumps(asdict(settings))
+        )
 
     @property
     def sidebar_width(self) -> int | None:

@@ -40,7 +40,7 @@ class ProjectorSettingsDialog(QDialog):
         ("Image file", "image"),
     ]
 
-    def __init__(self, parent=None):
+    def __init__(self, state=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Projector settings")
         self.setModal(True)
@@ -66,11 +66,23 @@ class ProjectorSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        # Reflect the initial selection without projecting; only user changes
-        # from here trigger a projection.
+        # Restore the previous choice, then reflect it without projecting; only
+        # user changes from here trigger a projection.
+        self._restore(state or {})
         self._sync_visibility()
         self._combo.currentIndexChanged.connect(self._on_change)
         self._period_spin.valueChanged.connect(self._apply)
+
+    def _restore(self, state: dict) -> None:
+        """Seed the controls from a saved selection (before signals connect, so
+        restoring never projects)."""
+        index = self._combo.findData(state.get("key"))
+        if index >= 0:
+            self._combo.setCurrentIndex(index)
+        if state.get("period"):
+            self._period_spin.setValue(int(state["period"]))
+        if state.get("path"):
+            self._image_path.setText(state["path"])
 
     def _build_period_row(self) -> QWidget:
         self._period_row = QWidget()
