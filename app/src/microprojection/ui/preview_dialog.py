@@ -9,10 +9,24 @@ mono (HxW) from PySpin, in 8- or 16-bit.
 """
 from __future__ import annotations
 
+import sys
+from ctypes.wintypes import MSG, RECT
+
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout
+
+# WM_SIZING edge codes: which border/corner the user is dragging.
+_WM_SIZING = 0x0214
+_WMSZ_LEFT = 1
+_WMSZ_RIGHT = 2
+_WMSZ_TOP = 3
+_WMSZ_TOPLEFT = 4
+_WMSZ_TOPRIGHT = 5
+_WMSZ_BOTTOM = 6
+_WMSZ_BOTTOMLEFT = 7
+_WMSZ_BOTTOMRIGHT = 8
 
 
 def _to_qimage(arr) -> QImage | None:
@@ -60,7 +74,6 @@ class PreviewDialog(QDialog):
 
         self._pixmap: QPixmap | None = None
         self._aspect: float | None = None
-        self._adjusting = False
 
     def update_frame(self, frame) -> None:
         image = _to_qimage(getattr(frame, "image", None))
@@ -82,12 +95,46 @@ class PreviewDialog(QDialog):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        # keep a fixed aspect ratio: height follows width
-        if self._aspect and not self._adjusting:
-            self._adjusting = True
-            self.resize(self.width(), round(self.width() / self._aspect))
-            self._adjusting = False
         self._rescale()
+
+    def nativeEvent(self, event_type, message):
+        # Constrain the live resize rectangle to the frame aspect ratio. Doing
+        # it here (before the resize happens) avoids the flicker that a resize()
+        # inside resizeEvent causes when dragging a corner.
+        if (
+            self._aspect
+            and sys.platform == "win32"
+            and event_type == "windows_generic_MSG"
+        ):
+            msg = MSG.from_address(int(message))
+            if msg.message == _WM_SIZING:
+                self._constrain_sizing_rect(int(msg.wParam), int(msg.lParam))
+                return True, 0
+        return super().nativeEvent(event_type, message)
+
+    def _constrain_sizing_rect(self, edge: int, rect_addr: int) -> None:
+        rect = RECT.from_address(rect_addr)
+        # The drag rect is the whole window; aspect applies to the content, so
+        # subtract the non-client frame (title bar + borders).
+        margin_w = self.frameGeometry().width() - self.geometry().width()
+        margin_h = self.frameGeometry().height() - self.geometry().height()
+
+        if edge in (_WMSZ_TOP, _WMSZ_BOTTOM):
+            # vertical edge: width follows height, anchored at the left
+            content_h = (rect.bottom - rect.top) - margin_h
+            content_w = content_h * self._aspect
+            rect.right = rect.left + round(content_w + margin_w)
+        else:
+            # horizontal/corner: height follows width
+            content_w = (rect.right - rect.left) - margin_w
+            content_h = content_w / self._aspect
+            target_h = round(content_h + margin_h)
+            if edge in (_WMSZ_TOPLEFT, _WMSZ_TOPRIGHT):
+                # anchor the bottom edge
+                rect.top = rect.bottom - target_h
+            else:
+                # anchor the top edge
+                rect.bottom = rect.top + target_h
 
     def _rescale(self) -> None:
         if self._pixmap is None:
