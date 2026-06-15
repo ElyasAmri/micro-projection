@@ -1,8 +1,8 @@
 """Left sidebar: device controls for the central layout.
 
-Currently hosts the camera selector (device list + start/stop). Like the panels
+Hosts the camera selector and the projector (display) selector. Like the panels
 under ``ui.panels``, the sidebar only *emits intent*. MainWindow owns the
-camera thread and does the orchestration. Add further control groups here as the
+hardware and does the orchestration. Add further control groups here as the
 design grows.
 """
 from __future__ import annotations
@@ -24,6 +24,8 @@ class Sidebar(QWidget):
     # (backend, index); selecting a device turns it on
     deviceSelected = Signal(str, int)
     previewRequested = Signal()
+    # screen index to project onto, or -1 for no projector
+    projectorSelected = Signal(int)
 
     WIDTH = 260
 
@@ -70,6 +72,22 @@ class Sidebar(QWidget):
         row.addWidget(self._preview_btn)
 
         layout.addLayout(row)
+
+        # "Projector" label inline, before its selector, on the same row.
+        proj_row = QHBoxLayout()
+        proj_row.setSpacing(8)
+        proj_row.addWidget(QLabel("Projector"))
+
+        self._projector_combo = QComboBox()
+        self._projector_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContentsOnFirstShow
+        )
+        self._projector_combo.setMinimumContentsLength(0)
+        self._projector_combo.view().setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._projector_combo.currentIndexChanged.connect(self._on_projector_changed)
+        proj_row.addWidget(self._projector_combo, stretch=1)
+
+        layout.addLayout(proj_row)
         layout.addStretch(1)
 
     # Public API used by MainWindow.
@@ -125,7 +143,59 @@ class Sidebar(QWidget):
         if new_key != prev_key:
             self._emit_selection(new_key)
 
+    def set_projectors(
+        self, screens: list[dict], prefer_index: int | None = None
+    ) -> None:
+        """Repopulate the projector list, defaulting to "No projector".
+
+        Each screen dict has int ``index`` and display ``name``. Keeps the
+        current selection if that screen is still present; otherwise restores
+        ``prefer_index`` at startup; otherwise "No projector". Emits
+        ``projectorSelected`` (with -1 for none) only when the selection
+        effectively changes.
+        """
+        prev = self._projector_combo.currentData()
+
+        self._projector_combo.blockSignals(True)
+        self._projector_combo.clear()
+        self._projector_combo.addItem("No projector", None)
+
+        # Default to the "No projector" entry.
+        target_idx = 0
+        for screen in screens:
+            self._projector_combo.addItem(screen["name"], screen["index"])
+            i = self._projector_combo.count() - 1
+            self._projector_combo.setItemData(
+                i, screen["name"], Qt.ItemDataRole.ToolTipRole
+            )
+            if screen["index"] == prev:
+                target_idx = i
+            elif prev is None and target_idx == 0 and screen["index"] == prefer_index:
+                target_idx = i
+
+        widest = max(
+            (self._projector_combo.fontMetrics().horizontalAdvance(
+                self._projector_combo.itemText(i))
+             for i in range(self._projector_combo.count())),
+            default=0,
+        )
+        self._projector_combo.view().setMinimumWidth(widest + 40)
+        self._projector_combo.setCurrentIndex(target_idx)
+        self._projector_combo.blockSignals(False)
+
+        new = self._projector_combo.currentData()
+        self._projector_combo.setToolTip(self._projector_combo.currentText())
+        if new != prev:
+            self.projectorSelected.emit(-1 if new is None else new)
+
     # Internal helpers and slots.
+
+    def _on_projector_changed(self, combo_index: int) -> None:
+        index = self._projector_combo.itemData(combo_index)
+        self._projector_combo.setToolTip(
+            self._projector_combo.currentText() if index is not None else "No projector"
+        )
+        self.projectorSelected.emit(-1 if index is None else index)
 
     def _current_key(self):
         cam = self._camera_combo.currentData()

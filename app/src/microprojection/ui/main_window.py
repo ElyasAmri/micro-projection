@@ -56,6 +56,11 @@ class MainWindow(QMainWindow):
         self._device_watcher.changed.connect(self._rescan_cameras)
         QApplication.instance().installNativeEventFilter(self._device_watcher)
 
+        # Refresh the projector list when a display is connected/disconnected.
+        app = QApplication.instance()
+        app.screenAdded.connect(self._rescan_screens)
+        app.screenRemoved.connect(self._rescan_screens)
+
         # Press "r" to restart the app in a fresh process (reload code changes).
         self._restart_shortcut = QShortcut(QKeySequence("r"), self)
         self._restart_shortcut.activated.connect(self._restart_app)
@@ -69,9 +74,14 @@ class MainWindow(QMainWindow):
         self._sidebar = Sidebar()
         self._sidebar.deviceSelected.connect(self._select_device)
         self._sidebar.previewRequested.connect(self._show_preview)
+        self._sidebar.projectorSelected.connect(self._select_projector)
         # Default to no camera (off); restore the last-used one if it's present.
         self._sidebar.set_cameras(
             self._available_cameras, prefer_key=self._config.last_camera
+        )
+        # Default to no projector; restore the last-used screen if present.
+        self._sidebar.set_projectors(
+            self._enumerate_screens(), prefer_index=self._config.last_projector
         )
 
         # Main content area (to be designed. preview, results, etc.).
@@ -147,6 +157,34 @@ class MainWindow(QMainWindow):
         self._status(f"Camera error: {msg}")
 
     # Projector (HDMI display).
+
+    def _enumerate_screens(self) -> list[dict]:
+        """Available displays as projector targets: int index plus a label."""
+        screens = []
+        for i, screen in enumerate(QApplication.screens()):
+            geo = screen.geometry()
+            screens.append(
+                {"index": i, "name": f"{screen.name()} ({geo.width()}x{geo.height()})"}
+            )
+        return screens
+
+    def _rescan_screens(self, *_):
+        self._sidebar.set_projectors(
+            self._enumerate_screens(), prefer_index=self._config.last_projector
+        )
+
+    def _select_projector(self, index: int):
+        """Project onto the chosen screen, or hide the window for -1."""
+        if index < 0:
+            self._hide_projector()
+            self._config.last_projector = None
+            self._status("No projector")
+            return
+        screens = QApplication.screens()
+        if not 0 <= index < len(screens):
+            return
+        self._select_projector_screen(screens[index])
+        self._config.last_projector = index
 
     def _select_projector_screen(self, screen):
         if self._projector_window is None:

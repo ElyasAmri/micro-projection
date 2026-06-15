@@ -16,6 +16,7 @@ class AppConfig:
 
     _KEY_LAST_BACKEND = "camera/last_backend"
     _KEY_LAST_INDEX = "camera/last_index"
+    _KEY_LAST_PROJECTOR = "projector/last_index"
     _KEY_SIDEBAR_WIDTH = "ui/sidebar_width"
 
     def __init__(self):
@@ -43,6 +44,19 @@ class AppConfig:
             backend, index = value
             self._settings.setValue(self._KEY_LAST_BACKEND, backend)
             self._settings.setValue(self._KEY_LAST_INDEX, int(index))
+
+    @property
+    def last_projector(self) -> int | None:
+        """Screen index of the last projector display, or None."""
+        value = self._settings.value(self._KEY_LAST_PROJECTOR, None)
+        return int(value) if value is not None else None
+
+    @last_projector.setter
+    def last_projector(self, index: int | None) -> None:
+        if index is None:
+            self._settings.remove(self._KEY_LAST_PROJECTOR)
+        else:
+            self._settings.setValue(self._KEY_LAST_PROJECTOR, int(index))
 
     @property
     def sidebar_width(self) -> int | None:
