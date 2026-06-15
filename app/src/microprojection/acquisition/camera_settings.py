@@ -58,3 +58,21 @@ class CameraSettings:
 
     # Stream buffer handling: "NewestOnly" avoids stale frames.
     stream_buffer_mode: str = "NewestOnly"
+
+
+def flicker_safe_exposure(exposure_us: float, refresh_hz: float) -> float:
+    """Snap an exposure to the nearest nonzero integer multiple of the projector
+    frame period.
+
+    With a DLP projector the displayed light is modulated within each refresh
+    cycle, so an exposure that is not a whole number of refresh periods captures
+    a different fraction of that cycle each frame, producing strong frame-to-
+    frame brightness flicker. Integrating whole periods makes the captured light
+    independent of phase, cancelling the beat. Returns the input unchanged if
+    ``refresh_hz`` is not positive.
+    """
+    if refresh_hz <= 0:
+        return exposure_us
+    period_us = 1_000_000.0 / refresh_hz
+    multiples = max(1, round(exposure_us / period_us))
+    return multiples * period_us

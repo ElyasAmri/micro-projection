@@ -9,6 +9,7 @@ design takes shape. The previous full layout is in git history (commit
 """
 
 import sys
+from dataclasses import replace
 
 import numpy as np
 from PySide6.QtCore import QProcess, Qt
@@ -22,7 +23,10 @@ from PySide6.QtWidgets import (
 )
 
 from microprojection.acquisition.camera import enumerate_cameras
-from microprojection.acquisition.camera_settings import CameraSettings
+from microprojection.acquisition.camera_settings import (
+    CameraSettings,
+    flicker_safe_exposure,
+)
 from microprojection.acquisition.projector import ProjectorController
 from microprojection.config import AppConfig
 from microprojection.patterns import generate_pattern
@@ -61,10 +65,12 @@ class MainWindow(QMainWindow):
         # Live frames feed the viewport preview directly (no separate window).
         self._camera.frameReady.connect(self._on_frame_ready)
         # Current camera configuration, restored from the last run and edited
-        # via the settings dialog. Seed the controller so the first camera that
-        # starts already uses it.
+        # via the settings dialog. This holds the user's intent; the exposure
+        # actually applied is snapped to the projector refresh to avoid flicker
+        # (see _effective_camera_settings). Seed the controller so the first
+        # camera that starts already uses it.
         self._camera_settings = self._config.camera_settings
-        self._camera.apply_settings(self._camera_settings)
+        self._camera.apply_settings(self._effective_camera_settings())
 
         # Populate the device list eagerly so the selector is ready.
         self._available_cameras = enumerate_cameras()
@@ -100,7 +106,7 @@ class MainWindow(QMainWindow):
         self._acquisition = AcquisitionController(
             self._camera, self._sidebar, self,
             projector_window=lambda: self._projector_window,
-            settings=lambda: self._camera_settings,
+            settings=self._effective_camera_settings,
             projection=lambda: self._projection,
             parent=self,
         )
@@ -195,8 +201,30 @@ class MainWindow(QMainWindow):
             return
         self._camera_settings = settings
         self._config.camera_settings = settings
-        self._camera.apply_settings(settings)
+        self._camera.apply_settings(self._effective_camera_settings())
         self._status("Camera settings applied")
+
+    def _effective_camera_settings(self) -> CameraSettings:
+        """The user's camera settings with the exposure snapped to a whole
+        number of projector refresh periods, to cancel projector/camera flicker.
+
+        Only adjusts manual exposure (not auto) and only when a projector with a
+        known refresh rate is active. The stored/persisted settings keep the
+        user's chosen exposure; only the value sent to the camera is snapped.
+        """
+        settings = self._camera_settings
+        win = self._projector_window
+        if settings.exposure_auto != "Off" or win is None:
+            return settings
+        hz = win.refresh_hz()
+        snapped = flicker_safe_exposure(settings.exposure_time_us, hz)
+        if abs(snapped - settings.exposure_time_us) < 1.0:
+            return settings
+        self._status(
+            f"Exposure snapped to {snapped / 1000.0:.3f} ms "
+            f"(whole frames at {hz:.2f} Hz) to avoid projector flicker"
+        )
+        return replace(settings, exposure_time_us=snapped)
 
     def _on_fps_updated(self, fps: float):
         self._status(f"FPS: {fps:.1f}")
@@ -287,6 +315,9 @@ class MainWindow(QMainWindow):
             self._projector_window = ProjectorWindow()
         self._projector_window.move_to_screen(screen)
         self._status(f"Projector on {screen.name()}")
+        # The projector's refresh rate sets the flicker-safe exposure, so
+        # re-apply the camera config now that it (or the screen) is known.
+        self._camera.ensure_settings(self._effective_camera_settings())
 
     def _show_projector(self):
         if self._projector_window is None:

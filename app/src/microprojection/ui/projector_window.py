@@ -17,6 +17,7 @@ class ProjectorWindow(QWidget):
         self.setStyleSheet("background-color: black;")
 
         self._screen_size = (0, 0)
+        self._screen = None
         self._label = QLabel()
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -32,11 +33,20 @@ class ProjectorWindow(QWidget):
         geo = screen.geometry()
         self.setGeometry(geo)
         self._screen_size = (geo.width(), geo.height())
+        self._screen = screen
         self.showFullScreen()
 
     def target_size(self):
         """(width, height) of the screen this window is projecting onto."""
         return self._screen_size
+
+    def refresh_hz(self) -> float:
+        """Refresh rate of the projector's screen in Hz, or 0 if unknown.
+
+        Used to snap the camera exposure to whole projector frames so the
+        projector/camera beat that causes brightness flicker cancels out.
+        """
+        return float(self._screen.refreshRate()) if self._screen is not None else 0.0
 
     def set_image_file(self, path: str) -> bool:
         """Display an image file, fit to the screen keeping aspect. False if it
