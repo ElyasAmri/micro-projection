@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from microprojection.ui.icons import gear_icon
+
 
 class Sidebar(QWidget):
     """Fixed-width control rail on the left of the main window."""
@@ -24,8 +26,12 @@ class Sidebar(QWidget):
     # (backend, index); selecting a device turns it on
     deviceSelected = Signal(str, int)
     previewRequested = Signal()
+    # open the camera configuration modal
+    cameraSettingsRequested = Signal()
     # screen index to project onto, or -1 for no projector
     projectorSelected = Signal(int)
+    # open the projector configuration modal
+    projectorSettingsRequested = Signal()
 
     WIDTH = 260
 
@@ -71,6 +77,16 @@ class Sidebar(QWidget):
         self._preview_btn.clicked.connect(self.previewRequested)
         row.addWidget(self._preview_btn)
 
+        # Camera settings (gear) button, same square size. Disabled until a
+        # camera is selected.
+        self._camera_settings_btn = QPushButton()
+        self._camera_settings_btn.setIcon(gear_icon(side - 6))
+        self._camera_settings_btn.setToolTip("Camera settings")
+        self._camera_settings_btn.setEnabled(False)
+        self._camera_settings_btn.setFixedSize(side, side)
+        self._camera_settings_btn.clicked.connect(self.cameraSettingsRequested)
+        row.addWidget(self._camera_settings_btn)
+
         layout.addLayout(row)
 
         # "Projector" label inline, before its selector, on the same row.
@@ -86,6 +102,16 @@ class Sidebar(QWidget):
         self._projector_combo.view().setTextElideMode(Qt.TextElideMode.ElideNone)
         self._projector_combo.currentIndexChanged.connect(self._on_projector_changed)
         proj_row.addWidget(self._projector_combo, stretch=1)
+
+        # Projector settings (gear) button. Disabled until a projector is
+        # selected (it drives a test projection onto that screen).
+        self._projector_settings_btn = QPushButton()
+        self._projector_settings_btn.setIcon(gear_icon(side - 6))
+        self._projector_settings_btn.setToolTip("Projector settings")
+        self._projector_settings_btn.setEnabled(False)
+        self._projector_settings_btn.setFixedSize(side, side)
+        self._projector_settings_btn.clicked.connect(self.projectorSettingsRequested)
+        proj_row.addWidget(self._projector_settings_btn)
 
         layout.addLayout(proj_row)
         layout.addStretch(1)
@@ -140,6 +166,7 @@ class Sidebar(QWidget):
         new_key = self._current_key()
         self._camera_combo.setToolTip(self._camera_combo.currentText())
         self._preview_btn.setEnabled(new_key is not None)
+        self._camera_settings_btn.setEnabled(new_key is not None)
         if new_key != prev_key:
             self._emit_selection(new_key)
 
@@ -185,6 +212,7 @@ class Sidebar(QWidget):
 
         new = self._projector_combo.currentData()
         self._projector_combo.setToolTip(self._projector_combo.currentText())
+        self._projector_settings_btn.setEnabled(new is not None)
         if new != prev:
             self.projectorSelected.emit(-1 if new is None else new)
 
@@ -195,6 +223,7 @@ class Sidebar(QWidget):
         self._projector_combo.setToolTip(
             self._projector_combo.currentText() if index is not None else "No projector"
         )
+        self._projector_settings_btn.setEnabled(index is not None)
         self.projectorSelected.emit(-1 if index is None else index)
 
     def _current_key(self):
@@ -212,4 +241,5 @@ class Sidebar(QWidget):
         cam = self._camera_combo.itemData(combo_index)
         self._camera_combo.setToolTip(cam["name"] if cam else "No camera")
         self._preview_btn.setEnabled(cam is not None)
+        self._camera_settings_btn.setEnabled(cam is not None)
         self._emit_selection((cam["backend"], cam["index"]) if cam else None)

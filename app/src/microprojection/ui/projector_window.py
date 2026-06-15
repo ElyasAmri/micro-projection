@@ -16,6 +16,7 @@ class ProjectorWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setStyleSheet("background-color: black;")
 
+        self._screen_size = (0, 0)
         self._label = QLabel()
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -32,6 +33,25 @@ class ProjectorWindow(QWidget):
         self.setGeometry(geo)
         self._screen_size = (geo.width(), geo.height())
         self.showFullScreen()
+
+    def target_size(self):
+        """(width, height) of the screen this window is projecting onto."""
+        return self._screen_size
+
+    def set_image_file(self, path: str) -> bool:
+        """Display an image file, fit to the screen keeping aspect. False if it
+        could not be loaded."""
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return False
+        self._label.setPixmap(
+            pixmap.scaled(
+                self._label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        return True
 
     def update_pattern(self, pattern: np.ndarray):
         """Display a HxW uint8 grayscale or HxWx3 uint8 RGB pattern."""

@@ -10,6 +10,7 @@ design takes shape. The previous full layout is in git history (commit
 
 import sys
 
+import numpy as np
 from PySide6.QtCore import QProcess, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -23,10 +24,14 @@ from PySide6.QtWidgets import (
 from microprojection.acquisition.camera import enumerate_cameras
 from microprojection.acquisition.projector import ProjectorController
 from microprojection.config import AppConfig
+from microprojection.patterns import generate_pattern
 from microprojection.ui.camera_controller import CameraController
+from microprojection.ui.camera_settings_dialog import CameraSettingsDialog
 from microprojection.ui.device_watch import DeviceWatcher
 from microprojection.ui.preview_dialog import PreviewDialog
+from microprojection.ui.projector_settings_dialog import ProjectorSettingsDialog
 from microprojection.ui.projector_window import ProjectorWindow
+from microprojection.ui.screens import projector_screens
 from microprojection.ui.sidebar import Sidebar
 
 
@@ -74,7 +79,9 @@ class MainWindow(QMainWindow):
         self._sidebar = Sidebar()
         self._sidebar.deviceSelected.connect(self._select_device)
         self._sidebar.previewRequested.connect(self._show_preview)
+        self._sidebar.cameraSettingsRequested.connect(self._show_camera_settings)
         self._sidebar.projectorSelected.connect(self._select_projector)
+        self._sidebar.projectorSettingsRequested.connect(self._show_projector_settings)
         # Default to no camera (off); restore the last-used one if it's present.
         self._sidebar.set_cameras(
             self._available_cameras, prefer_key=self._config.last_camera
@@ -150,6 +157,10 @@ class MainWindow(QMainWindow):
         finally:
             self._camera.frameReady.disconnect(dialog.update_frame)
 
+    def _show_camera_settings(self):
+        """Open the (currently empty) camera configuration modal."""
+        CameraSettingsDialog(self).exec()
+
     def _on_fps_updated(self, fps: float):
         self._status(f"FPS: {fps:.1f}")
 
@@ -159,14 +170,13 @@ class MainWindow(QMainWindow):
     # Projector (HDMI display).
 
     def _enumerate_screens(self) -> list[dict]:
-        """Available displays as projector targets: int index plus a label."""
-        screens = []
-        for i, screen in enumerate(QApplication.screens()):
-            geo = screen.geometry()
-            screens.append(
-                {"index": i, "name": f"{screen.name()} ({geo.width()}x{geo.height()})"}
-            )
-        return screens
+        """External displays usable as projector targets.
+
+        Built-in panels and the primary desktop screen are hidden so only real
+        projection displays (such as an HDMI projector) are offered. See
+        ui/screens.py for how desktop screens are identified.
+        """
+        return projector_screens()
 
     def _rescan_screens(self, *_):
         self._sidebar.set_projectors(
@@ -185,6 +195,48 @@ class MainWindow(QMainWindow):
             return
         self._select_projector_screen(screens[index])
         self._config.last_projector = index
+
+    def _show_projector_settings(self):
+        """Open the projector modal to pick a temporary test projection."""
+        dialog = ProjectorSettingsDialog(self)
+        dialog.projectionRequested.connect(self._project_pattern)
+        dialog.projectionCleared.connect(self._clear_projection)
+        dialog.exec()
+
+    def _project_pattern(self, spec: dict):
+        """Render the chosen test pattern or image onto the projector screen."""
+        win = self._projector_window
+        if win is None:
+            self._status("Select a projector first")
+            return
+        width, height = win.target_size()
+        if width <= 0 or height <= 0:
+            self._status("Projector size unknown")
+            return
+        if spec.get("source") == "image":
+            if win.set_image_file(spec.get("path", "")):
+                self._status("Projecting image")
+            else:
+                self._status("Could not load image")
+            return
+        kind = spec.get("pattern", "fringe")
+        pattern = generate_pattern(
+            kind, width, height,
+            period=spec.get("period", 32),
+            orientation=spec.get("orientation", "vertical"),
+        )
+        win.update_pattern(pattern)
+        self._status(f"Projecting {kind}")
+
+    def _clear_projection(self):
+        """Blank the projector (project black)."""
+        win = self._projector_window
+        if win is None:
+            return
+        width, height = win.target_size()
+        if width > 0 and height > 0:
+            win.update_pattern(np.zeros((height, width), dtype=np.uint8))
+            self._status("Projector blanked")
 
     def _select_projector_screen(self, screen):
         if self._projector_window is None:
