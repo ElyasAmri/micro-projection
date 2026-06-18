@@ -60,6 +60,34 @@ class AcquisitionController(QObject):
         )
         self._start(pipeline, "Noise test")
 
+    def run_noise_fringe(self):
+        """Like the noise test, but characterize noise under a sinusoidal fringe
+        (the phase-shift operating condition) at the current projection's period
+        and orientation."""
+        projection = self._get_projection()
+        pipeline = NoisePipeline(
+            self._camera, self._get_projector_window(), self._get_settings(),
+            self._capture_dir("noise_fringe"),
+            num_frames=1000,
+            pattern_kind="fringe",
+            period=projection.get("period", 32),
+            orientation=projection.get("orientation", "vertical"),
+            parent=self,
+        )
+        self._start(pipeline, "Noise test (fringe)")
+
+    def run_noise_dark(self):
+        """Noise test with the projector black: the camera's own read noise and
+        dark current, with no projected light to confound it."""
+        pipeline = NoisePipeline(
+            self._camera, self._get_projector_window(), self._get_settings(),
+            self._capture_dir("noise_dark"),
+            num_frames=1000,
+            pattern_kind="dark",
+            parent=self,
+        )
+        self._start(pipeline, "Noise test (dark frame)")
+
     def run_fov(self):
         """Project a box and shrink it to the camera frame to find the FOV."""
         pipeline = FovPipeline(

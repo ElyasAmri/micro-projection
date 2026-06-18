@@ -1,10 +1,23 @@
-"""Flat-field camera noise characterization.
+"""Camera temporal-noise characterization.
 
-Projects a uniform gray field (so every pixel sits at the same mean intensity,
-isolating camera temporal noise rather than scene structure) and captures many
-frames of it (default 1000). Each frame is saved, and the per-pixel temporal
-variance is accumulated online (Welford) so memory stays flat regardless of
-frame count.
+Projects a static pattern and captures many frames of it (default 1000),
+accumulating the per-pixel temporal variance online (Welford) so memory stays
+flat regardless of frame count. Each frame is saved.
+
+The pattern is a uniform gray flat field by default. Set ``pattern_kind`` to
+pick the condition:
+
+* "flat" - uniform gray at ``level``; every pixel sits at the same mean.
+* "fringe" - a sinusoid at ``period``/``orientation``, the phase-shifting
+  operating condition, where the std varies with local intensity (low at the
+  troughs, higher at the crests).
+* "dark" - projector black (level 0), so no projected light reaches the sensor.
+  This isolates the camera's own read noise / dark current from any projector
+  contribution (a flat or fringe field at mid-gray is dominated by DLP PWM
+  dithering, not the sensor), giving a clean sensor-noise baseline.
+
+The temporal std is per-pixel-over-time in every mode, so spatial structure does
+not enter it; only the spread across pixels changes.
 
 At the end it evaluates the per-pixel intensity deviation against three
 thresholds and writes a report:
@@ -28,14 +41,29 @@ import os
 import cv2
 import numpy as np
 
-from microprojection.patterns import flat_field
+from microprojection.patterns import flat_field, fringe
 from microprojection.pipelines.base import CapturePipeline
 from microprojection.pipelines.frame_io import save_frame, save_png
+
+
+def _full_scale(dtype) -> float:
+    """Saturation count for the camera's pixel mode: 255 for Mono8 (uint8),
+    65535 for Mono16 (uint16). The std thresholds are defined on the 0..255
+    scale, so the measured std is normalised by this before they are applied -
+    otherwise a 16-bit run reads ~256x larger and fails every threshold purely
+    on units."""
+    if dtype == np.uint8:
+        return 255.0
+    if dtype == np.uint16:
+        return 65535.0
+    return 255.0
 
 
 class NoisePipeline(CapturePipeline):
     def __init__(self, camera, projector_window, settings, output_dir, *,
                  num_frames: int = 1000, level: int = 128,
+                 pattern_kind: str = "flat", period: float = 32.0,
+                 orientation: str = "vertical",
                  std_dn_threshold: float = 2.0, max_fail_fraction: float = 0.01,
                  percentile: float = 99.0, percentile_limit: float = 3.0,
                  mean_ceiling: float = 1.5, parent=None):
@@ -43,6 +71,14 @@ class NoisePipeline(CapturePipeline):
                          parent=parent)
         self._num_frames = max(1, int(num_frames))
         self._level = level
+        # Static pattern to characterize over: "flat" (uniform gray at level) or
+        # "fringe" (sinusoid at period/orientation, the phase-shift condition).
+        self._pattern_kind = pattern_kind
+        self._period = period
+        self._orientation = orientation
+        # Thresholds are in 8-bit-equivalent counts (a 0..255 scale); the std is
+        # normalised to that scale before they are checked, so they hold for
+        # both Mono8 and Mono16.
         self._std_dn_threshold = std_dn_threshold
         self._max_fail_fraction = max_fail_fraction
         self._percentile = percentile
@@ -53,19 +89,32 @@ class NoisePipeline(CapturePipeline):
         self._count = 0
         self._mean: np.ndarray | None = None
         self._m2: np.ndarray | None = None
+        # Saturation count of the camera mode, set from the first frame's dtype.
+        self._full_scale: float | None = None
 
     @property
     def total(self) -> int:
         return self._num_frames
 
     def pattern_for(self, i: int):
-        # Project the uniform field once (frame 0); hold it for the rest.
+        # Project the static pattern once (frame 0); hold it for the rest.
         if i == 0:
+            if self._pattern_kind == "fringe":
+                return fringe(self.width, self.height, period=self._period,
+                              orientation=self._orientation)
+            if self._pattern_kind == "dark":
+                # Projector black: read noise / dark current with no projected
+                # light (so it isolates the sensor, not the projector).
+                return flat_field(self.width, self.height, level=0)
             return flat_field(self.width, self.height, level=self._level)
         return None
 
     def handle_frame(self, i: int, frame) -> None:
         image = np.asarray(frame.image)
+        # Record the mode's full scale from the native dtype, before any float
+        # conversion, so the std can be normalised to the 8-bit threshold scale.
+        if self._full_scale is None:
+            self._full_scale = _full_scale(image.dtype)
         # Reduce colour frames to luminance so deviation is single-channel.
         if image.ndim == 3:
             image = image.mean(axis=2)
@@ -88,12 +137,17 @@ class NoisePipeline(CapturePipeline):
             variance = np.zeros((1, 1))
         else:
             variance = self._m2 / (self._count - 1)
-        std = np.sqrt(variance)
+        std = np.sqrt(variance)  # raw counts, in the camera's native scale
+
+        # Normalise to 8-bit-equivalent counts so the thresholds apply to both
+        # Mono8 and Mono16. variance_map.npy stays in raw counts.
+        full_scale = self._full_scale or 255.0
+        std_norm = std * (255.0 / full_scale)
 
         np.save(os.path.join(self._output_dir, "variance_map.npy"), variance)
-        self._save_heatmap(std)
-        self._save_fail_mask(std)
-        self._write_report(std)
+        self._save_heatmap(std)  # heatmap self-normalises, so raw is fine
+        self._save_fail_mask(std_norm)
+        self._write_report(std, std_norm, full_scale)
 
     # Threshold evaluation and outputs.
 
@@ -128,19 +182,31 @@ class NoisePipeline(CapturePipeline):
     def _verdict(self, ok: bool) -> str:
         return "pass" if ok else "fail"
 
-    def _write_report(self, std: np.ndarray) -> None:
-        c = self._checks(std)
+    def _write_report(self, std: np.ndarray, std_norm: np.ndarray,
+                      full_scale: float) -> None:
+        c = self._checks(std_norm)
         overall = c["per_pixel_pass"] and c["percentile_pass"] and c["mean_pass"]
+        mode = getattr(self._settings, "pixel_format", "unknown")
+        if self._pattern_kind == "fringe":
+            pattern_desc = (f"pattern: fringe (period {self._period:.0f} px, "
+                            f"{self._orientation})")
+        elif self._pattern_kind == "dark":
+            pattern_desc = "pattern: dark frame (projector black)"
+        else:
+            pattern_desc = f"pattern: flat field (level {self._level}, 0..255)"
         lines = [
-            "Flat-field camera noise test",
+            "Camera temporal-noise test",
             f"frames captured: {self._count}",
-            f"flat-field level (0..255): {self._level}",
+            pattern_desc,
+            f"pixel format: {mode} (full scale {int(full_scale)} counts)",
             "",
-            "Per-pixel temporal std (intensity counts):",
-            f"  mean:   {float(std.mean()):.4f}",
-            f"  median: {float(np.median(std)):.4f}",
-            f"  min:    {float(std.min()):.4f}",
-            f"  max:    {float(std.max()):.4f}",
+            "Per-pixel temporal std (8-bit-equivalent counts, 0..255 scale):",
+            f"  mean:   {float(std_norm.mean()):.4f}",
+            f"  median: {float(np.median(std_norm)):.4f}",
+            f"  min:    {float(std_norm.min()):.4f}",
+            f"  max:    {float(std_norm.max()):.4f}",
+            f"  (raw mean {float(std.mean()):.1f} counts on the native "
+            f"{int(full_scale)} scale)",
             "",
             "Threshold checks:",
             f"  per-pixel std limit {self._std_dn_threshold:.2f} counts: "

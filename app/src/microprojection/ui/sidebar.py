@@ -33,8 +33,12 @@ class Sidebar(QWidget):
     projectorSettingsRequested = Signal()
     # run the phase-shifting capture pipeline
     phaseShiftRequested = Signal()
-    # run the static-fringe noise pipeline
+    # run the flat-field noise pipeline
     noiseTestRequested = Signal()
+    # run the noise pipeline against a fringe pattern
+    noiseFringeRequested = Signal()
+    # run the noise pipeline with the projector black (sensor dark noise)
+    noiseDarkRequested = Signal()
     # run the camera field-of-view identification pipeline
     fovRequested = Signal()
 
@@ -122,11 +126,25 @@ class Sidebar(QWidget):
         layout.addWidget(self._phase_btn)
 
         self._noise_btn = QPushButton("Noise test")
-        self._noise_btn.setToolTip("Capture many frames of a static fringe and "
-                                   "log temporal variance")
+        self._noise_btn.setToolTip("Capture many frames of a flat field and "
+                                   "log per-pixel temporal variance")
         self._noise_btn.setEnabled(False)
         self._noise_btn.clicked.connect(self.noiseTestRequested)
         layout.addWidget(self._noise_btn)
+
+        self._noise_fringe_btn = QPushButton("Noise test (fringe)")
+        self._noise_fringe_btn.setToolTip("Like the noise test, but against a "
+                                          "fringe pattern instead of a flat field")
+        self._noise_fringe_btn.setEnabled(False)
+        self._noise_fringe_btn.clicked.connect(self.noiseFringeRequested)
+        layout.addWidget(self._noise_fringe_btn)
+
+        self._noise_dark_btn = QPushButton("Noise test (dark frame)")
+        self._noise_dark_btn.setToolTip("Noise test with the projector black: "
+                                        "the camera's own read noise / dark current")
+        self._noise_dark_btn.setEnabled(False)
+        self._noise_dark_btn.clicked.connect(self.noiseDarkRequested)
+        layout.addWidget(self._noise_dark_btn)
 
         self._fov_btn = QPushButton("Identify camera FOV")
         self._fov_btn.setToolTip("Project a box and shrink it to the camera "
@@ -249,12 +267,16 @@ class Sidebar(QWidget):
         )
         self._phase_btn.setEnabled(ready)
         self._noise_btn.setEnabled(ready)
+        self._noise_fringe_btn.setEnabled(ready)
+        self._noise_dark_btn.setEnabled(ready)
         self._fov_btn.setEnabled(ready)
 
     def lock_acquisition(self) -> None:
         """Disable the pipeline buttons while a pipeline is running."""
         self._phase_btn.setEnabled(False)
         self._noise_btn.setEnabled(False)
+        self._noise_fringe_btn.setEnabled(False)
+        self._noise_dark_btn.setEnabled(False)
         self._fov_btn.setEnabled(False)
 
     def refresh_acquisition_enabled(self) -> None:
