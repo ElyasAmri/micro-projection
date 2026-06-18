@@ -1,15 +1,17 @@
 """Live-camera preview embedded in the main viewport.
 
 A plain widget that renders frames from the active camera, scaled to fit while
-keeping aspect ratio. MainWindow keeps ``CameraController.frameReady`` connected
-to ``update_frame`` for the life of the window; the camera only emits while
-running, and ``clear`` resets to the placeholder when it stops.
+keeping aspect ratio. The preview is *pull-based*: a timer ticks at a capped
+rate and asks ``frame_source()`` for the camera's most recent frame, rendering
+whatever it gets and ignoring everything in between. ``clear`` resets to the
+placeholder when the camera stops.
 
-``update_frame`` only stores the most recent frame; a timer renders it at a
-capped rate and drops any frames that arrived in between. Rendering every frame
-synchronously would let the GUI fall behind the camera and the latency grow
-without bound (visible as preview lag), so the preview is deliberately decoupled
-from the camera's frame rate.
+Pulling (rather than receiving a queued ``frameReady`` signal per frame) is what
+keeps latency bounded. A per-frame cross-thread signal posts one event per
+captured frame into the GUI event queue; if rendering can't keep pace those
+events accumulate and the displayed image falls further and further behind the
+camera (the preview-lag bug). With a pull, the camera only ever holds its single
+newest frame and old frames are simply overwritten, never queued.
 
 Handles both frame shapes the cameras produce: RGB (HxWx3) from OpenCV and raw
 mono (HxW) from PySpin, in 8- or 16-bit.
@@ -48,7 +50,7 @@ class PreviewView(QWidget):
 
     _PLACEHOLDER = "No camera running"
 
-    def __init__(self, parent=None):
+    def __init__(self, frame_source=None, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background-color: #101216;")
 
@@ -62,24 +64,27 @@ class PreviewView(QWidget):
         layout.addWidget(self._label)
 
         self._pixmap: QPixmap | None = None
-        self._latest = None  # most recent frame awaiting render
+        # Callable returning the camera's most recent CaptureFrame (or None).
+        self._frame_source = frame_source
 
-        # Render at ~30 Hz from the latest frame only; intermediate frames are
-        # dropped so a slow render never lets latency accumulate.
+        # Render at ~30 Hz, pulling only the newest frame each tick; anything
+        # captured in between is overwritten at the source, never queued, so a
+        # slow render can never let latency accumulate.
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._render_latest)
         self._timer.start()
 
-    def update_frame(self, frame) -> None:
-        # Cheap: just keep the newest frame; the timer does the actual render.
-        self._latest = frame
+    def set_source(self, frame_source) -> None:
+        """Set the callable the timer pulls frames from."""
+        self._frame_source = frame_source
 
     def _render_latest(self) -> None:
-        if self._latest is None:
+        if self._frame_source is None:
             return
-        frame = self._latest
-        self._latest = None
+        frame = self._frame_source()
+        if frame is None:
+            return
         image = _to_qimage(getattr(frame, "image", None))
         if image is None:
             return
@@ -87,8 +92,8 @@ class PreviewView(QWidget):
         self._rescale()
 
     def clear(self) -> None:
-        """Drop the current frame and show the placeholder (camera stopped)."""
-        self._latest = None
+        """Show the placeholder (camera stopped). The source then returns None,
+        so the timer leaves the placeholder in place."""
         self._pixmap = None
         self._label.setText(self._PLACEHOLDER)
 

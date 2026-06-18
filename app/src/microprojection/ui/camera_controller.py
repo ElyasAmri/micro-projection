@@ -35,6 +35,14 @@ class CameraController(QObject):
     def running(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
+    def latest_frame(self):
+        """The active camera's most recent frame, or None if no camera is
+        running. The preview pulls this on a timer rather than receiving a
+        queued signal per frame, so frames never pile up behind a slow render."""
+        if self.running:
+            return self._thread.latest_frame()
+        return None
+
     def select(self, backend: str, index: int) -> None:
         """Switch to (and start) the given device, replacing any current one."""
         self.stop()

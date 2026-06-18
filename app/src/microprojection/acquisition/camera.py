@@ -1,4 +1,5 @@
 import time
+from threading import Lock
 
 import cv2
 import numpy as np
@@ -72,6 +73,16 @@ class OpenCVCameraThread(QThread):
         # Set once in stop(); never re-set in run(), so a stop requested while
         # the thread is still starting up is not lost (which would orphan it).
         self._stop_requested = False
+        # Most recent frame, for the preview to pull at its own (capped) rate
+        # instead of receiving a queued signal per frame. See latest_frame().
+        self._latest_lock = Lock()
+        self._latest_frame = None
+
+    def latest_frame(self):
+        """The most recently captured frame, or None if none yet. Thread-safe;
+        the preview pulls this so frames never queue up between threads."""
+        with self._latest_lock:
+            return self._latest_frame
 
     def run(self):
         cap = cv2.VideoCapture(self.device_index, cv2.CAP_DSHOW)
@@ -89,9 +100,12 @@ class OpenCVCameraThread(QThread):
                 continue
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.frame_ready.emit(
-                CaptureFrame(image=rgb, timestamp=time.time())
-            )
+            capture = CaptureFrame(image=rgb, timestamp=time.time())
+            with self._latest_lock:
+                self._latest_frame = capture
+            # frame_ready still drives the capture pipelines, which need every
+            # frame; the preview no longer listens and pulls latest_frame().
+            self.frame_ready.emit(capture)
 
             frame_count += 1
             elapsed = time.time() - fps_timer
@@ -123,6 +137,16 @@ class PySpinCameraThread(QThread):
         # Set once in stop(); never re-set in run(), so a stop requested while
         # the thread is still starting up is not lost (which would orphan it).
         self._stop_requested = False
+        # Most recent frame, for the preview to pull at its own (capped) rate
+        # instead of receiving a queued signal per frame. See latest_frame().
+        self._latest_lock = Lock()
+        self._latest_frame = None
+
+    def latest_frame(self):
+        """The most recently captured frame, or None if none yet. Thread-safe;
+        the preview pulls this so frames never queue up between threads."""
+        with self._latest_lock:
+            return self._latest_frame
 
     def run(self):
         system = PySpin.System.GetInstance()
@@ -202,9 +226,12 @@ class PySpinCameraThread(QThread):
                 arr = image.GetNDArray().copy()
                 image.Release()
 
-                self.frame_ready.emit(
-                    CaptureFrame(image=arr, timestamp=time.time())
-                )
+                capture = CaptureFrame(image=arr, timestamp=time.time())
+                with self._latest_lock:
+                    self._latest_frame = capture
+                # frame_ready still drives the capture pipelines, which need
+                # every frame; the preview pulls latest_frame() instead.
+                self.frame_ready.emit(capture)
 
                 frame_count += 1
                 elapsed = time.time() - fps_timer

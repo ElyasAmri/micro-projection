@@ -62,8 +62,10 @@ class MainWindow(QMainWindow):
         self._camera = CameraController(parent=self)
         self._camera.fpsUpdated.connect(self._on_fps_updated)
         self._camera.error.connect(self._on_camera_error)
-        # Live frames feed the viewport preview directly (no separate window).
-        self._camera.frameReady.connect(self._on_frame_ready)
+        # The preview pulls the latest frame from the controller on its own
+        # timer (see PreviewView), so frames are never queued behind it. The
+        # frameReady signal is left for the capture pipelines, which need every
+        # frame; nothing listens to it during plain live preview.
         # Current camera configuration, restored from the last run and edited
         # via the settings dialog. This holds the user's intent; the exposure
         # actually applied is snapped to the projector refresh to avoid flicker
@@ -124,8 +126,9 @@ class MainWindow(QMainWindow):
             self._available_cameras, prefer_key=self._config.last_camera
         )
 
-        # Main content area: the live camera preview fills the viewport.
-        self._content = PreviewView()
+        # Main content area: the live camera preview fills the viewport. It
+        # pulls the newest frame from the camera controller on its own timer.
+        self._content = PreviewView(frame_source=self._camera.latest_frame)
 
         # Resizable split between the sidebar and the content area.
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -190,10 +193,6 @@ class MainWindow(QMainWindow):
         self._camera.select(backend, index)
         self._config.last_camera = (backend, index)
         self._status(f"Camera on: {backend} {index}")
-
-    def _on_frame_ready(self, frame):
-        """Render the latest camera frame into the viewport preview."""
-        self._content.update_frame(frame)
 
     def _show_camera_settings(self):
         """Open the camera configuration modal seeded with the current settings."""
