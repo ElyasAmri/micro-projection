@@ -7,7 +7,8 @@ ensure the hardware is ready, configure the camera, project/capture in a loop,
 then save. See ``base.CapturePipeline``.
 """
 from microprojection.pipelines.base import CapturePipeline
+from microprojection.pipelines.fov import FovPipeline
 from microprojection.pipelines.noise import NoisePipeline
 from microprojection.pipelines.phase_shift import PhaseShiftPipeline
 
-__all__ = ["CapturePipeline", "NoisePipeline", "PhaseShiftPipeline"]
+__all__ = ["CapturePipeline", "FovPipeline", "NoisePipeline", "PhaseShiftPipeline"]

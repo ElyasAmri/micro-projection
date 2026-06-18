@@ -35,6 +35,45 @@ def flat_field(width: int, height: int, level: int = 128) -> np.ndarray:
     return np.full((height, width), level, dtype=np.uint8)
 
 
+def solid_box(width: int, height: int, box, level: int = 255) -> np.ndarray:
+    """Filled bright rectangle at ``box`` = (x0, y0, x1, y1) in projector pixels,
+    ``level`` inside and 0 outside. Used by the FOV pipeline to project a box the
+    camera can locate. Coordinates are clamped to the projector bounds."""
+    img = np.zeros((height, width), dtype=np.uint8)
+    x0, y0, x1, y1 = _clamp_box(box, width, height)
+    if x1 > x0 and y1 > y0:
+        img[y0:y1, x0:x1] = int(np.clip(level, 0, 255))
+    return img
+
+
+def box_outline(width: int, height: int, box, level: int = 255,
+                thickness: int = 4) -> np.ndarray:
+    """Hollow rectangle outline at ``box`` = (x0, y0, x1, y1), ``thickness`` px
+    wide. Used to show the matched camera FOV on the projector at the end of the
+    FOV pipeline without flooding the scene with light."""
+    img = np.zeros((height, width), dtype=np.uint8)
+    x0, y0, x1, y1 = _clamp_box(box, width, height)
+    if x1 <= x0 or y1 <= y0:
+        return img
+    t = max(1, int(thickness))
+    val = int(np.clip(level, 0, 255))
+    img[y0:y1, x0:min(x0 + t, x1)] = val
+    img[y0:y1, max(x1 - t, x0):x1] = val
+    img[y0:min(y0 + t, y1), x0:x1] = val
+    img[max(y1 - t, y0):y1, x0:x1] = val
+    return img
+
+
+def _clamp_box(box, width: int, height: int):
+    """Clamp (x0, y0, x1, y1) to the projector bounds and integer pixels."""
+    x0, y0, x1, y1 = box
+    x0 = int(np.clip(round(x0), 0, width))
+    x1 = int(np.clip(round(x1), 0, width))
+    y0 = int(np.clip(round(y0), 0, height))
+    y1 = int(np.clip(round(y1), 0, height))
+    return x0, y0, x1, y1
+
+
 def siemens_star(width: int, height: int, spokes: int = 36) -> np.ndarray:
     """Siemens star: alternating wedges inside a centered disk, a classic focus
     target. The fine detail toward the center reveals when focus is sharp."""

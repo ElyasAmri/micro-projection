@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self._acquisition.status.connect(self._status)
         self._sidebar.phaseShiftRequested.connect(self._acquisition.run_phase_shift)
         self._sidebar.noiseTestRequested.connect(self._acquisition.run_noise_test)
+        self._sidebar.fovRequested.connect(self._acquisition.run_fov)
         # Restore the projector first so its refresh rate is known before the
         # camera starts; the camera then starts once with the flicker-safe
         # exposure instead of being restarted right after to apply it.

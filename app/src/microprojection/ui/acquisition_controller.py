@@ -16,7 +16,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
-from microprojection.pipelines import NoisePipeline, PhaseShiftPipeline
+from microprojection.pipelines import FovPipeline, NoisePipeline, PhaseShiftPipeline
 from microprojection.ui.pipeline_progress_dialog import PipelineProgressDialog
 
 
@@ -59,6 +59,15 @@ class AcquisitionController(QObject):
             parent=self,
         )
         self._start(pipeline, "Noise test")
+
+    def run_fov(self):
+        """Project a box and shrink it to the camera frame to find the FOV."""
+        pipeline = FovPipeline(
+            self._camera, self._get_projector_window(), self._get_settings(),
+            self._capture_dir("fov"),
+            parent=self,
+        )
+        self._start(pipeline, "Camera FOV")
 
     def _capture_dir(self, label: str) -> str:
         """A fresh timestamped output directory under ./captures."""

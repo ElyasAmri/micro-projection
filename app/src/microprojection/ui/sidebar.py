@@ -35,6 +35,8 @@ class Sidebar(QWidget):
     phaseShiftRequested = Signal()
     # run the static-fringe noise pipeline
     noiseTestRequested = Signal()
+    # run the camera field-of-view identification pipeline
+    fovRequested = Signal()
 
     WIDTH = 260
 
@@ -125,6 +127,13 @@ class Sidebar(QWidget):
         self._noise_btn.setEnabled(False)
         self._noise_btn.clicked.connect(self.noiseTestRequested)
         layout.addWidget(self._noise_btn)
+
+        self._fov_btn = QPushButton("Identify camera FOV")
+        self._fov_btn.setToolTip("Project a box and shrink it to the camera "
+                                 "frame to find the field of view")
+        self._fov_btn.setEnabled(False)
+        self._fov_btn.clicked.connect(self.fovRequested)
+        layout.addWidget(self._fov_btn)
 
         layout.addStretch(1)
 
@@ -240,11 +249,13 @@ class Sidebar(QWidget):
         )
         self._phase_btn.setEnabled(ready)
         self._noise_btn.setEnabled(ready)
+        self._fov_btn.setEnabled(ready)
 
     def lock_acquisition(self) -> None:
         """Disable the pipeline buttons while a pipeline is running."""
         self._phase_btn.setEnabled(False)
         self._noise_btn.setEnabled(False)
+        self._fov_btn.setEnabled(False)
 
     def refresh_acquisition_enabled(self) -> None:
         """Re-enable the pipeline buttons per current readiness (after a run)."""
