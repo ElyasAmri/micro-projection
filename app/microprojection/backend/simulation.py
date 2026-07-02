@@ -22,8 +22,17 @@ from pathlib import Path
 
 import numpy as np
 
-# app/src/microprojection/backend/simulation.py -> parents[4] == repo root
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+def _find_repo_root() -> Path:
+    """The monorepo root: the nearest ancestor holding both app/ and
+    simulation/ (env overrides below make this a soft default)."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "app").is_dir() and (parent / "simulation").is_dir():
+            return parent
+    return here.parents[2]  # app/microprojection/backend/ -> app's parent
+
+
+_REPO_ROOT = _find_repo_root()
 
 
 def _sim_dir() -> Path:
