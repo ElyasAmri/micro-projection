@@ -7,7 +7,7 @@ displacement in millimeters, added on top of the flat measurement plane
 """
 from __future__ import annotations
 
-import math
+import numpy as np
 
 # A single smooth Gaussian bump. Max slope = A/sigma * exp(-1/2) (at r=sigma)
 # ~= 0.607 * 3/15 ~= 0.121 rad ~= 6.9 degrees -- comfortably inside the rig's
@@ -18,9 +18,9 @@ BUMP_SIGMA_MM = 15.0
 BUMP_CENTER_MM = (0.0, 0.0)
 
 
-def bump_height_mm(x_mm: float, y_mm: float) -> float:
+def bump_height_mm(x_mm, y_mm):
     """Known ground-truth deformity: a single Gaussian bump centered on the
-    measurement plane."""
+    measurement plane. x_mm, y_mm may be scalars or numpy arrays."""
     cx, cy = BUMP_CENTER_MM
     r2 = (x_mm - cx) ** 2 + (y_mm - cy) ** 2
-    return BUMP_AMPLITUDE_MM * math.exp(-r2 / (2.0 * BUMP_SIGMA_MM ** 2))
+    return BUMP_AMPLITUDE_MM * np.exp(-r2 / (2.0 * BUMP_SIGMA_MM ** 2))

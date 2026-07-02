@@ -32,30 +32,24 @@ import math
 from pathlib import Path
 
 import bpy
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 import surfaces
-
-MM = 1e-3
-
-# --- Camera: fixed telecentric FOV (report/math.tex sec. 3) -----------------
-H0_MM = 54.67
-W0_MM = 68.22
-CAM_PIXELS = (1280, 1024)
-CAM_WORKING_DISTANCE_MM = 160.0  # chosen within the GoldTL lens's 132-182mm range
-
-# --- Projector: PRO4500, 460nm/700mm 3D-measurement lens --------------------
-THROW_RATIO_W = 700.0 / 400.0
-THROW_RATIO_H = 700.0 / 250.0
-D_PROJ_MM = 153.1   # matches the camera's H0 (report/math.tex sec. 5)
-W_PROJ_MM = 87.47
-SPOT_CONE_DEG = 40.0  # full angle; wide enough to cover the footprint's corners
-
-# --- Camera tilt (report/math.tex sec. 7) -----------------------------------
-THETA_DEG = 38.7
-
-SURFACE_SIZE_M = 0.30  # flat surface, generous margin around the ~90x55mm footprint
-SURFACE_GRID_SUBDIVISIONS = 180  # ~1.7mm vertex spacing: >8 verts across BUMP_SIGMA_MM
+from geometry_constants import (
+    CAM_PIXELS,
+    CAM_WORKING_DISTANCE_MM,
+    D_PROJ_MM,
+    H0_MM,
+    MM,
+    SPOT_CONE_DEG,
+    SURFACE_GRID_SUBDIVISIONS,
+    SURFACE_SIZE_M,
+    THETA_DEG,
+    THROW_RATIO_H,
+    THROW_RATIO_W,
+    W0_MM,
+    W_PROJ_MM,
+)
 
 
 def clear_scene() -> None:
@@ -78,7 +72,7 @@ def add_projector():
     light_data = bpy.data.lights.new("Pro4500", type="SPOT")
     light_data.spot_size = math.radians(SPOT_CONE_DEG)
     light_data.spot_blend = 0.2
-    light_data.node_tree.nodes["Emission"].inputs["Strength"].default_value = 1.0
+    light_data.node_tree.nodes["Emission"].inputs["Strength"].default_value = 0.08
 
     light_obj = bpy.data.objects.new("Projector_PRO4500", light_data)
     bpy.context.collection.objects.link(light_obj)
@@ -108,9 +102,10 @@ def _mask_node(nt, value_socket):
 
 def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm):
     """Add the surface, with the projected fringe pattern computed live in
-    its material. Returns (surface_object, wave_node) -- update
-    wave_node.inputs["Phase Offset"].default_value between renders to step
-    through a phase-shifting sequence without rebuilding the scene.
+    its material. Returns (surface_object, phase_fraction_node) -- update
+    phase_fraction_node.outputs[0].default_value (a fraction of one cycle,
+    0..1) between renders to step through a phase-shifting sequence without
+    rebuilding the scene.
 
     height_fn(x_mm, y_mm) -> z_mm deforms the surface with a known
     ground-truth shape (see surfaces.py); pass None for a flat plane. The
@@ -133,7 +128,7 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     if height_fn is not None:
         mesh = surface.data
         for vert in mesh.vertices:
-            vert.co.z = height_fn(vert.co.x / MM, vert.co.y / MM) * MM
+            vert.co.z = float(height_fn(vert.co.x / MM, vert.co.y / MM)) * MM
         mesh.update()
         bpy.ops.object.shade_smooth()
 
@@ -188,21 +183,47 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     nt.links.new(_mask_node(nt, u.outputs[0]), mask.inputs[0])
     nt.links.new(_mask_node(nt, v.outputs[0]), mask.inputs[1])
 
-    uv = nt.nodes.new("ShaderNodeCombineXYZ")
-    nt.links.new(u.outputs[0], uv.inputs["X"])
-    nt.links.new(v.outputs[0], uv.inputs["Y"])
+    # Phase-shift step, as a fraction of one cycle (0..1) -- update
+    # phase_fraction.outputs[0].default_value between renders.
+    #
+    # The fringe itself is built from an explicit Math "Sine" node rather
+    # than a Wave Texture: tested directly (rendered probe strips, measured
+    # period and histogram), ShaderNodeTexWave's "Scale" needed an
+    # unexplained /4 correction to match its documented meaning, its "Phase
+    # Offset" input didn't shift the pattern by a consistent, predictable
+    # fraction of a period, and its "SIN" profile's rendered histogram was
+    # bimodal (~86% of samples pinned near 0 or 1) rather than the smooth,
+    # symmetric distribution a true sinusoid produces. Computing
+    # 0.5 + 0.5*sin(2*pi*n_periods*u + 2*pi*phase_fraction) directly from a
+    # Math node leaves no room for hidden internal scaling.
+    phase_fraction = nt.nodes.new("ShaderNodeValue")
+    phase_fraction.outputs[0].default_value = 0.0
 
-    wave = nt.nodes.new("ShaderNodeTexWave")
-    wave.wave_type = "BANDS"
-    wave.bands_direction = "X"
-    wave.wave_profile = "SIN"
-    wave.inputs["Scale"].default_value = n_periods
-    wave.inputs["Phase Offset"].default_value = 0.0
-    nt.links.new(uv.outputs["Vector"], wave.inputs["Vector"])
+    phase_arg = nt.nodes.new("ShaderNodeMath")
+    phase_arg.operation = "MULTIPLY_ADD"
+    phase_arg.inputs[1].default_value = 2.0 * math.pi * n_periods
+    # inputs[2] (added after scaling) carries the phase-shift term.
+    nt.links.new(u.outputs[0], phase_arg.inputs[0])
+
+    phase_shift_rad = nt.nodes.new("ShaderNodeMath")
+    phase_shift_rad.operation = "MULTIPLY"
+    phase_shift_rad.inputs[1].default_value = 2.0 * math.pi
+    nt.links.new(phase_fraction.outputs[0], phase_shift_rad.inputs[0])
+    nt.links.new(phase_shift_rad.outputs[0], phase_arg.inputs[2])
+
+    sine = nt.nodes.new("ShaderNodeMath")
+    sine.operation = "SINE"
+    nt.links.new(phase_arg.outputs[0], sine.inputs[0])
+
+    fringe = nt.nodes.new("ShaderNodeMath")
+    fringe.operation = "MULTIPLY_ADD"
+    fringe.inputs[1].default_value = 0.5
+    fringe.inputs[2].default_value = 0.5
+    nt.links.new(sine.outputs[0], fringe.inputs[0])
 
     masked = nt.nodes.new("ShaderNodeMath")
     masked.operation = "MULTIPLY"
-    nt.links.new(wave.outputs["Factor"], masked.inputs[0])
+    nt.links.new(fringe.outputs[0], masked.inputs[0])
     nt.links.new(mask.outputs[0], masked.inputs[1])
 
     to_rgb = nt.nodes.new("ShaderNodeCombineXYZ")
@@ -212,7 +233,7 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     nt.links.new(to_rgb.outputs["Vector"], bsdf.inputs["Base Color"])
 
     surface.data.materials.append(mat)
-    return surface, wave
+    return surface, phase_fraction
 
 
 def add_telecentric_camera():
@@ -228,6 +249,15 @@ def add_telecentric_camera():
     wd = CAM_WORKING_DISTANCE_MM * MM
     cam_obj.location = Vector((wd * math.sin(theta), 0.0, wd * math.cos(theta)))
     look_at(cam_obj, Vector((0.0, 0.0, 0.0)))
+    # to_track_quat('-Z','Y') puts local +X along world Y and local +Y in the
+    # tilt (X-Z) plane for this direction -- verified directly by reading
+    # back matrix_world. report/math.tex's derivation assumes the opposite
+    # (sensor width axis tilted, matching the projector's wide axis; sensor
+    # height axis untouched), so roll 90 degrees about the view axis to
+    # match: local +X (columns, sensor width) now falls in the tilt plane.
+    cam_obj.rotation_euler = (
+        cam_obj.rotation_euler.to_quaternion() @ Quaternion((0.0, 0.0, 1.0), math.radians(90.0))
+    ).to_euler()
 
     scene = bpy.context.scene
     scene.render.resolution_x, scene.render.resolution_y = CAM_PIXELS
