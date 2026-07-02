@@ -34,6 +34,8 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
+import surfaces
+
 MM = 1e-3
 
 # --- Camera: fixed telecentric FOV (report/math.tex sec. 3) -----------------
@@ -53,6 +55,7 @@ SPOT_CONE_DEG = 40.0  # full angle; wide enough to cover the footprint's corners
 THETA_DEG = 38.7
 
 SURFACE_SIZE_M = 0.30  # flat surface, generous margin around the ~90x55mm footprint
+SURFACE_GRID_SUBDIVISIONS = 180  # ~1.7mm vertex spacing: >8 verts across BUMP_SIGMA_MM
 
 
 def clear_scene() -> None:
@@ -103,14 +106,36 @@ def _mask_node(nt, value_socket):
     return both.outputs[0]
 
 
-def add_surface(projector_obj, n_periods: float = 8.0):
-    """Add the flat surface, with the projected fringe pattern computed live
-    in its material. Returns (surface_object, wave_node) -- update
+def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm):
+    """Add the surface, with the projected fringe pattern computed live in
+    its material. Returns (surface_object, wave_node) -- update
     wave_node.inputs["Phase Offset"].default_value between renders to step
-    through a phase-shifting sequence without rebuilding the scene."""
-    bpy.ops.mesh.primitive_plane_add(size=SURFACE_SIZE_M, location=(0.0, 0.0, 0.0))
+    through a phase-shifting sequence without rebuilding the scene.
+
+    height_fn(x_mm, y_mm) -> z_mm deforms the surface with a known
+    ground-truth shape (see surfaces.py); pass None for a flat plane. The
+    projected pattern's material graph doesn't need to know about this --
+    it already reads the real shading-point position, so it distorts over
+    the bump exactly as a real projector's fringes would.
+    """
+    if height_fn is None:
+        bpy.ops.mesh.primitive_plane_add(size=SURFACE_SIZE_M, location=(0.0, 0.0, 0.0))
+    else:
+        bpy.ops.mesh.primitive_grid_add(
+            x_subdivisions=SURFACE_GRID_SUBDIVISIONS,
+            y_subdivisions=SURFACE_GRID_SUBDIVISIONS,
+            size=SURFACE_SIZE_M,
+            location=(0.0, 0.0, 0.0),
+        )
     surface = bpy.context.active_object
     surface.name = "Surface"
+
+    if height_fn is not None:
+        mesh = surface.data
+        for vert in mesh.vertices:
+            vert.co.z = height_fn(vert.co.x / MM, vert.co.y / MM) * MM
+        mesh.update()
+        bpy.ops.object.shade_smooth()
 
     mat = bpy.data.materials.new("SurfaceMaterial")
     mat.use_nodes = True
