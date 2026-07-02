@@ -445,4 +445,49 @@ worth doing if off-center accuracy matters, not done here since even the
 worst case (\texttt{twin\_bump}) stays under $0.2$\,mm RMSE against
 $2$--$3.5$\,mm features.
 
+\section{Off-center bias: a follow-up, and a reverted fix}
+\label{sec:off-center-followup}
+
+Section~\ref{sec:validation-battery}'s explanation (constant $p_{\text{eff}}$
+not accounting for the projector's off-axis perspective divide) predicts a
+specific closed form: re-deriving $h$ from $\psi$ without dropping the
+$x/D$ term in Section~\ref{sec:height-from-phase}'s linearization gives
+
+\begin{equation}
+  \lambda_{eq}(x) = \frac{p_{\text{eff}}}{\tan\theta + x/D}
+\end{equation}
+
+in place of the constant $p_{\text{eff}}/\tan\theta$. This was implemented
+and initially looked like an improvement: RMSE on \texttt{crater} dropped
+from $0.160$ to $0.051$\,mm, \texttt{offset\_bump} from $0.186$ to
+$0.093$\,mm, \texttt{twin\_bump} from $0.156$ to $0.058$\,mm.
+
+Checking it against the actual per-pixel bias in the captured
+\texttt{bump} data (not just the top-line RMSE) showed this was the wrong
+conclusion. The predicted bias, $x h/(W_{\text{proj}}D) \cdot \lambda_{eq}$,
+is $6$--$10\times$ smaller than the bias actually observed, and the wrong
+shape: the true bias is antisymmetric in $x$ (binned mean bias at
+$x=+32.75$\,mm and $x=-32.75$\,mm are $+0.057$ and $-0.057$\,mm --
+essentially exact mirror images) but peaks around $|x|\approx24$\,mm,
+whereas $xh(x)$ for this bump (a Gaussian, $\sigma=15$\,mm) peaks at
+$|x|=\sigma=15$\,mm. A candidate explanation not yet derived or tested:
+local magnification. The camera-ray map in
+Section~\ref{sec:height-from-phase} is exact for a single ray hitting a
+tilted surface at one point, but two \emph{adjacent} rays hitting a
+\emph{sloped} surface land at a spacing scaled by
+$(1+\,dh/dx\cdot\tan\theta)$ relative to their flat-reference spacing --
+a foreshortening effect distinct from (and evidently larger than) the
+projector-side one this section set out to fix.
+
+Applying only the (real, but apparently secondary) projector-side
+correction made the two \emph{centered} surfaces worse
+(\texttt{bump}: $0.050\to0.071$\,mm; \texttt{ridge}:
+$0.046\to0.098$\,mm) while helping the off-center ones -- consistent with
+a partial correction whose residual noise sensitivity (dividing by a
+smaller $\tan\theta+x/D$ amplifies phase noise into height noise for
+$x<0$) outweighs its benefit when the larger, unmodeled bias is still
+present. The fix was reverted rather than shipped: Table~3's numbers are
+the unmodified pipeline. The local-magnification hypothesis above is
+where the next attempt should start.
+
 \end{document}

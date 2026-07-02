@@ -84,7 +84,17 @@ def carrier_phase(world_x: np.ndarray, n_periods: float) -> np.ndarray:
 
 def equivalent_wavelength_mm(n_periods: float, theta_deg: float) -> float:
     """lambda_eq (mm); h = psi/(2*pi) * lambda_eq (report/math.tex Eq.
-    height-from-phase)."""
+    height-from-phase).
+
+    A position-dependent refinement (p_eff/(tan(theta) + x/D), correcting
+    for the projector's own perspective divide off-center) was tried and
+    reverted: checked directly against the actual per-pixel bias in a
+    captured surface rather than trusting the top-line RMSE, that formula
+    predicts a bias 6-10x smaller than what's actually there, peaking at a
+    different position than it predicts (|x| ~= 24mm, not sigma=15mm) --
+    i.e. it's a real but secondary effect, not the dominant one, and
+    correcting only it made two of six surfaces worse (see
+    report/math.tex "Off-center bias" for the follow-up investigation)."""
     p_eff = W_PROJ_MM / n_periods
     return p_eff / math.tan(math.radians(theta_deg))
 
