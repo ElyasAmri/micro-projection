@@ -140,6 +140,7 @@ perpendicular to the tilt (here, height) is unchanged:
 \end{equation}
 
 \section{Solving for \texorpdfstring{$\theta$}{theta}}
+\label{sec:solving-theta}
 
 Require the camera's tilted width to cover the projector's image width at
 the matching distance $D$:
@@ -194,5 +195,201 @@ Covered surface & $87.47 \times 54.67$\,mm \\
         $\pm 63.6$\,mm depth of field at $f/10$) is needed to keep the
         whole footprint in focus.
 \end{itemize}
+
+\section{Projected fringe intensity}
+\label{sec:fringe-intensity}
+
+The remaining sections derive the phase-shifting reconstruction algorithm
+used by \texttt{simulation/reconstruct.py}, kept consistent with the
+geometric treatment in Samara, \emph{Fringe Projection System} (the two
+reference PDFs under \texttt{docs/.local/}) --- in particular its
+Eq.~2-27--2-29 (carrier phase / height-induced phase split, equivalent
+wavelength) and Eq.~2-30--2-33 (the telecentric-arm height relation).
+Section~\ref{sec:height-from-phase} specializes that general result to
+this rig's specific (asymmetric) geometry.
+
+For a point at world position $(x,y,z)$ on the surface, the projector (a
+perspective point source at normal incidence, Sections~1--6) casts a
+normalized coordinate
+\begin{equation}
+  u(x,z) = \frac{x}{D-z}\cdot\frac{D}{W_{\text{proj}}(D)} + \frac12,
+\end{equation}
+identical to the perspective divide already used to size the footprint
+(Section~5), now evaluated at the true, possibly-deformed surface height
+$z$ rather than assuming $z=0$. The projected intensity, for a fringe
+pattern of $n_p$ periods across the footprint width and a phase step
+$\delta_n$, is
+\begin{equation}
+  I_n(x,y,z) = \frac12 + \frac12\sin\bigl(2\pi n_p\, u(x,z) + \delta_n\bigr),
+  \qquad \delta_n = \frac{2\pi n}{N},\ n = 0,\dots,N-1,
+  \label{eq:intensity}
+\end{equation}
+inside the illuminated rectangle and $0$ outside it. (The implementation
+uses a sine reference; Section~\ref{sec:nstep-psa} accounts for the
+resulting constant offset against Samara's cosine convention.)
+
+\section{N-step phase-shifting algorithm}
+\label{sec:nstep-psa}
+
+Samara's Eq.~2-27 writes the fringe intensity in the canonical form
+$I = A + B\cos(\phi+\psi)$ and defers the actual per-pixel phase extraction
+to third-party software (Veeco's Vision, \S ``Software and Methodology'').
+The extraction formula supplied here is the standard $N$-bucket
+least-squares algorithm, derived to match that same cosine convention.
+
+Write $\phi$ for the total phase at a pixel (carrier + height-induced
+shift) and expand
+\begin{equation}
+  I_n = A + B\cos(\phi+\delta_n) = A + \bigl[B\cos\phi\bigr]\cos\delta_n - \bigl[B\sin\phi\bigr]\sin\delta_n .
+\end{equation}
+For $N \geq 3$ steps evenly spaced over one full cycle
+($\delta_n = 2\pi n/N$), the discrete sums are orthogonal:
+$\sum_n \cos\delta_n = \sum_n \sin\delta_n = \sum_n \sin\delta_n\cos\delta_n = 0$,
+$\sum_n \cos^2\delta_n = \sum_n \sin^2\delta_n = N/2$. Projecting $I_n$ onto
+$\cos\delta_n$ and $\sin\delta_n$ isolates
+\begin{equation}
+  B\cos\phi = \frac{2}{N}\sum_{n=0}^{N-1} I_n\cos\delta_n, \qquad
+  B\sin\phi = -\frac{2}{N}\sum_{n=0}^{N-1} I_n\sin\delta_n,
+\end{equation}
+so the wrapped phase follows from the ratio, independent of the unknowns
+$A$ and $B$ (i.e.\ independent of the pixel's unknown background level and
+fringe contrast):
+\begin{equation}
+  \boxed{\ \phi = \operatorname{atan2}\!\left(-\sum_n I_n \sin\delta_n,\ \sum_n I_n \cos\delta_n\right)\ }.
+  \label{eq:nstep-psa}
+\end{equation}
+This is exactly the sign convention Husam's canonical DSP core uses
+(cf.\ \texttt{RECONCILIATION.md} \S5.1) --- deliberately matched here so a
+future merge doesn't re-open the sin/cos basis question.
+
+Equation~\ref{eq:intensity} is a \emph{sine}, not cosine, reference: $I_n =
+\frac12+\frac12\sin(\Phi+\delta_n) = \frac12+\frac12\cos(\Phi-\frac\pi2+\delta_n)$,
+i.e.\ Eq.~\ref{eq:nstep-psa} applied to the simulator's frames recovers
+$\phi = \Phi - \pi/2 \pmod{2\pi}$ rather than $\Phi$ itself. This constant
+$-\pi/2$ offset is identical for every pixel and every capture (it comes
+from the choice of reference waveform, not the geometry), so it cancels
+exactly in the height-induced phase difference $\psi$ defined next.
+
+\section{Height from phase, for this rig's geometry}
+\label{sec:height-from-phase}
+
+Samara's Eq.~2-30--2-33 gives the height-to-phase relation for a
+\emph{symmetric or general telecentric two-arm} system: a bump of height
+$h$ shifts the world-plane point a fixed camera ray images by
+$U = h(\tan\theta_1+\tan\theta_2)$, giving
+$h = \lambda_{eq}\psi/2\pi$ with $\lambda_{eq} = Mp/(\tan\theta_1+\tan\theta_2)$.
+This rig is the asymmetric special case $\theta_1 = 0$ (projector at
+normal incidence, Section~1): only the camera's tilt contributes,
+\begin{equation}
+  U = h\tan\theta, \qquad \lambda_{eq} = \frac{p_{\text{eff}}}{\tan\theta},
+\end{equation}
+where $p_{\text{eff}}$ is the fringe pitch on the world/surface plane
+(mm/cycle) rather than Samara's $Mp$ (grating period converted through the
+camera-side magnification $M$) --- equivalent quantities, just expressed
+directly in world units here since the reconstruction works in
+world-plane mm throughout rather than converting through pixel space.
+
+\paragraph{Derivation (camera side).} The telecentric camera collects
+parallel rays along a fixed direction; a given pixel's ray hits the flat
+reference plane ($z=0$) at world point $x_c$. If the surface instead sits
+at height $h$ near that point, the same ray (unchanged direction) hits the
+plane $z=h$ instead, at $x = x_c + h\tan\theta$ (elementary trigonometry:
+raising the intersection plane by $h$ shortens the ray's remaining vertical
+drop by $h$, shifting its horizontal travel by $h\tan\theta$). This is
+purely a camera-side fact --- independent of whether the projector is
+telecentric or a point source, unlike Samara's derivation which assumes
+both arms share the same optics.
+
+\paragraph{Projector side.} The intensity pattern is designed in $x$ (Eq.~
+\ref{eq:intensity}) with known period $p_{\text{eff}} = W_{\text{proj}}(D)/n_p$
+at the footprint center. To first order in $h/D$ (identical in spirit to
+Samara's repeated linearizations, e.g.\ dropping the $x_1\tan\theta \ll a$
+term in Eq.~2-46), the projector's own perspective divide is evaluated at
+$z=0$ rather than $z=h$; the resulting error is $O(h/D) \approx 3/153 \approx
+2\%$, small relative to $\lambda_{eq}$ below and neglected, exactly as
+Samara neglects analogous second-order terms (e.g.\ Eq.~4-16).
+
+\paragraph{Combining.} A fixed pixel's measured phase shifts by
+$\psi = 2\pi\,x_{\text{shift}}/p_{\text{eff}} = 2\pi\,h\tan\theta/p_{\text{eff}}$,
+so
+\begin{equation}
+  \boxed{\ h = \frac{\psi}{2\pi}\cdot\frac{p_{\text{eff}}}{\tan\theta} = \frac{\psi}{2\pi}\lambda_{eq}\ },
+  \qquad \lambda_{eq} = \frac{p_{\text{eff}}}{\tan\theta}.
+  \label{eq:height-from-phase}
+\end{equation}
+With $W_{\text{proj}}(D) = 87.47$\,mm, $n_p = 8$, $\theta \approx 38.7^\circ$:
+\begin{equation}
+  p_{\text{eff}} = \frac{87.47}{8} = 10.934\text{\,mm/cycle}, \qquad
+  \tan\theta = 0.8023, \qquad
+  \lambda_{eq} = \frac{10.934}{0.8023} \approx 13.63\text{\,mm}.
+\end{equation}
+
+Per pixel, $\psi = \phi_{\text{measured}} - \phi_{\text{carrier}}$, where
+$\phi_{\text{carrier}}$ is what Eq.~\ref{eq:nstep-psa} would measure at
+that same pixel for a \emph{flat} ($h=0$) reference --- computable directly
+from the rig's known geometry (Section~\ref{sec:height-from-phase}'s
+camera-ray map plus Eq.~\ref{eq:intensity} at $z=0$), not a separate
+calibration capture, since the whole rig geometry here is already known
+exactly rather than fit from measurements.
+
+\section{Expected phase range}
+
+For the validation surface (\texttt{simulation/surfaces.py}, amplitude
+$3$\,mm), the largest expected phase shift is
+\begin{equation}
+  \psi_{\max} = \frac{2\pi \times 3}{\lambda_{eq}} = \frac{2\pi\times3}{13.63}
+  \approx 1.38\text{\,rad} \approx 79.2^\circ,
+\end{equation}
+comfortably inside $(-\pi,\pi]$. A single fringe frequency therefore
+resolves this bump's phase unambiguously; multi-frequency temporal phase
+unwrapping is not needed for this validation and is left for a
+larger/steeper ground-truth surface.
+
+\section{Reconstruction validation}
+\label{sec:validation}
+
+\texttt{simulation/reconstruct.py} implements
+Eq.~\ref{eq:nstep-psa}--\ref{eq:height-from-phase} against an 8-frame
+capture from \texttt{simulation/capture\_pipeline.py} (the Gaussian bump of
+Section~\ref{sec:fringe-intensity}'s validation surface) and compares the
+result pixel-by-pixel against \texttt{surfaces.bump\_height\_mm} evaluated
+at each pixel's reconstructed world coordinate.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lr@{}}
+\toprule
+Quantity & Value \\
+\midrule
+Frames & $8$ \\
+Valid (unmasked) pixels & $1310720 / 1310720$ ($100.0\%$) \\
+$\lambda_{eq}$ & $13.648$\,mm \\
+RMSE & $0.0495$\,mm \\
+MAE & $0.0404$\,mm \\
+Max $|$error$|$ & $0.1322$\,mm \\
+$R^2$ & $0.9962$ \\
+\bottomrule
+\end{tabular}
+\caption{Reconstruction accuracy against the known $3$\,mm-amplitude
+Gaussian bump. RMSE is $\approx 1.6\%$ of the bump's peak height.}
+\end{table}
+
+The $100\%$ valid fraction confirms the camera-orientation fix in
+Section~\ref{sec:height-from-phase}'s derivation: with the axes matched to
+this document's original intent (sensor width axis tilted to meet the
+projector's wide axis, sensor height axis untouched to meet its narrow
+axis), the camera's fixed footprint and the projector's footprint coincide
+exactly, edge to edge, with no unlit margin inside the frame --- exactly
+the design goal Sections~\ref{sec:height-from-phase}--
+\ref{sec:solving-theta} solved for.
+
+The residual error is small and structured (a faint striped ripple
+following the fringe pattern, plus a gentle left-right gradient) rather
+than random noise, consistent with the two effects
+Section~\ref{sec:height-from-phase} explicitly neglects: the projector's
+own perspective divide evaluated at $z=0$ instead of $z=h$
+($O(h/D)\approx2\%$), and the first-order (rather than exact) camera-ray
+lateral-shift approximation. Both are small compared to $\lambda_{eq}$,
+matching the sub-2\% RMSE observed.
 
 \end{document}
