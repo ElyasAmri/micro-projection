@@ -7,14 +7,17 @@ connector, and run. Also supports `--screenshot PATH` for a headless render.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
 
+import logbus
 from backend import SimulationBackend
 from maestro import attach
+from ui.console import ConsoleLogHandler
 from ui.main_window import MainWindow
 from ui.styles import build_stylesheet
+
+log = logbus.get_logger("app")
 
 
 def build_app():
@@ -46,27 +49,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.screenshot and "QT_QPA_PLATFORM" not in os.environ:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
-    logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
-
     app = build_app()
     backend = SimulationBackend()
     window = MainWindow(backend=backend)
-    window.install_log_bridge()
+    logbus.configure(ConsoleLogHandler(window.console))
 
-    window.console.log("Micro-Projection control shell started", "ok")
+    logbus.success(log, "Micro-Projection control shell started")
     specimens = backend.available_surfaces()
     if specimens:
-        window.console.log(f"simulation backend: {len(specimens)} specimens ({', '.join(specimens)})", "info")
+        log.info(f"simulation backend: {len(specimens)} specimens ({', '.join(specimens)})")
     else:
-        window.console.log("simulation backend: no capture data found under out/surface_tests", "warn")
+        log.warning("simulation backend: no capture data found under out/surface_tests")
 
     connector = attach(window, commands=window.maestro_commands(), kind="qt")
     if connector is None:
         window.set_maestro_status("unavailable")
-        window.console.log("maestro connector unavailable (QtWebSockets missing)", "warn")
+        log.warning("maestro connector unavailable (QtWebSockets missing)")
     else:
         window.set_maestro_status("listening")
-        window.console.log("maestro connector attached (kind=qt); watching for a server", "info")
+        log.info("maestro connector attached (kind=qt); watching for a server")
 
     window.show()
 

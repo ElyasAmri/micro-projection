@@ -1,9 +1,9 @@
 """The bottom console: a read-only, timestamped, color-coded log view.
 
-`Console.log(msg, level)` is the app's single sink for user-facing messages.
-`ConsoleLogHandler` bridges the stdlib `logging` module into it, so anything
-the maestro connector logs (connects, registrations, request errors) surfaces
-here too.
+`ConsoleLogHandler` bridges the stdlib `logging` module into the `Console`
+widget, so everything the app and the maestro connector log surfaces here.
+App code logs through `logging` (see logbus), never by calling the widget
+directly; `Console.log` is just the handler's rendering sink.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from logbus import SUCCESS
 from ui.styles import LEVEL_COLORS, COLORS, monospace_font
 
 MAX_BLOCKS = 5000  # cap scrollback so a long session can't grow without bound
@@ -83,6 +84,7 @@ class ConsoleLogHandler(logging.Handler):
     _LEVEL_MAP = {
         logging.DEBUG: "info",
         logging.INFO: "info",
+        SUCCESS: "ok",
         logging.WARNING: "warn",
         logging.ERROR: "error",
         logging.CRITICAL: "error",

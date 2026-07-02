@@ -3,20 +3,22 @@ captured surface, reconstructed surface), a sidebar docked left, and a console
 docked along the bottom, plus the command surface maestro drives."""
 from __future__ import annotations
 
-import logging
 from collections import deque
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
 
+from logbus import get_logger, success
 from version import __version__
 from backend import SimulationBackend
 from ui.canvas import Canvas
-from ui.console import Console, ConsoleLogHandler
+from ui.console import Console
 from ui.imaging import gray_to_qimage
 from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
+
+log = get_logger("ui")
 
 # Tab label -> canvas objectName, in display order.
 CANVAS_TABS = [
@@ -126,7 +128,7 @@ class MainWindow(QMainWindow):
         fringe = self.backend.generate_fringe()
         self.canvases["projectedCanvas"].set_image(gray_to_qimage(fringe))
         self._show_tab("projectedCanvas")
-        self.console.log(f"projected {self.backend.n_periods:g}-period fringe", "ok")
+        success(log, f"projected {self.backend.n_periods:g}-period fringe")
 
     def _display_reconstruction(self, surface: str, result) -> None:
         self.canvases["reconstructedCanvas"].set_image(QImage(str(result.height_png)))
@@ -140,17 +142,17 @@ class MainWindow(QMainWindow):
         try:
             result = self.backend.reconstruct(surface)
         except Exception as exc:  # noqa: BLE001 - surface any failure to the console
-            self.console.log(f"reconstruct failed: {exc}", "error")
+            log.error(f"reconstruct failed: {exc}")
         else:
             self._display_reconstruction(surface, result)
         self._status_left.setText("Ready")
 
     def _log_metrics(self, surface: str, m: dict) -> None:
         valid_pct = 100.0 * m["valid_pixels"] / m["total_pixels"]
-        self.console.log(
+        success(
+            log,
             f"reconstructed {surface}: RMSE={m['rmse']:.4f} mm, "
             f"R^2={m['r2']:.4f}, valid={valid_pct:.1f}%",
-            "ok",
         )
 
     # -- capture (async Blender subprocess) -----------------------------------
@@ -161,7 +163,7 @@ class MainWindow(QMainWindow):
             self._start_capture(self.sidebar.selected_surface(), purpose="single",
                                  n_steps=1, subdir="single")
         except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
-            self.console.log(f"cannot start capture: {exc}", "warn")
+            log.warning(f"cannot start capture: {exc}")
 
     def _on_pipeline(self) -> None:
         """Full pipeline: project -> capture (stack) -> reconstruct."""
@@ -170,7 +172,7 @@ class MainWindow(QMainWindow):
         try:
             self._start_capture(surface, purpose="pipeline", n_steps=8, subdir="capture")
         except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
-            self.console.log(f"cannot start pipeline: {exc}", "warn")
+            log.warning(f"cannot start pipeline: {exc}")
 
     def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
         """Kick off a Blender capture of `surface` (raises on bad state)."""
@@ -188,24 +190,24 @@ class MainWindow(QMainWindow):
         plural = "s" if n_steps != 1 else ""
         prefix = "pipeline: capturing" if purpose == "pipeline" else "capturing"
         self._status_left.setText(f"Capturing {surface}...")
-        self.console.log(f"{prefix} {surface}: Blender rendering {n_steps} frame{plural}...", "info")
+        log.info(f"{prefix} {surface}: Blender rendering {n_steps} frame{plural}...")
         self._capture_runner.start(spec.argv, str(spec.cwd))
         return spec
 
     def _on_capture_line(self, line: str) -> None:
         self._capture_tail.append(line)
         if "[capture_pipeline]" in line:
-            self.console.log(line.split("]", 1)[-1].strip(), "info")
+            log.info(line.split("]", 1)[-1].strip())
         elif line.startswith("Captured "):
-            self.console.log(line, "info")
+            log.info(line)
 
     def _on_capture_finished(self, exit_code: int) -> None:
         self._set_capture_busy(False)
         self._status_left.setText("Ready")
         if exit_code != 0:
-            self.console.log(f"capture failed (exit {exit_code})", "error")
+            log.error(f"capture failed (exit {exit_code})")
             for tail in list(self._capture_tail)[-6:]:
-                self.console.log(f"  {tail}", "error")
+                log.error(tail)
             return
         spec = self._capture_spec
         frames = sorted(spec.capture_dir.glob("frame_*.png"))
@@ -213,15 +215,15 @@ class MainWindow(QMainWindow):
             self.canvases["capturedCanvas"].set_image(QImage(str(frames[0])))
             self._show_tab("capturedCanvas")
         if self._capture_purpose == "pipeline":
-            self.console.log(f"captured {self._capture_surface}: {spec.n_steps} frames", "ok")
+            success(log, f"captured {self._capture_surface}: {spec.n_steps} frames")
             self._reconstruct(self._capture_surface)
         else:
-            self.console.log(f"captured {self._capture_surface}: single frame", "ok")
+            success(log, f"captured {self._capture_surface}: single frame")
 
     def _on_capture_failed(self, message: str) -> None:
         self._set_capture_busy(False)
         self._status_left.setText("Ready")
-        self.console.log(f"capture failed: {message}", "error")
+        log.error(f"capture failed: {message}")
 
     def _set_capture_busy(self, busy: bool) -> None:
         self.sidebar.capture_button.setEnabled(not busy)
@@ -236,15 +238,6 @@ class MainWindow(QMainWindow):
 
     def set_maestro_status(self, text: str) -> None:
         self._status_maestro.setText(f"maestro:  {text}")
-
-    def install_log_bridge(self) -> logging.Handler:
-        """Mirror the maestro connector's log records into the console."""
-        handler = ConsoleLogHandler(self.console)
-        handler.setFormatter(logging.Formatter("maestro: %(message)s"))
-        maestro_logger = logging.getLogger("maestro")
-        maestro_logger.setLevel(logging.INFO)
-        maestro_logger.addHandler(handler)
-        return handler
 
     # -- maestro command surface ---------------------------------------------
 
@@ -265,7 +258,14 @@ class MainWindow(QMainWindow):
     def _cmd_log(self, args: dict):
         message = str(args.get("message", ""))
         level = str(args.get("level", "info"))
-        self.console.log(message, level)
+        if level == "ok":
+            success(log, message)
+        elif level == "warn":
+            log.warning(message)
+        elif level == "error":
+            log.error(message)
+        else:
+            log.info(message)
         return {"logged": message}
 
     def _cmd_clear_console(self, _args: dict):

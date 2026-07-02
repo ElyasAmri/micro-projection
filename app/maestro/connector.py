@@ -31,7 +31,7 @@ except ImportError:  # QtWebSockets is an optional PySide6 module
     QWebSocket = None  # type: ignore[assignment]
     _HAVE_WS = False
 
-logger = logging.getLogger("maestro")
+logger = logging.getLogger("mp.maestro")
 
 # Must match the harness MAP_PROTOCOL_VERSION; registration is rejected otherwise.
 PROTOCOL_VERSION = 1
