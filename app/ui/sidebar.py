@@ -1,8 +1,8 @@
 """The left sidebar: controls for driving the simulation-backed rig.
 
 Sim-agnostic -- it's handed the list of specimen names and just emits intent
-(`project_requested`, `reconstruct_requested`); the main window wires those to
-the backend.
+(`project_requested`, `capture_requested`, `pipeline_requested`); the main
+window wires those to the backend.
 """
 from __future__ import annotations
 
@@ -18,12 +18,11 @@ from PySide6.QtWidgets import (
 
 
 class Sidebar(QWidget):
-    """Left control panel. Emits `project_requested` / `reconstruct_requested`
-    when its buttons are pressed."""
+    """Left control panel. Emits an intent signal per button press."""
 
-    project_requested = Signal()
-    capture_requested = Signal()
-    reconstruct_requested = Signal()
+    project_requested = Signal()   # show the projected fringe pattern
+    capture_requested = Signal()   # single capture of the fringe on the surface
+    pipeline_requested = Signal()  # full project -> capture -> reconstruct
 
     def __init__(self, surfaces: list[str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -48,22 +47,27 @@ class Sidebar(QWidget):
         self.specimen.addItems(surfaces)
         layout.addWidget(self.specimen)
 
+        actions = QLabel("Actions")
+        actions.setProperty("role", "sectionHeader")
+        layout.addWidget(actions)
+
         self.project_button = QPushButton("Project Fringe")
         self.project_button.setObjectName("projectButton")
         self.project_button.clicked.connect(lambda: self.project_requested.emit())
         layout.addWidget(self.project_button)
 
-        self.capture_button = QPushButton("Capture (Blender)")
+        self.capture_button = QPushButton("Capture")
         self.capture_button.setObjectName("captureButton")
         self.capture_button.setEnabled(bool(surfaces))
         self.capture_button.clicked.connect(lambda: self.capture_requested.emit())
         layout.addWidget(self.capture_button)
 
-        self.reconstruct_button = QPushButton("Reconstruct")
-        self.reconstruct_button.setObjectName("reconstructButton")
-        self.reconstruct_button.setEnabled(bool(surfaces))
-        self.reconstruct_button.clicked.connect(lambda: self.reconstruct_requested.emit())
-        layout.addWidget(self.reconstruct_button)
+        self.pipeline_button = QPushButton("Run Pipeline")
+        self.pipeline_button.setObjectName("pipelineButton")
+        self.pipeline_button.setProperty("variant", "primary")
+        self.pipeline_button.setEnabled(bool(surfaces))
+        self.pipeline_button.clicked.connect(lambda: self.pipeline_requested.emit())
+        layout.addWidget(self.pipeline_button)
 
         layout.addStretch(1)
 

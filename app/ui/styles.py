@@ -156,6 +156,16 @@ def build_stylesheet() -> str:
         color: {c['text_faint']};
         border-color: {c['border_soft']};
     }}
+    QPushButton[variant="primary"] {{
+        background: {c['accent_dim']};
+        border-color: {c['accent']};
+        color: {c['text']};
+        font-weight: 600;
+    }}
+    QPushButton[variant="primary"]:hover {{
+        background: {c['accent']};
+        color: {c['viewport']};
+    }}
     QPushButton[role="chip"] {{
         padding: 4px 9px;
         text-align: center;

@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
         self.sidebar = Sidebar(self.backend.available_surfaces(), self)
         self.sidebar.project_requested.connect(self._on_project)
         self.sidebar.capture_requested.connect(self._on_capture)
-        self.sidebar.reconstruct_requested.connect(self._on_reconstruct)
+        self.sidebar.pipeline_requested.connect(self._on_pipeline)
         self.sidebar_dock = self._dock("Control", "sidebarDock", self.sidebar,
                                        Qt.LeftDockWidgetArea, Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
         self._capture_tail: deque[str] = deque(maxlen=25)
         self._capture_spec = None
         self._capture_surface = ""
+        self._capture_purpose = "single"  # "single" (preview) or "pipeline"
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
         self.apply_dock_sizes()
@@ -119,27 +120,29 @@ class MainWindow(QMainWindow):
         self.canvas_tabs.setCurrentWidget(self.canvases[canvas_name])
 
     def _on_project(self) -> None:
+        self._project(self.sidebar.selected_surface())
+
+    def _project(self, surface: str) -> None:
         fringe = self.backend.generate_fringe()
         self.canvases["projectedCanvas"].set_image(gray_to_qimage(fringe))
         self._show_tab("projectedCanvas")
         self.console.log(f"projected {self.backend.n_periods:g}-period fringe", "ok")
 
-    def _on_reconstruct(self) -> None:
-        surface = self.sidebar.selected_surface()
-        if not surface:
-            self.console.log("no specimen selected (no capture data found)", "warn")
-            return
+    def _display_reconstruction(self, surface: str, result) -> None:
+        self.canvases["reconstructedCanvas"].set_image(QImage(str(result.height_png)))
+        self._show_tab("reconstructedCanvas")
+        self._log_metrics(surface, result.metrics)
+
+    def _reconstruct(self, surface: str) -> None:
+        """Reconstruct from `surface`'s latest capture stack, inline (~0.4s)."""
         self._status_left.setText(f"Reconstructing {surface}...")
-        QApplication.processEvents()  # paint the status before the (brief) blocking run
+        QApplication.processEvents()  # paint the status before the brief blocking run
         try:
             result = self.backend.reconstruct(surface)
         except Exception as exc:  # noqa: BLE001 - surface any failure to the console
             self.console.log(f"reconstruct failed: {exc}", "error")
-            self._status_left.setText("Ready")
-            return
-        self.canvases["reconstructedCanvas"].set_image(QImage(str(result.height_png)))
-        self._show_tab("reconstructedCanvas")
-        self._log_metrics(surface, result.metrics)
+        else:
+            self._display_reconstruction(surface, result)
         self._status_left.setText("Ready")
 
     def _log_metrics(self, surface: str, m: dict) -> None:
@@ -152,28 +155,42 @@ class MainWindow(QMainWindow):
 
     # -- capture (async Blender subprocess) -----------------------------------
 
-    def _start_capture(self, surface: str, **kwargs) -> "object":
+    def _on_capture(self) -> None:
+        """Single capture: one frame of the projected fringe on the surface."""
+        try:
+            self._start_capture(self.sidebar.selected_surface(), purpose="single",
+                                 n_steps=1, subdir="single")
+        except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
+            self.console.log(f"cannot start capture: {exc}", "warn")
+
+    def _on_pipeline(self) -> None:
+        """Full pipeline: project -> capture (stack) -> reconstruct."""
+        surface = self.sidebar.selected_surface()
+        self._project(surface)
+        try:
+            self._start_capture(surface, purpose="pipeline", n_steps=8, subdir="capture")
+        except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
+            self.console.log(f"cannot start pipeline: {exc}", "warn")
+
+    def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
         """Kick off a Blender capture of `surface` (raises on bad state)."""
         if self._capture_runner.is_running():
             raise RuntimeError("a capture is already running")
         if not surface:
             raise ValueError("no specimen selected")
-        spec = self.backend.capture_command(surface, **kwargs)
+        spec = self.backend.capture_command(surface, n_steps=n_steps, subdir=subdir, **kwargs)
         self._capture_spec = spec
         self._capture_surface = surface
+        self._capture_purpose = purpose
         self.sidebar.specimen.setCurrentText(surface)  # reflect what's being captured
         self._capture_tail.clear()
         self._set_capture_busy(True)
-        self._status_left.setText(f"Capturing {surface} ({spec.n_steps} frames)...")
-        self.console.log(f"capturing {surface}: Blender rendering {spec.n_steps} phase steps...", "info")
+        plural = "s" if n_steps != 1 else ""
+        prefix = "pipeline: capturing" if purpose == "pipeline" else "capturing"
+        self._status_left.setText(f"Capturing {surface}...")
+        self.console.log(f"{prefix} {surface}: Blender rendering {n_steps} frame{plural}...", "info")
         self._capture_runner.start(spec.argv, str(spec.cwd))
         return spec
-
-    def _on_capture(self) -> None:
-        try:
-            self._start_capture(self.sidebar.selected_surface())
-        except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
-            self.console.log(f"cannot start capture: {exc}", "warn")
 
     def _on_capture_line(self, line: str) -> None:
         self._capture_tail.append(line)
@@ -191,11 +208,15 @@ class MainWindow(QMainWindow):
                 self.console.log(f"  {tail}", "error")
             return
         spec = self._capture_spec
-        self.console.log(f"captured {self._capture_surface}: {spec.n_steps} frames in {spec.capture_dir}", "ok")
         frames = sorted(spec.capture_dir.glob("frame_*.png"))
         if frames:
             self.canvases["capturedCanvas"].set_image(QImage(str(frames[0])))
             self._show_tab("capturedCanvas")
+        if self._capture_purpose == "pipeline":
+            self.console.log(f"captured {self._capture_surface}: {spec.n_steps} frames", "ok")
+            self._reconstruct(self._capture_surface)
+        else:
+            self.console.log(f"captured {self._capture_surface}: single frame", "ok")
 
     def _on_capture_failed(self, message: str) -> None:
         self._set_capture_busy(False)
@@ -204,8 +225,14 @@ class MainWindow(QMainWindow):
 
     def _set_capture_busy(self, busy: bool) -> None:
         self.sidebar.capture_button.setEnabled(not busy)
-        self.sidebar.reconstruct_button.setEnabled(not busy)
-        self.sidebar.capture_button.setText("Capturing..." if busy else "Capture (Blender)")
+        self.sidebar.pipeline_button.setEnabled(not busy)
+        if not busy:
+            self.sidebar.capture_button.setText("Capture")
+            self.sidebar.pipeline_button.setText("Run Pipeline")
+        elif self._capture_purpose == "pipeline":
+            self.sidebar.pipeline_button.setText("Running...")
+        else:
+            self.sidebar.capture_button.setText("Capturing...")
 
     def set_maestro_status(self, text: str) -> None:
         self._status_maestro.setText(f"maestro:  {text}")
@@ -231,6 +258,7 @@ class MainWindow(QMainWindow):
             "set_status": self._cmd_set_status,
             "project": self._cmd_project,
             "capture": self._cmd_capture,
+            "pipeline": self._cmd_pipeline,
             "reconstruct": self._cmd_reconstruct,
         }
 
@@ -276,22 +304,29 @@ class MainWindow(QMainWindow):
         return {"projected": {"n_periods": n_periods, "phase": phase}}
 
     def _cmd_capture(self, args: dict):
-        """Start a Blender capture (asynchronous). Returns once it has started;
-        progress streams to the console and the frame appears when it finishes."""
+        """Start a single Blender capture (asynchronous): one frame of the
+        projected fringe on the surface. Returns once it has started."""
         surface = str(args.get("surface") or self.sidebar.selected_surface())
         kwargs = {}
         if "samples" in args:
             kwargs["samples"] = int(args["samples"])
-        if "n_steps" in args:
-            kwargs["n_steps"] = int(args["n_steps"])
-        spec = self._start_capture(surface, **kwargs)
-        return {"capture": "started", "surface": surface, "n_steps": spec.n_steps}
+        self._start_capture(surface, purpose="single", n_steps=1, subdir="single", **kwargs)
+        return {"capture": "started", "surface": surface, "frames": 1}
+
+    def _cmd_pipeline(self, args: dict):
+        """Start the full pipeline (asynchronous): project -> capture (stack) ->
+        reconstruct. Returns once capture starts; reconstruct runs on finish."""
+        surface = str(args.get("surface") or self.sidebar.selected_surface())
+        kwargs = {}
+        if "samples" in args:
+            kwargs["samples"] = int(args["samples"])
+        self._project(surface)
+        spec = self._start_capture(surface, purpose="pipeline", n_steps=8, subdir="capture", **kwargs)
+        return {"pipeline": "started", "surface": surface, "n_steps": spec.n_steps}
 
     def _cmd_reconstruct(self, args: dict):
         surface = str(args.get("surface") or self.sidebar.selected_surface())
         self.sidebar.specimen.setCurrentText(surface)
         result = self.backend.reconstruct(surface)
-        self.canvases["reconstructedCanvas"].set_image(QImage(str(result.height_png)))
-        self._show_tab("reconstructedCanvas")
-        self._log_metrics(surface, result.metrics)
+        self._display_reconstruction(surface, result)
         return {"surface": surface, "metrics": result.metrics}

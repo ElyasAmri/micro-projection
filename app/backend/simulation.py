@@ -124,15 +124,17 @@ class SimulationBackend:
         n_steps: int = 8,
         n_periods: float | None = None,
         samples: int = 64,
+        subdir: str = "capture",
     ) -> CaptureSpec:
-        """Describe how to render `surface`'s phase-shifted capture stack with
-        Blender (an argv the UI runs in a QProcess). Frames land in an
-        app-owned capture dir so the simulation's own test data is untouched."""
+        """Describe how to render `surface`'s frames with Blender (an argv the
+        UI runs in a QProcess). Frames land in out/app/<surface>/<subdir>, so
+        the simulation's own test data is untouched and a single preview capture
+        (subdir "single") never clobbers a full stack (subdir "capture")."""
         n = self.n_periods if n_periods is None else n_periods
         script = _sim_dir() / "capture_pipeline.py"
         if not script.is_file():
             raise FileNotFoundError(f"capture_pipeline.py not found at {script} (set MP_SIMULATION_DIR)")
-        capture_dir = _out_root() / "app" / surface / "capture"
+        capture_dir = _out_root() / "app" / surface / subdir
         argv = [
             self.blender_path(), "-b", "-P", str(script), "--",
             "--surface", surface,
