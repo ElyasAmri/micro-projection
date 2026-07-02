@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from microprojection.maestro import discovery
+from maestro import discovery
 
 
 def _write_lockfile(servers_dir, port, token, started_at_ms):

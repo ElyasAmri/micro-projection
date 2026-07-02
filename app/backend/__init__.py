@@ -6,6 +6,6 @@ rewrite.
 """
 from __future__ import annotations
 
-from microprojection.backend.simulation import ReconstructionResult, SimulationBackend
+from backend.simulation import ReconstructionResult, SimulationBackend
 
 __all__ = ["SimulationBackend", "ReconstructionResult"]

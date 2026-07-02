@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 from shiboken6 import delete
 
-from microprojection.maestro import actions
+from maestro import actions
 
 
 @pytest.fixture

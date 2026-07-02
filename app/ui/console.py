@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from microprojection.ui.styles import LEVEL_COLORS, COLORS, monospace_font
+from ui.styles import LEVEL_COLORS, COLORS, monospace_font
 
 MAX_BLOCKS = 5000  # cap scrollback so a long session can't grow without bound
 

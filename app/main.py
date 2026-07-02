@@ -1,9 +1,8 @@
 """Application entry point: build the Qt app + main window, attach the maestro
 connector, and run. Also supports `--screenshot PATH` for a headless render.
 
-    microprojection                      # run the app
-    python -m microprojection            # same
-    microprojection --screenshot ui.png  # render the shell offscreen, then exit
+    python app/main.py                      # run the app (from the repo root)
+    python app/main.py --screenshot ui.png  # render the shell offscreen, then exit
 """
 from __future__ import annotations
 
@@ -12,10 +11,10 @@ import logging
 import os
 import sys
 
-from microprojection.backend import SimulationBackend
-from microprojection.maestro import attach
-from microprojection.ui.main_window import MainWindow
-from microprojection.ui.styles import build_stylesheet
+from backend import SimulationBackend
+from maestro import attach
+from ui.main_window import MainWindow
+from ui.styles import build_stylesheet
 
 
 def build_app():
@@ -40,7 +39,7 @@ def _render_screenshot(app, window, path: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="microprojection", description=__doc__)
+    parser = argparse.ArgumentParser(prog="micro-projection", description=__doc__)
     parser.add_argument("--screenshot", metavar="PATH", help="render the shell offscreen to PATH and exit")
     args = parser.parse_args(argv)
 

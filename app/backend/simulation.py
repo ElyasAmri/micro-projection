@@ -29,7 +29,7 @@ def _find_repo_root() -> Path:
     for parent in here.parents:
         if (parent / "app").is_dir() and (parent / "simulation").is_dir():
             return parent
-    return here.parents[2]  # app/microprojection/backend/ -> app's parent
+    return here.parents[2]  # app/backend/simulation.py -> repo root
 
 
 _REPO_ROOT = _find_repo_root()

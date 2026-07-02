@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from microprojection.ui.styles import COLORS
+from ui.styles import COLORS
 
 
 class Canvas(QWidget):

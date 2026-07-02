@@ -20,8 +20,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Slot
 
-from microprojection.maestro.actions import Command, dispatch
-from microprojection.maestro.discovery import discover_one
+from maestro.actions import Command, dispatch
+from maestro.discovery import discover_one
 
 try:
     from PySide6.QtWebSockets import QWebSocket
@@ -31,7 +31,7 @@ except ImportError:  # QtWebSockets is an optional PySide6 module
     QWebSocket = None  # type: ignore[assignment]
     _HAVE_WS = False
 
-logger = logging.getLogger("microprojection.maestro")
+logger = logging.getLogger("maestro")
 
 # Must match the harness MAP_PROTOCOL_VERSION; registration is rejected otherwise.
 PROTOCOL_VERSION = 1

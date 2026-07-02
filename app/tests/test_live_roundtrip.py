@@ -21,7 +21,7 @@ from PySide6.QtWebSockets import QWebSocketServer
 from PySide6.QtWidgets import QLineEdit, QVBoxLayout, QWidget
 from shiboken6 import delete
 
-from microprojection.maestro.connector import MaestroConnector
+from maestro.connector import MaestroConnector
 
 
 class FakeHarness(QObject):

@@ -10,13 +10,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
 
-from microprojection import __version__
-from microprojection.backend import SimulationBackend
-from microprojection.ui.canvas import Canvas
-from microprojection.ui.console import Console, ConsoleLogHandler
-from microprojection.ui.imaging import gray_to_qimage
-from microprojection.ui.process_runner import ProcessRunner
-from microprojection.ui.sidebar import Sidebar
+from version import __version__
+from backend import SimulationBackend
+from ui.canvas import Canvas
+from ui.console import Console, ConsoleLogHandler
+from ui.imaging import gray_to_qimage
+from ui.process_runner import ProcessRunner
+from ui.sidebar import Sidebar
 
 # Tab label -> canvas objectName, in display order.
 CANVAS_TABS = [
@@ -214,7 +214,7 @@ class MainWindow(QMainWindow):
         """Mirror the maestro connector's log records into the console."""
         handler = ConsoleLogHandler(self.console)
         handler.setFormatter(logging.Formatter("maestro: %(message)s"))
-        maestro_logger = logging.getLogger("microprojection.maestro")
+        maestro_logger = logging.getLogger("maestro")
         maestro_logger.setLevel(logging.INFO)
         maestro_logger.addHandler(handler)
         return handler

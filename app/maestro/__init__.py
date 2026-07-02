@@ -9,6 +9,6 @@ when no maestro server is running, so it never blocks normal startup.
 """
 from __future__ import annotations
 
-from microprojection.maestro.connector import MaestroConnector, attach
+from maestro.connector import MaestroConnector, attach
 
 __all__ = ["MaestroConnector", "attach"]

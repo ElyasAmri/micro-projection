@@ -1,9 +1,7 @@
-[build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
+# The app is run in place from the repo (python app/main.py), not pip-installed,
+# so there's no build-system/packaging here -- just metadata and tool config.
 [project]
-name = "microprojection"
+name = "micro-projection-app"
 version = "0.1.0"
 description = "Control application for the fringe-projection profilometry rig"
 requires-python = ">=3.10"
@@ -15,15 +13,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
-[project.scripts]
-microprojection = "microprojection.app:main"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["microprojection*"]
-
 [tool.isort]
 profile = "black"
 line_length = 100
-known_first_party = ["microprojection"]
-known_third_party = ["PySide6"]
+known_first_party = ["ui", "backend", "maestro"]
+known_third_party = ["PySide6", "numpy"]
