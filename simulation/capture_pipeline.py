@@ -20,6 +20,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rig  # noqa: E402
+import surfaces  # noqa: E402
 
 
 def parse_args():
@@ -30,6 +31,7 @@ def parse_args():
     parser.add_argument("--n-steps", type=int, default=8)
     parser.add_argument("--n-periods", type=float, default=8.0)
     parser.add_argument("--samples", type=int, default=64)
+    parser.add_argument("--surface", default="bump", choices=sorted(surfaces.SURFACES))
     return parser.parse_args(argv)
 
 
@@ -40,7 +42,8 @@ def main() -> None:
 
     rig.clear_scene()
     projector = rig.add_projector()
-    _, phase_fraction = rig.add_surface(projector, n_periods=args.n_periods)
+    height_fn = surfaces.SURFACES[args.surface]
+    _, phase_fraction = rig.add_surface(projector, n_periods=args.n_periods, height_fn=height_fn)
     cam = rig.add_telecentric_camera()
 
     scene = bpy.context.scene
@@ -51,7 +54,7 @@ def main() -> None:
         rig.render(scene, cam, rig.CAM_PIXELS, out_dir / f"frame_{n:02d}.png", args.samples)
         print(f"[capture_pipeline] frame {n + 1}/{args.n_steps} done")
 
-    print(f"Captured {args.n_steps} phase-shifted frames to {out_dir}")
+    print(f"Captured {args.n_steps} phase-shifted frames of '{args.surface}' to {out_dir}")
 
 
 if __name__ == "__main__":

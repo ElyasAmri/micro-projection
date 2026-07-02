@@ -4,11 +4,12 @@ Loads the N-step phase-shifted capture stack (capture_pipeline.py), extracts
 phase via the N-step PSA (report/math.tex, "N-step phase-shifting
 algorithm"), converts phase to height via this rig's phase-to-height
 relation (report/math.tex, "Height from phase, for this rig's geometry"),
-and compares the result against the known ground-truth bump (surfaces.py).
+and compares the result against a known ground-truth surface (surfaces.py).
 
 Pure numpy/opencv on the rendered PNG frames -- no bpy/Blender needed here:
     .venv/bin/python3 simulation/reconstruct.py \
-        --capture-dir out/capture --out-dir out/reconstruction --n-periods 8
+        --capture-dir out/capture --out-dir out/reconstruction \
+        --surface bump --n-periods 8
 """
 from __future__ import annotations
 
@@ -20,14 +21,7 @@ import cv2
 import numpy as np
 
 import surfaces
-from geometry_constants import (
-    CAM_PIXELS,
-    D_PROJ_MM,
-    H0_MM,
-    THETA_DEG,
-    W0_MM,
-    W_PROJ_MM,
-)
+from geometry_constants import H0_MM, THETA_DEG, W0_MM, W_PROJ_MM
 
 
 def load_frames(capture_dir: Path) -> np.ndarray:
@@ -88,18 +82,98 @@ def carrier_phase(world_x: np.ndarray, n_periods: float) -> np.ndarray:
     return wrap_to_pi(big_phi - np.pi / 2.0)
 
 
-def reconstruct_height(psi: np.ndarray, n_periods: float, theta_deg: float) -> float:
-    """Returns lambda_eq (mm); h = psi/(2*pi) * lambda_eq (report/math.tex
-    Eq. height-from-phase)."""
+def equivalent_wavelength_mm(n_periods: float, theta_deg: float) -> float:
+    """lambda_eq (mm); h = psi/(2*pi) * lambda_eq (report/math.tex Eq.
+    height-from-phase)."""
     p_eff = W_PROJ_MM / n_periods
-    lambda_eq = p_eff / math.tan(math.radians(theta_deg))
-    return lambda_eq
+    return p_eff / math.tan(math.radians(theta_deg))
 
 
 def colorize(value: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
-    norm = np.clip((value - vmin) / (vmax - vmin), 0.0, 1.0)
+    span = vmax - vmin
+    norm = np.clip((value - vmin) / span, 0.0, 1.0) if span > 0 else np.zeros_like(value)
     gray = (norm * 255).astype(np.uint8)
     return cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
+
+
+def run(
+    capture_dir: Path,
+    out_dir: Path,
+    n_periods: float = 8.0,
+    surface: str = "bump",
+    modulation_threshold: float = 0.03,
+    erode_px: int = 10,
+    verbose: bool = True,
+) -> dict:
+    """Reconstruct height from a capture stack and score it against
+    surfaces.SURFACES[surface]'s exact ground truth. Returns a metrics dict
+    and writes visualizations + metrics.txt to out_dir."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ground_truth_fn = surfaces.SURFACES[surface]
+
+    frames = load_frames(capture_dir)
+    n, h_px, w_px = frames.shape
+    if verbose:
+        print(f"loaded {n} frames of shape {h_px}x{w_px}")
+
+    phase, modulation = extract_phase(frames)
+    valid = modulation > modulation_threshold
+    if erode_px > 0:
+        valid = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=erode_px).astype(bool)
+    if verbose:
+        print(f"valid (masked) pixels: {valid.sum()} / {valid.size} ({100 * valid.mean():.1f}%)")
+
+    world_x, world_y = pixel_to_world((h_px, w_px), THETA_DEG)
+    phi_carrier = carrier_phase(world_x, n_periods)
+    psi = wrap_to_pi(phase - phi_carrier)
+
+    lambda_eq = equivalent_wavelength_mm(n_periods, THETA_DEG)
+    height = psi / (2.0 * np.pi) * lambda_eq
+
+    ground_truth = ground_truth_fn(world_x, world_y)
+
+    error = height - ground_truth
+    err_valid = error[valid]
+    gt_valid = ground_truth[valid]
+    rmse = float(np.sqrt(np.mean(err_valid ** 2)))
+    mae = float(np.mean(np.abs(err_valid)))
+    max_abs = float(np.max(np.abs(err_valid)))
+    gt_var = float(np.sum((gt_valid - gt_valid.mean()) ** 2))
+    r2 = float(1.0 - np.sum(err_valid ** 2) / gt_var) if gt_var > 1e-12 else float("nan")
+
+    if verbose:
+        print(f"lambda_eq = {lambda_eq:.3f} mm")
+        print(f"RMSE = {rmse:.4f} mm, MAE = {mae:.4f} mm, max|err| = {max_abs:.4f} mm, R^2 = {r2:.4f}")
+
+    gt_span = gt_valid.max() - gt_valid.min()
+    vmin, vmax = float(gt_valid.min()), float(gt_valid.max())
+    if gt_span < 1e-9:  # flat surface: give the colormap a non-zero window to render in
+        vmin, vmax = -0.05, 0.05
+    height_masked = np.where(valid, height, np.nan)
+    cv2.imwrite(str(out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
+    cv2.imwrite(str(out_dir / "height_ground_truth.png"), colorize(np.where(valid, ground_truth, vmin), vmin, vmax))
+    err_abs_max = max(float(np.abs(err_valid).max()), 1e-9)
+    err_masked = np.where(valid, error, 0.0)
+    cv2.imwrite(str(out_dir / "height_error.png"), colorize(err_masked, -err_abs_max, err_abs_max))
+
+    metrics = {
+        "surface": surface,
+        "frames": n,
+        "valid_pixels": int(valid.sum()),
+        "total_pixels": int(valid.size),
+        "lambda_eq_mm": lambda_eq,
+        "rmse": rmse,
+        "mae": mae,
+        "max_abs": max_abs,
+        "r2": r2,
+    }
+    with open(out_dir / "metrics.txt", "w") as f:
+        for key, value in metrics.items():
+            f.write(f"{key}: {value}\n")
+
+    if verbose:
+        print(f"wrote outputs to {out_dir}")
+    return metrics
 
 
 def parse_args():
@@ -107,6 +181,7 @@ def parse_args():
     parser.add_argument("--capture-dir", default="out/capture", type=Path)
     parser.add_argument("--out-dir", default="out/reconstruction", type=Path)
     parser.add_argument("--n-periods", default=8.0, type=float)
+    parser.add_argument("--surface", default="bump", choices=sorted(surfaces.SURFACES))
     parser.add_argument("--modulation-threshold", default=0.03, type=float)
     parser.add_argument("--erode-px", default=10, type=int, help="shrink the valid mask inward by this many pixels, away from field boundaries")
     return parser.parse_args()
@@ -114,55 +189,14 @@ def parse_args():
 
 def main() -> None:
     args = parse_args()
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-
-    frames = load_frames(args.capture_dir)
-    n, h_px, w_px = frames.shape
-    print(f"loaded {n} frames of shape {h_px}x{w_px}")
-
-    phase, modulation = extract_phase(frames)
-    valid = modulation > args.modulation_threshold
-    if args.erode_px > 0:
-        valid = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=args.erode_px).astype(bool)
-    print(f"valid (masked) pixels: {valid.sum()} / {valid.size} ({100 * valid.mean():.1f}%)")
-
-    world_x, world_y = pixel_to_world((h_px, w_px), THETA_DEG)
-    phi_carrier = carrier_phase(world_x, args.n_periods)
-    psi = wrap_to_pi(phase - phi_carrier)
-
-    lambda_eq = reconstruct_height(psi, args.n_periods, THETA_DEG)
-    height = psi / (2.0 * np.pi) * lambda_eq
-
-    ground_truth = surfaces.bump_height_mm(world_x, world_y)
-
-    error = height - ground_truth
-    err_valid = error[valid]
-    rmse = float(np.sqrt(np.mean(err_valid ** 2)))
-    mae = float(np.mean(np.abs(err_valid)))
-    max_abs = float(np.max(np.abs(err_valid)))
-    r2 = 1.0 - np.sum(err_valid ** 2) / np.sum((ground_truth[valid] - ground_truth[valid].mean()) ** 2)
-
-    print(f"lambda_eq = {lambda_eq:.3f} mm")
-    print(f"RMSE = {rmse:.4f} mm, MAE = {mae:.4f} mm, max|err| = {max_abs:.4f} mm, R^2 = {r2:.4f}")
-
-    vmin, vmax = float(ground_truth[valid].min()), float(ground_truth[valid].max())
-    height_masked = np.where(valid, height, np.nan)
-    cv2.imwrite(str(args.out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
-    cv2.imwrite(str(args.out_dir / "height_ground_truth.png"), colorize(np.where(valid, ground_truth, vmin), vmin, vmax))
-    err_abs_max = float(np.abs(err_valid).max())
-    err_masked = np.where(valid, error, 0.0)
-    cv2.imwrite(str(args.out_dir / "height_error.png"), colorize(err_masked, -err_abs_max, err_abs_max))
-
-    with open(args.out_dir / "metrics.txt", "w") as f:
-        f.write(f"frames: {n}\n")
-        f.write(f"valid_pixels: {int(valid.sum())} / {valid.size}\n")
-        f.write(f"lambda_eq_mm: {lambda_eq:.4f}\n")
-        f.write(f"RMSE_mm: {rmse:.4f}\n")
-        f.write(f"MAE_mm: {mae:.4f}\n")
-        f.write(f"max_abs_err_mm: {max_abs:.4f}\n")
-        f.write(f"R2: {r2:.4f}\n")
-
-    print(f"wrote outputs to {args.out_dir}")
+    run(
+        args.capture_dir,
+        args.out_dir,
+        n_periods=args.n_periods,
+        surface=args.surface,
+        modulation_threshold=args.modulation_threshold,
+        erode_px=args.erode_px,
+    )
 
 
 if __name__ == "__main__":
