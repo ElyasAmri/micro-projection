@@ -13,6 +13,7 @@ import sys
 import logbus
 from backend import SimulationBackend
 from maestro import attach
+from single_instance import SingleInstance
 from ui.console import ConsoleLogHandler
 from ui.main_window import MainWindow
 from ui.styles import build_stylesheet
@@ -41,6 +42,13 @@ def _render_screenshot(app, window, path: str) -> int:
     return 0 if ok else 1
 
 
+def _activate(window) -> None:
+    """Bring the primary window to the front (a second launch was attempted)."""
+    window.showNormal()
+    window.raise_()
+    window.activateWindow()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="micro-projection", description=__doc__)
     parser.add_argument("--screenshot", metavar="PATH", help="render the shell offscreen to PATH and exit")
@@ -50,9 +58,22 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
     app = build_app()
+
+    # Refuse a second interactive window; nudge the running one to the front.
+    # (Headless --screenshot renders are transient and skip the guard.)
+    guard = None
+    if not args.screenshot:
+        guard = SingleInstance()
+        if guard.another_running:
+            print("micro-projection is already running", file=sys.stderr)
+            return 0
+
     backend = SimulationBackend()
     window = MainWindow(backend=backend)
     logbus.configure(ConsoleLogHandler(window.console))
+    if guard is not None:
+        guard.setParent(window)  # tie its lifetime to the window
+        guard.activate_requested.connect(lambda: _activate(window))
 
     logbus.success(log, "Micro-Projection control shell started")
     specimens = backend.available_surfaces()
