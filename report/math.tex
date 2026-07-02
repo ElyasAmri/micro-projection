@@ -2,6 +2,7 @@
 
 \usepackage[a4paper,margin=1in]{geometry}
 \usepackage{amsmath}
+\usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{tikz}
 \usepackage{hyperref}
@@ -391,5 +392,57 @@ own perspective divide evaluated at $z=0$ instead of $z=h$
 ($O(h/D)\approx2\%$), and the first-order (rather than exact) camera-ray
 lateral-shift approximation. Both are small compared to $\lambda_{eq}$,
 matching the sub-2\% RMSE observed.
+
+\section{Validation battery}
+\label{sec:validation-battery}
+
+Section~\ref{sec:validation} checked one surface. \texttt{simulation/}
+\texttt{test\_surfaces.py} repeats the full capture + reconstruct +
+score cycle across every surface in \texttt{surfaces.SURFACES}: a null
+case (flat, $h\equiv0$), the original centered bump, an off-center bump,
+a crater (negative bump, sign check), a ridge (anisotropic, no radial
+symmetry), and two simultaneous bumps. Every surface keeps peak
+$|h|\lesssim3.5$\,mm and max slope $\lesssim10^\circ$ (surfaces.py), well
+inside the single-frequency unambiguous range of
+Section~\ref{sec:validation}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Surface & RMSE (mm) & MAE (mm) & Max $|$err$|$ (mm) & $R^2$ & Valid \\
+\midrule
+flat        & 0.0149 & 0.0128 & 0.0484 & --     & 100.0\% \\
+bump        & 0.0495 & 0.0404 & 0.1452 & 0.9962 & 100.0\% \\
+ridge       & 0.0457 & 0.0326 & 0.1680 & 0.9972 & 99.0\%  \\
+crater      & 0.1596 & 0.0958 & 0.5757 & 0.9444 & 99.7\%  \\
+offset\_bump & 0.1864 & 0.1044 & 0.7640 & 0.9556 & 98.9\%  \\
+twin\_bump   & 0.1555 & 0.1026 & 0.8865 & 0.9347 & 99.5\%  \\
+\bottomrule
+\end{tabular}
+\caption{Reconstruction accuracy across the validation battery.
+\texttt{flat} has no $R^2$ (zero ground-truth variance, undefined by
+construction) --- its RMSE is the pipeline's own noise floor.}
+\end{table}
+
+All six recover the correct shape (checked visually: two distinct,
+correctly separated lobes for \texttt{twin\_bump}; a $y$-invariant band
+for \texttt{ridge}; the correct sign for \texttt{crater}) and all $R^2
+\geq 0.93$. A clear pattern nonetheless separates the two centered
+surfaces (\texttt{bump}, \texttt{ridge}: RMSE $\approx0.05$\,mm) from the
+three with off-center features (\texttt{crater}, \texttt{offset\_bump},
+\texttt{twin\_bump}: RMSE $0.16$--$0.19$\,mm, $3$--$4\times$ higher) ---
+correlated with the feature's $x$ offset specifically (the tilt/throw
+axis), not $y$. This points at the constant-$p_{\text{eff}}$
+approximation in Section~\ref{sec:height-from-phase}: the projector is a
+perspective point source, so its true fringe pitch varies across the
+footprint (the same ``perspective effect'' Samara's \S2.3.4 derives for a
+conventional-lens projection arm), and using the single footprint-center
+value everywhere under- or over-estimates height off-axis. Correcting
+this would mean evaluating $p_{\text{eff}}$ (or equivalently $\phi_
+{\text{carrier}}$'s slope) locally per pixel rather than once globally ---
+worth doing if off-center accuracy matters, not done here since even the
+worst case (\texttt{twin\_bump}) stays under $0.2$\,mm RMSE against
+$2$--$3.5$\,mm features.
 
 \end{document}
