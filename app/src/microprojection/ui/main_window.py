@@ -4,6 +4,7 @@ docked along the bottom, plus the command surface maestro drives."""
 from __future__ import annotations
 
 import logging
+from collections import deque
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
@@ -14,6 +15,7 @@ from microprojection.backend import SimulationBackend
 from microprojection.ui.canvas import Canvas
 from microprojection.ui.console import Console, ConsoleLogHandler
 from microprojection.ui.imaging import gray_to_qimage
+from microprojection.ui.process_runner import ProcessRunner
 from microprojection.ui.sidebar import Sidebar
 
 # Tab label -> canvas objectName, in display order.
@@ -40,6 +42,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar = Sidebar(self.backend.available_surfaces(), self)
         self.sidebar.project_requested.connect(self._on_project)
+        self.sidebar.capture_requested.connect(self._on_capture)
         self.sidebar.reconstruct_requested.connect(self._on_reconstruct)
         self.sidebar_dock = self._dock("Control", "sidebarDock", self.sidebar,
                                        Qt.LeftDockWidgetArea, Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
@@ -54,6 +57,16 @@ class MainWindow(QMainWindow):
         self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
 
         self._build_status_bar()
+
+        # Blender capture runs as a child process, streamed to the console.
+        self._capture_runner = ProcessRunner(self)
+        self._capture_runner.line.connect(self._on_capture_line)
+        self._capture_runner.finished.connect(self._on_capture_finished)
+        self._capture_runner.failed.connect(self._on_capture_failed)
+        self._capture_tail: deque[str] = deque(maxlen=25)
+        self._capture_spec = None
+        self._capture_surface = ""
+
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
         self.apply_dock_sizes()
 
@@ -137,6 +150,63 @@ class MainWindow(QMainWindow):
             "ok",
         )
 
+    # -- capture (async Blender subprocess) -----------------------------------
+
+    def _start_capture(self, surface: str, **kwargs) -> "object":
+        """Kick off a Blender capture of `surface` (raises on bad state)."""
+        if self._capture_runner.is_running():
+            raise RuntimeError("a capture is already running")
+        if not surface:
+            raise ValueError("no specimen selected")
+        spec = self.backend.capture_command(surface, **kwargs)
+        self._capture_spec = spec
+        self._capture_surface = surface
+        self.sidebar.specimen.setCurrentText(surface)  # reflect what's being captured
+        self._capture_tail.clear()
+        self._set_capture_busy(True)
+        self._status_left.setText(f"Capturing {surface} ({spec.n_steps} frames)...")
+        self.console.log(f"capturing {surface}: Blender rendering {spec.n_steps} phase steps...", "info")
+        self._capture_runner.start(spec.argv, str(spec.cwd))
+        return spec
+
+    def _on_capture(self) -> None:
+        try:
+            self._start_capture(self.sidebar.selected_surface())
+        except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
+            self.console.log(f"cannot start capture: {exc}", "warn")
+
+    def _on_capture_line(self, line: str) -> None:
+        self._capture_tail.append(line)
+        if "[capture_pipeline]" in line:
+            self.console.log(line.split("]", 1)[-1].strip(), "info")
+        elif line.startswith("Captured "):
+            self.console.log(line, "info")
+
+    def _on_capture_finished(self, exit_code: int) -> None:
+        self._set_capture_busy(False)
+        self._status_left.setText("Ready")
+        if exit_code != 0:
+            self.console.log(f"capture failed (exit {exit_code})", "error")
+            for tail in list(self._capture_tail)[-6:]:
+                self.console.log(f"  {tail}", "error")
+            return
+        spec = self._capture_spec
+        self.console.log(f"captured {self._capture_surface}: {spec.n_steps} frames in {spec.capture_dir}", "ok")
+        frames = sorted(spec.capture_dir.glob("frame_*.png"))
+        if frames:
+            self.canvases["capturedCanvas"].set_image(QImage(str(frames[0])))
+            self._show_tab("capturedCanvas")
+
+    def _on_capture_failed(self, message: str) -> None:
+        self._set_capture_busy(False)
+        self._status_left.setText("Ready")
+        self.console.log(f"capture failed: {message}", "error")
+
+    def _set_capture_busy(self, busy: bool) -> None:
+        self.sidebar.capture_button.setEnabled(not busy)
+        self.sidebar.reconstruct_button.setEnabled(not busy)
+        self.sidebar.capture_button.setText("Capturing..." if busy else "Capture (Blender)")
+
     def set_maestro_status(self, text: str) -> None:
         self._status_maestro.setText(f"maestro:  {text}")
 
@@ -160,6 +230,7 @@ class MainWindow(QMainWindow):
             "select_tab": self._cmd_select_tab,
             "set_status": self._cmd_set_status,
             "project": self._cmd_project,
+            "capture": self._cmd_capture,
             "reconstruct": self._cmd_reconstruct,
         }
 
@@ -204,8 +275,21 @@ class MainWindow(QMainWindow):
         self._show_tab("projectedCanvas")
         return {"projected": {"n_periods": n_periods, "phase": phase}}
 
+    def _cmd_capture(self, args: dict):
+        """Start a Blender capture (asynchronous). Returns once it has started;
+        progress streams to the console and the frame appears when it finishes."""
+        surface = str(args.get("surface") or self.sidebar.selected_surface())
+        kwargs = {}
+        if "samples" in args:
+            kwargs["samples"] = int(args["samples"])
+        if "n_steps" in args:
+            kwargs["n_steps"] = int(args["n_steps"])
+        spec = self._start_capture(surface, **kwargs)
+        return {"capture": "started", "surface": surface, "n_steps": spec.n_steps}
+
     def _cmd_reconstruct(self, args: dict):
         surface = str(args.get("surface") or self.sidebar.selected_surface())
+        self.sidebar.specimen.setCurrentText(surface)
         result = self.backend.reconstruct(surface)
         self.canvases["reconstructedCanvas"].set_image(QImage(str(result.height_png)))
         self._show_tab("reconstructedCanvas")

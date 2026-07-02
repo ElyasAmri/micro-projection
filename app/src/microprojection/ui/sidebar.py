@@ -22,6 +22,7 @@ class Sidebar(QWidget):
     when its buttons are pressed."""
 
     project_requested = Signal()
+    capture_requested = Signal()
     reconstruct_requested = Signal()
 
     def __init__(self, surfaces: list[str], parent: QWidget | None = None) -> None:
@@ -51,6 +52,12 @@ class Sidebar(QWidget):
         self.project_button.setObjectName("projectButton")
         self.project_button.clicked.connect(lambda: self.project_requested.emit())
         layout.addWidget(self.project_button)
+
+        self.capture_button = QPushButton("Capture (Blender)")
+        self.capture_button.setObjectName("captureButton")
+        self.capture_button.setEnabled(bool(surfaces))
+        self.capture_button.clicked.connect(lambda: self.capture_requested.emit())
+        layout.addWidget(self.capture_button)
 
         self.reconstruct_button = QPushButton("Reconstruct")
         self.reconstruct_button.setObjectName("reconstructButton")

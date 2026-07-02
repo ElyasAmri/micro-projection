@@ -15,6 +15,7 @@ simulation is located by path (env `MP_SIMULATION_DIR`, else the sibling
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,18 @@ class ReconstructionResult:
     error_png: Path
 
 
+@dataclass
+class CaptureSpec:
+    """How to render a capture stack: the argv to run (Blender), the working
+    directory, where frames will land, and how many there will be. The UI runs
+    this in a QProcess so the backend stays Qt-free."""
+
+    argv: list[str]
+    cwd: Path
+    capture_dir: Path
+    n_steps: int
+
+
 class SimulationBackend:
     """Drives the fringe-projection loop against the simulation instead of
     hardware."""
@@ -52,6 +65,7 @@ class SimulationBackend:
     def __init__(self, n_periods: float = 8.0) -> None:
         self.n_periods = n_periods
         self._sim_reconstruct = None  # imported lazily on first reconstruct()
+        self._sim_surfaces = None  # imported lazily on first surface listing
 
     # -- projection (in-process, no Blender) ---------------------------------
 
@@ -74,22 +88,75 @@ class SimulationBackend:
     # -- specimens that already have a capture stack -------------------------
 
     def available_surfaces(self) -> list[str]:
-        """Specimens with a capture stack ready to reconstruct (no sim import
-        needed -- just what's on disk under out/surface_tests)."""
-        root = _out_root() / "surface_tests"
-        if not root.is_dir():
-            return []
-        names = []
-        for child in sorted(root.iterdir()):
-            capture = child / "capture"
-            if capture.is_dir() and any(capture.glob("frame_*.png")):
-                names.append(child.name)
-        return names
+        """Specimens the UI can work with. Prefer the simulation's registry
+        (any of these can be captured); fall back to whatever already has
+        capture data on disk if the sim isn't importable."""
+        try:
+            return sorted(self._load_sim_surfaces().SURFACES)
+        except Exception:  # noqa: BLE001 - sim missing/unimportable is non-fatal
+            return self._surfaces_with_capture_data()
 
-    def capture_dir(self, surface: str) -> Path:
-        return _out_root() / "surface_tests" / surface / "capture"
+    def _surfaces_with_capture_data(self) -> list[str]:
+        names: set[str] = set()
+        for root in (_out_root() / "surface_tests", _out_root() / "app"):
+            if not root.is_dir():
+                continue
+            for child in sorted(root.iterdir()):
+                capture = child / "capture"
+                if capture.is_dir() and any(capture.glob("frame_*.png")):
+                    names.add(child.name)
+        return sorted(names)
+
+    # -- capture (delegates to Blender via capture_pipeline.py) --------------
+
+    def capture_command(
+        self,
+        surface: str,
+        n_steps: int = 8,
+        n_periods: float | None = None,
+        samples: int = 64,
+    ) -> CaptureSpec:
+        """Describe how to render `surface`'s phase-shifted capture stack with
+        Blender (an argv the UI runs in a QProcess). Frames land in an
+        app-owned capture dir so the simulation's own test data is untouched."""
+        n = self.n_periods if n_periods is None else n_periods
+        script = _sim_dir() / "capture_pipeline.py"
+        if not script.is_file():
+            raise FileNotFoundError(f"capture_pipeline.py not found at {script} (set MP_SIMULATION_DIR)")
+        capture_dir = _out_root() / "app" / surface / "capture"
+        argv = [
+            self.blender_path(), "-b", "-P", str(script), "--",
+            "--surface", surface,
+            "--out-dir", str(capture_dir),
+            "--n-steps", str(n_steps),
+            "--n-periods", str(n),
+            "--samples", str(samples),
+        ]
+        return CaptureSpec(argv=argv, cwd=_REPO_ROOT, capture_dir=capture_dir, n_steps=n_steps)
+
+    def blender_path(self) -> str:
+        """Locate the Blender executable (env MP_BLENDER, then PATH, then the
+        macOS app bundle)."""
+        explicit = os.environ.get("MP_BLENDER")
+        if explicit:
+            return explicit
+        found = shutil.which("blender")
+        if found:
+            return found
+        mac_default = "/Applications/Blender.app/Contents/MacOS/Blender"
+        if Path(mac_default).is_file():
+            return mac_default
+        raise FileNotFoundError("Blender not found (set MP_BLENDER)")
 
     # -- reconstruction (delegates to the simulation) ------------------------
+
+    def capture_dir(self, surface: str) -> Path:
+        """Where reconstruct reads frames: a fresh app-rendered capture if one
+        exists, else the simulation's pre-rendered test capture."""
+        app_capture = _out_root() / "app" / surface / "capture"
+        if app_capture.is_dir() and any(app_capture.glob("frame_*.png")):
+            return app_capture
+        return _out_root() / "surface_tests" / surface / "capture"
 
     def reconstruct(self, surface: str, n_periods: float | None = None) -> ReconstructionResult:
         """Run the simulation's reconstruct.run() on `surface`'s capture stack
@@ -109,15 +176,27 @@ class SimulationBackend:
             error_png=out_dir / "height_error.png",
         )
 
+    def _ensure_sim_on_path(self) -> None:
+        sim_dir = str(_sim_dir())
+        if not Path(sim_dir).is_dir():
+            raise FileNotFoundError(f"simulation not found at {sim_dir} (set MP_SIMULATION_DIR)")
+        if sim_dir not in sys.path:
+            sys.path.insert(0, sim_dir)
+
     def _load_sim_reconstruct(self):
         """Import the simulation's reconstruct module on first use."""
         if self._sim_reconstruct is None:
-            sim_dir = str(_sim_dir())
-            if not Path(sim_dir).is_dir():
-                raise FileNotFoundError(f"simulation not found at {sim_dir} (set MP_SIMULATION_DIR)")
-            if sim_dir not in sys.path:
-                sys.path.insert(0, sim_dir)
+            self._ensure_sim_on_path()
             import reconstruct as sim_reconstruct  # noqa: E402  (sibling sim package)
 
             self._sim_reconstruct = sim_reconstruct
         return self._sim_reconstruct
+
+    def _load_sim_surfaces(self):
+        """Import the simulation's surfaces registry module on first use."""
+        if self._sim_surfaces is None:
+            self._ensure_sim_on_path()
+            import surfaces as sim_surfaces  # noqa: E402  (sibling sim package)
+
+            self._sim_surfaces = sim_surfaces
+        return self._sim_surfaces
