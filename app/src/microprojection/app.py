@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 
+from microprojection.backend import SimulationBackend
 from microprojection.maestro import attach
 from microprojection.ui.main_window import MainWindow
 from microprojection.ui.styles import build_stylesheet
@@ -49,11 +50,16 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
 
     app = build_app()
-    window = MainWindow()
+    backend = SimulationBackend()
+    window = MainWindow(backend=backend)
     window.install_log_bridge()
 
     window.console.log("Micro-Projection control shell started", "ok")
-    window.console.log("canvas, sidebar, console ready", "info")
+    specimens = backend.available_surfaces()
+    if specimens:
+        window.console.log(f"simulation backend: {len(specimens)} specimens ({', '.join(specimens)})", "info")
+    else:
+        window.console.log("simulation backend: no capture data found under out/surface_tests", "warn")
 
     connector = attach(window, commands=window.maestro_commands(), kind="qt")
     if connector is None:

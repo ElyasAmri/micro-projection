@@ -78,6 +78,35 @@ def build_stylesheet() -> str:
         background: {c['surface']};
         border-right: 1px solid {c['border']};
     }}
+    QLabel[role="sectionHeader"] {{
+        color: {c['text_faint']};
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        padding: 2px 2px 4px 2px;
+    }}
+    QLabel#fieldLabel {{
+        color: {c['text_dim']};
+        font-size: 11px;
+        padding-top: 6px;
+    }}
+    QComboBox {{
+        background: {c['surface_alt']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        border-radius: 6px;
+        padding: 6px 10px;
+    }}
+    QComboBox:hover {{ border-color: {c['accent_dim']}; }}
+    QComboBox::drop-down {{ border: none; width: 20px; }}
+    QComboBox QAbstractItemView {{
+        background: {c['surface']};
+        border: 1px solid {c['border']};
+        color: {c['text']};
+        selection-background-color: {c['accent_dim']};
+        outline: none;
+    }}
 
     /* -- Canvas tabs ---------------------------------------------------- */
     QTabWidget#canvasTabs::pane {{

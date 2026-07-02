@@ -1,18 +1,64 @@
-"""The left sidebar: an empty panel for now.
+"""The left sidebar: controls for driving the simulation-backed rig.
 
-Kept in the shell (docked left, styled) but intentionally without content --
-controls land here later.
+Sim-agnostic -- it's handed the list of specimen names and just emits intent
+(`project_requested`, `reconstruct_requested`); the main window wires those to
+the backend.
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class Sidebar(QWidget):
-    """Empty fixed-width left panel."""
+    """Left control panel. Emits `project_requested` / `reconstruct_requested`
+    when its buttons are pressed."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    project_requested = Signal()
+    reconstruct_requested = Signal()
+
+    def __init__(self, surfaces: list[str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("sidebar")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setMinimumWidth(230)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(6)
+
+        header = QLabel("Simulation")
+        header.setProperty("role", "sectionHeader")
+        layout.addWidget(header)
+
+        specimen_label = QLabel("Specimen")
+        specimen_label.setObjectName("fieldLabel")
+        layout.addWidget(specimen_label)
+
+        self.specimen = QComboBox()
+        self.specimen.setObjectName("specimenSelect")
+        self.specimen.addItems(surfaces)
+        layout.addWidget(self.specimen)
+
+        self.project_button = QPushButton("Project Fringe")
+        self.project_button.setObjectName("projectButton")
+        self.project_button.clicked.connect(lambda: self.project_requested.emit())
+        layout.addWidget(self.project_button)
+
+        self.reconstruct_button = QPushButton("Reconstruct")
+        self.reconstruct_button.setObjectName("reconstructButton")
+        self.reconstruct_button.setEnabled(bool(surfaces))
+        self.reconstruct_button.clicked.connect(lambda: self.reconstruct_requested.emit())
+        layout.addWidget(self.reconstruct_button)
+
+        layout.addStretch(1)
+
+    def selected_surface(self) -> str:
+        return self.specimen.currentText()
