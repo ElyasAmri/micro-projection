@@ -48,6 +48,13 @@ from geometry_constants import N_PERIODS_LADDER, THETA_DEG
 # of standard deviation sigma = lambda_c * sqrt(ln 2 / (2*pi^2)).
 _ISO_SIGMA_PER_LAMBDA = math.sqrt(math.log(2.0) / (2.0 * math.pi ** 2))  # ~= 0.18739
 
+# When the fine rung's temporal noise estimate exceeds its spatial (single-frame,
+# white) estimate by more than this factor, the residual is dominated by
+# *systematic* frame-to-frame error (projector gamma, phase-step error, a smooth
+# Blender render artifact), not random noise -- flag it, because the random floor
+# then does not bound the roughness map's fidelity.
+SYSTEMATIC_RATIO_THRESH = 3.0
+
 
 def gaussian_highpass(
     height: np.ndarray,
@@ -155,11 +162,22 @@ def measure(
             Path(fine_capture_dir), out_dir / "roughness_noise",
             n_periods=fine_n_periods, surface=None, verbose=False,
         )
-        sigma_h_um = nm["height_uncertainty_um_median"]
-        sq_corr, snr = denoise_sq(params["Sq_um"], sigma_h_um)
-        metrics["noise_floor_um"] = sigma_h_um
+        # The roughness floor is the RANDOM (white) noise that actually survives
+        # the high-pass -- the single-frame spatial estimate. The temporal
+        # residual also absorbs systematic frame-to-frame error, which form
+        # filtering largely removes and which must not be counted as a random
+        # floor. Scale the (per-pixel-modulation-weighted) temporal height
+        # uncertainty down to the white level by the spatial/temporal ratio.
+        temporal_dn = nm["sigma_est_dn"]
+        spatial_dn = nm["sigma_spatial_dn"]
+        scale = (spatial_dn / temporal_dn) if temporal_dn > 0 else 1.0
+        white_floor_um = nm["height_uncertainty_um_median"] * scale
+        sq_corr, snr = denoise_sq(params["Sq_um"], white_floor_um)
+        metrics["noise_floor_um"] = white_floor_um
         metrics["Sq_denoised_um"] = sq_corr
-        metrics["roughness_snr"] = snr
+        metrics["roughness_snr"] = snr  # random-noise SNR only
+        metrics["systematic_ratio"] = (temporal_dn / spatial_dn) if spatial_dn > 0 else float("inf")
+        metrics["systematic_error"] = metrics["systematic_ratio"] > SYSTEMATIC_RATIO_THRESH
 
     if verbose:
         line = (f"roughness {surface}: Sa={params['Sa_um']:.2f} um, "
@@ -168,8 +186,11 @@ def measure(
             line += f" (true Sq={metrics['Sq_true_um']:.2f} um, err {metrics['Sq_err_um']:+.2f} um)"
         print(line)
         if "roughness_snr" in metrics:
-            print(f"noise floor {metrics['noise_floor_um']:.2f} um -> "
-                  f"Sq(denoised)={metrics['Sq_denoised_um']:.2f} um, SNR={metrics['roughness_snr']:.1f}")
+            print(f"random floor {metrics['noise_floor_um']:.2f} um -> "
+                  f"Sq(denoised)={metrics['Sq_denoised_um']:.2f} um, random-SNR={metrics['roughness_snr']:.1f}")
+            if metrics["systematic_error"]:
+                print(f"  WARNING: systematic error present (temporal/spatial = "
+                      f"{metrics['systematic_ratio']:.0f}x); the random floor does not bound map fidelity")
 
     # Roughness map, centered at 0 over +/-3*Sq so the texture, not a stray
     # outlier, sets the scale.

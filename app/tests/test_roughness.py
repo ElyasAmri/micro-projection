@@ -91,6 +91,9 @@ def test_roughness_denoise_recovers_true_sq(sim, tmp_path):
     assert m["Sq_um"] > m["Sq_denoised_um"]  # raw is inflated by noise
     assert m["Sq_denoised_um"] == pytest.approx(m["Sq_true_um"], abs=1.5)
     assert m["roughness_snr"] > 2.0
+    # Injected noise is white, so temporal ~ spatial: no false systematic alarm.
+    assert m["systematic_error"] is False
+    assert m["systematic_ratio"] < 2.0
 
 
 def test_ladder_beats_a_single_frequency_for_roughness(sim, tmp_path):

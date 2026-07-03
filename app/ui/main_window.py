@@ -406,12 +406,17 @@ class MainWindow(QMainWindow):
         if "Sq_true_um" in m:  # known specimen: scored against ground truth
             line += f" (true Sq={m['Sq_true_um']:.2f} um, err {m['Sq_err_um']:+.2f} um)"
         success(log, line)
-        if "roughness_snr" in m:  # noise floor + SNR reported
+        if "roughness_snr" in m:  # random-noise floor + SNR reported
             success(
                 log,
-                f"  noise floor {m['noise_floor_um']:.2f} um -> "
-                f"Sq(denoised)={m['Sq_denoised_um']:.2f} um, SNR={m['roughness_snr']:.1f}",
+                f"  random floor {m['noise_floor_um']:.2f} um -> "
+                f"Sq(denoised)={m['Sq_denoised_um']:.2f} um, random-SNR={m['roughness_snr']:.1f}",
             )
+            if m.get("systematic_error"):  # temporal >> spatial: not just noise
+                log.warning(
+                    f"  systematic error present (temporal/spatial = {m['systematic_ratio']:.0f}x); "
+                    "the random floor does not bound the roughness map's fidelity"
+                )
 
     def _log_metrics(self, surface: str, m: dict) -> None:
         valid_pct = 100.0 * m["valid_pixels"] / m["total_pixels"]
