@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import logbus
 from backend import SimulationBackend
@@ -21,13 +22,28 @@ from ui.styles import build_stylesheet
 log = logbus.get_logger("app")
 
 
+def _app_icon():
+    """The app icon (fringe-dome mark), assembled from the bundled PNG sizes so
+    Qt can pick the best for each surface (window, Dock, task switcher)."""
+    from PySide6.QtGui import QIcon
+
+    icons = Path(__file__).resolve().parent / "ui" / "icons"
+    icon = QIcon()
+    for png in ("app_icon_256.png", "app_icon_512.png"):
+        path = icons / png
+        if path.exists():
+            icon.addFile(str(path))
+    return icon
+
+
 def build_app():
-    """Create the QApplication with the app-wide dark theme applied."""
+    """Create the QApplication with the app-wide dark theme and icon applied."""
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Micro-Projection Control")
     app.setOrganizationName("micro-projection")
+    app.setWindowIcon(_app_icon())
     app.setStyleSheet(build_stylesheet())
     return app
 
