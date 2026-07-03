@@ -22,7 +22,7 @@ import numpy as np
 
 import exposure
 import surfaces
-from geometry_constants import H0_MM, THETA_DEG, W0_MM, W_PROJ_MM
+from geometry_constants import H0_MM, N_PERIODS_LADDER, THETA_DEG, W0_MM, W_PROJ_MM
 
 
 def load_frames(capture_dir: Path) -> np.ndarray:
@@ -83,6 +83,30 @@ def carrier_phase(world_x: np.ndarray, n_periods: float) -> np.ndarray:
     return wrap_to_pi(big_phi - np.pi / 2.0)
 
 
+def psi_from_frames(
+    frames: np.ndarray, n_periods: float, world_x: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Wrapped surface phase psi (in (-pi, pi]) and modulation for one frequency.
+
+    Runs the N-step PSA on `frames`, subtracts this frequency's analytic carrier
+    phase (the flat-reference phase, carrier_phase()), and wraps the difference.
+    psi is the object's phase relative to the flat plane -- what phase-to-height
+    (single frequency, run()) or unwrap_multifreq (a ladder) consumes."""
+    phase, modulation = extract_phase(frames)
+    phi_carrier = carrier_phase(world_x, n_periods)
+    psi = wrap_to_pi(phase - phi_carrier)
+    return psi, modulation
+
+
+def _valid_mask(modulation: np.ndarray, threshold: float, erode_px: int) -> np.ndarray:
+    """Well-modulated pixels, shrunk inward by `erode_px` to drop the field
+    boundaries where the modulation tapers off."""
+    valid = modulation > threshold
+    if erode_px > 0:
+        valid = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=erode_px).astype(bool)
+    return valid
+
+
 def equivalent_wavelength_mm(n_periods: float, theta_deg: float) -> float:
     """lambda_eq (mm); h = psi/(2*pi) * lambda_eq (report/math.tex Eq.
     height-from-phase).
@@ -100,6 +124,40 @@ def equivalent_wavelength_mm(n_periods: float, theta_deg: float) -> float:
     return p_eff / math.tan(math.radians(theta_deg))
 
 
+def unwrap_multifreq(psis: list[np.ndarray], lambdas: list[float]) -> np.ndarray:
+    """Coarse-to-fine temporal phase unwrapping -> absolute height (mm).
+
+    `psis` are the per-frequency wrapped surface phases psi_i (each in (-pi, pi],
+    from psi_from_frames), ordered coarsest first; `lambdas` are the matching
+    equivalent wavelengths lambda_eq_i (mm), strictly decreasing.
+
+    Each rung on its own only measures height modulo lambda_eq_i (the wrapped
+    h = psi/2pi * lambda_eq). The coarsest is taken at face value -- it must be
+    unambiguous over the surface, |h| < lambda_eq_0/2 -- and every finer rung's
+    integer fringe order k is chosen so its continuous phase agrees with the
+    running (coarser) height estimate:
+
+        k = round( (2*pi*h_coarse/lambda_eq - psi) / 2*pi )
+        h = (psi/2*pi + k) * lambda_eq
+
+    The finest rung's height is returned: highest resolution, ambiguity removed.
+    Correct as long as each step's guide is within +/- lambda_eq_i/2 of the truth
+    -- hence the modest ratios in geometry_constants.N_PERIODS_LADDER."""
+    if len(psis) != len(lambdas):
+        raise ValueError(f"psis ({len(psis)}) and lambdas ({len(lambdas)}) length mismatch")
+    if not psis:
+        raise ValueError("need at least one frequency")
+    if any(lambdas[i] <= lambdas[i + 1] for i in range(len(lambdas) - 1)):
+        raise ValueError(f"lambdas must be strictly decreasing (coarse -> fine): {lambdas}")
+
+    height = psis[0] / (2.0 * np.pi) * lambdas[0]
+    for psi, lam in zip(psis[1:], lambdas[1:]):
+        predicted_phase = 2.0 * np.pi * height / lam
+        k = np.round((predicted_phase - psi) / (2.0 * np.pi))
+        height = (psi / (2.0 * np.pi) + k) * lam
+    return height
+
+
 def colorize(value: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     span = vmax - vmin
     norm = np.clip((value - vmin) / span, 0.0, 1.0) if span > 0 else np.zeros_like(value)
@@ -107,59 +165,25 @@ def colorize(value: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
     return cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
 
 
-def run(
-    capture_dir: Path,
+def _write_and_score(
+    height: np.ndarray,
+    valid: np.ndarray,
+    world_x: np.ndarray,
+    world_y: np.ndarray,
     out_dir: Path,
-    n_periods: float = 8.0,
-    surface: str | None = "bump",
-    modulation_threshold: float = 0.03,
-    erode_px: int = 10,
-    normalize_gains: bool = True,
-    verbose: bool = True,
+    surface: str | None,
+    metrics: dict,
+    verbose: bool,
 ) -> dict:
-    """Reconstruct height from a capture stack. When `surface` names a known
-    specimen, score the result against surfaces.SURFACES[surface]'s exact
-    ground truth (RMSE/R^2 + ground-truth and error maps). When `surface` is
-    None (a real-world capture with no ground truth), just produce the height
-    map. Returns a metrics dict and writes visualizations + metrics.txt.
+    """Score `height` against ground truth (when `surface` is a known specimen),
+    write the visualizations (height always; ground-truth + error only when
+    scored) and metrics.txt. Shared by run() and run_multifreq(); `metrics` is
+    updated in place with rmse/mae/max_abs/r2 when scored, and returned.
 
-    `normalize_gains` (on by default) divides out any per-frame brightness swing
-    before the PSA, so auto-exposure drift doesn't ripple into the height map;
-    it's a no-op on a steady stack (see exposure.py). The measured swing is
-    reported either way."""
-    out_dir.mkdir(parents=True, exist_ok=True)
+    `metrics["lambda_eq_mm"]` (the final-resolution wavelength) is used only for
+    the verbose print."""
     ground_truth_fn = surfaces.SURFACES[surface] if surface is not None else None
-
-    frames = load_frames(capture_dir)
-    swing_pct = exposure.brightness_swing_pct(frames)
-    if normalize_gains:
-        frames, _gains = exposure.normalize_frame_gains(frames)
-    n, h_px, w_px = frames.shape
-    if verbose:
-        print(f"loaded {n} frames of shape {h_px}x{w_px}")
-
-    phase, modulation = extract_phase(frames)
-    valid = modulation > modulation_threshold
-    if erode_px > 0:
-        valid = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=erode_px).astype(bool)
-    if verbose:
-        print(f"valid (masked) pixels: {valid.sum()} / {valid.size} ({100 * valid.mean():.1f}%)")
-
-    world_x, world_y = pixel_to_world((h_px, w_px), THETA_DEG)
-    phi_carrier = carrier_phase(world_x, n_periods)
-    psi = wrap_to_pi(phase - phi_carrier)
-
-    lambda_eq = equivalent_wavelength_mm(n_periods, THETA_DEG)
-    height = psi / (2.0 * np.pi) * lambda_eq
-
-    metrics = {
-        "surface": surface,
-        "frames": n,
-        "valid_pixels": int(valid.sum()),
-        "total_pixels": int(valid.size),
-        "lambda_eq_mm": lambda_eq,
-        "brightness_swing_pct": swing_pct,
-    }
+    lambda_eq = metrics.get("lambda_eq_mm", float("nan"))
 
     if ground_truth_fn is not None:
         ground_truth = ground_truth_fn(world_x, world_y)
@@ -201,10 +225,147 @@ def run(
             print(f"lambda_eq = {lambda_eq:.3f} mm (no ground truth; height map only)")
         height_masked = np.where(valid, height, np.nan)
         cv2.imwrite(str(out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
+
     with open(out_dir / "metrics.txt", "w") as f:
         for key, value in metrics.items():
             f.write(f"{key}: {value}\n")
+    return metrics
 
+
+def run(
+    capture_dir: Path,
+    out_dir: Path,
+    n_periods: float = 8.0,
+    surface: str | None = "bump",
+    modulation_threshold: float = 0.03,
+    erode_px: int = 10,
+    normalize_gains: bool = True,
+    verbose: bool = True,
+) -> dict:
+    """Reconstruct height from a capture stack. When `surface` names a known
+    specimen, score the result against surfaces.SURFACES[surface]'s exact
+    ground truth (RMSE/R^2 + ground-truth and error maps). When `surface` is
+    None (a real-world capture with no ground truth), just produce the height
+    map. Returns a metrics dict and writes visualizations + metrics.txt.
+
+    `normalize_gains` (on by default) divides out any per-frame brightness swing
+    before the PSA, so auto-exposure drift doesn't ripple into the height map;
+    it's a no-op on a steady stack (see exposure.py). The measured swing is
+    reported either way."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    frames = load_frames(capture_dir)
+    swing_pct = exposure.brightness_swing_pct(frames)
+    if normalize_gains:
+        frames, _gains = exposure.normalize_frame_gains(frames)
+    n, h_px, w_px = frames.shape
+    if verbose:
+        print(f"loaded {n} frames of shape {h_px}x{w_px}")
+
+    world_x, world_y = pixel_to_world((h_px, w_px), THETA_DEG)
+    psi, modulation = psi_from_frames(frames, n_periods, world_x)
+    valid = _valid_mask(modulation, modulation_threshold, erode_px)
+    if verbose:
+        print(f"valid (masked) pixels: {valid.sum()} / {valid.size} ({100 * valid.mean():.1f}%)")
+
+    lambda_eq = equivalent_wavelength_mm(n_periods, THETA_DEG)
+    height = psi / (2.0 * np.pi) * lambda_eq
+
+    metrics = {
+        "surface": surface,
+        "frames": n,
+        "valid_pixels": int(valid.sum()),
+        "total_pixels": int(valid.size),
+        "lambda_eq_mm": lambda_eq,
+        "brightness_swing_pct": swing_pct,
+    }
+    metrics = _write_and_score(height, valid, world_x, world_y, out_dir, surface, metrics, verbose)
+    if verbose:
+        print(f"wrote outputs to {out_dir}")
+    return metrics
+
+
+def run_multifreq(
+    capture_dirs: list[Path],
+    out_dir: Path,
+    n_periods_ladder: list[float] | None = None,
+    surface: str | None = "bump",
+    modulation_threshold: float = 0.03,
+    erode_px: int = 10,
+    normalize_gains: bool = True,
+    verbose: bool = True,
+) -> dict:
+    """Reconstruct height from a coarse-to-fine ladder of capture stacks.
+
+    `capture_dirs` are the per-frequency frame directories, coarsest first,
+    matching `n_periods_ladder` (defaults to geometry_constants.N_PERIODS_LADDER).
+    Each stack becomes a wrapped surface phase (psi_from_frames); the ladder is
+    then temporally unwrapped (unwrap_multifreq), recovering the finest rung's
+    resolution without its 2*pi ambiguity. A pixel is trusted only where *every*
+    rung is well modulated (the per-rung masks are intersected). Scoring, outputs
+    and metrics otherwise match run(); the reported lambda_eq_mm is the finest
+    (resolution) rung, lambda_eq_coarse_mm the coarsest (unambiguous range).
+
+    This is the roughness path's backbone: the coarse rung fixes the range, the
+    fine rung the resolution (the multi-frequency method of the Chapter 3 paper;
+    report/math.tex will document the ladder as part of Phase 2)."""
+    if n_periods_ladder is None:
+        n_periods_ladder = list(N_PERIODS_LADDER)
+    capture_dirs = [Path(d) for d in capture_dirs]
+    if len(capture_dirs) != len(n_periods_ladder):
+        raise ValueError(f"got {len(capture_dirs)} capture dirs for {len(n_periods_ladder)} ladder rungs")
+    if len(capture_dirs) < 2:
+        raise ValueError("multi-frequency reconstruction needs >= 2 rungs; use run() for a single frequency")
+    if any(n_periods_ladder[i] >= n_periods_ladder[i + 1] for i in range(len(n_periods_ladder) - 1)):
+        raise ValueError(f"n_periods_ladder must be strictly increasing (coarse -> fine): {n_periods_ladder}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    psis: list[np.ndarray] = []
+    lambdas: list[float] = []
+    valid: np.ndarray | None = None
+    world_x = world_y = None
+    swing_pct = 0.0
+    n_frames = None
+    shape0 = None
+    for capture_dir, n_periods in zip(capture_dirs, n_periods_ladder):
+        frames = load_frames(capture_dir)
+        swing_pct = max(swing_pct, exposure.brightness_swing_pct(frames))
+        if normalize_gains:
+            frames, _gains = exposure.normalize_frame_gains(frames)
+        n, h_px, w_px = frames.shape
+        if shape0 is None:
+            shape0, n_frames = (h_px, w_px), n
+            world_x, world_y = pixel_to_world(shape0, THETA_DEG)
+        elif (h_px, w_px) != shape0:
+            raise ValueError(f"ladder rung {capture_dir} is {h_px}x{w_px}, expected {shape0[0]}x{shape0[1]}")
+
+        psi, modulation = psi_from_frames(frames, n_periods, world_x)
+        rung_valid = _valid_mask(modulation, modulation_threshold, erode_px)
+        valid = rung_valid if valid is None else (valid & rung_valid)
+        psis.append(psi)
+        lambdas.append(equivalent_wavelength_mm(n_periods, THETA_DEG))
+
+    height = unwrap_multifreq(psis, lambdas)
+    lambda_coarse, lambda_fine = lambdas[0], lambdas[-1]
+
+    metrics = {
+        "surface": surface,
+        "n_periods_ladder": list(n_periods_ladder),
+        "rungs": len(capture_dirs),
+        "frames_per_rung": n_frames,
+        "valid_pixels": int(valid.sum()),
+        "total_pixels": int(valid.size),
+        "lambda_eq_mm": lambda_fine,           # final vertical-resolution rung
+        "lambda_eq_coarse_mm": lambda_coarse,  # unambiguous-range rung
+        "unambiguous_range_mm": lambda_coarse / 2.0,
+        "brightness_swing_pct": swing_pct,
+    }
+    if verbose:
+        print(f"multi-frequency ladder {list(n_periods_ladder)}: "
+              f"lambda_eq {lambda_coarse:.3f} -> {lambda_fine:.3f} mm "
+              f"(unambiguous +/- {lambda_coarse / 2.0:.2f} mm)")
+        print(f"valid (masked) pixels: {valid.sum()} / {valid.size} ({100 * valid.mean():.1f}%)")
+    metrics = _write_and_score(height, valid, world_x, world_y, out_dir, surface, metrics, verbose)
     if verbose:
         print(f"wrote outputs to {out_dir}")
     return metrics
@@ -218,19 +379,33 @@ def parse_args():
     parser.add_argument("--surface", default="bump", choices=sorted(surfaces.SURFACES))
     parser.add_argument("--modulation-threshold", default=0.03, type=float)
     parser.add_argument("--erode-px", default=10, type=int, help="shrink the valid mask inward by this many pixels, away from field boundaries")
+    parser.add_argument("--capture-dirs", nargs="+", type=Path, default=None,
+                        help="coarse->fine per-frequency stacks; enables multi-frequency unwrapping (overrides --capture-dir)")
+    parser.add_argument("--n-periods-ladder", nargs="+", type=float, default=None,
+                        help="fringe counts matching --capture-dirs (default: geometry_constants.N_PERIODS_LADDER)")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    run(
-        args.capture_dir,
-        args.out_dir,
-        n_periods=args.n_periods,
-        surface=args.surface,
-        modulation_threshold=args.modulation_threshold,
-        erode_px=args.erode_px,
-    )
+    if args.capture_dirs:
+        run_multifreq(
+            args.capture_dirs,
+            args.out_dir,
+            n_periods_ladder=args.n_periods_ladder,
+            surface=args.surface,
+            modulation_threshold=args.modulation_threshold,
+            erode_px=args.erode_px,
+        )
+    else:
+        run(
+            args.capture_dir,
+            args.out_dir,
+            n_periods=args.n_periods,
+            surface=args.surface,
+            modulation_threshold=args.modulation_threshold,
+            erode_px=args.erode_px,
+        )
 
 
 if __name__ == "__main__":

@@ -31,6 +31,24 @@ SPOT_CONE_DEG = 50.0  # full angle; wide enough to cover the footprint's corners
 # hold the fringe density. Coarser (100um px), but no refocus. See
 # report/math.tex "Fallback: native distance with camera crop".
 
+# --- Multi-frequency ladder (Phase 1 roughness path) ------------------------
+# Coarse-to-fine fringe counts for temporal phase unwrapping. Roughness needs a
+# small equivalent wavelength (fine fringes) for vertical resolution, but a fine
+# map alone wraps ambiguously on anything taller than lambda_eq/2. So we capture
+# a ladder: the coarsest rung is unambiguous over the whole height range
+# (lambda_eq/2 ~= 6.8mm at n=8), and each finer rung's 2*pi ambiguity is resolved
+# by the next-coarser height estimate (see reconstruct.unwrap_multifreq).
+#
+#   n=8  -> lambda_eq ~= 13.6mm  (unambiguous range, coarse form)
+#   n=24 -> lambda_eq ~=  4.5mm
+#   n=80 -> lambda_eq ~=  1.4mm  (final vertical resolution, ~10x the coarse rung)
+#
+# Consecutive ratios (3x, 3.3x) are kept small enough that the running estimate
+# stays within +/- lambda_eq_i/2 of the truth, so the fringe order is picked
+# correctly. A high-magnification lens later (the "fine" regime) just supplies a
+# denser ladder here; unwrap_multifreq is agnostic to its length.
+N_PERIODS_LADDER = (8.0, 24.0, 80.0)
+
 # --- Camera tilt (report/math.tex sec. 7) -----------------------------------
 THETA_DEG = 38.7
 
