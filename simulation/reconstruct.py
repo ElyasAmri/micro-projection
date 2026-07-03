@@ -110,16 +110,18 @@ def run(
     capture_dir: Path,
     out_dir: Path,
     n_periods: float = 8.0,
-    surface: str = "bump",
+    surface: str | None = "bump",
     modulation_threshold: float = 0.03,
     erode_px: int = 10,
     verbose: bool = True,
 ) -> dict:
-    """Reconstruct height from a capture stack and score it against
-    surfaces.SURFACES[surface]'s exact ground truth. Returns a metrics dict
-    and writes visualizations + metrics.txt to out_dir."""
+    """Reconstruct height from a capture stack. When `surface` names a known
+    specimen, score the result against surfaces.SURFACES[surface]'s exact
+    ground truth (RMSE/R^2 + ground-truth and error maps). When `surface` is
+    None (a real-world capture with no ground truth), just produce the height
+    map. Returns a metrics dict and writes visualizations + metrics.txt."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    ground_truth_fn = surfaces.SURFACES[surface]
+    ground_truth_fn = surfaces.SURFACES[surface] if surface is not None else None
 
     frames = load_frames(capture_dir)
     n, h_px, w_px = frames.shape
@@ -140,43 +142,54 @@ def run(
     lambda_eq = equivalent_wavelength_mm(n_periods, THETA_DEG)
     height = psi / (2.0 * np.pi) * lambda_eq
 
-    ground_truth = ground_truth_fn(world_x, world_y)
-
-    error = height - ground_truth
-    err_valid = error[valid]
-    gt_valid = ground_truth[valid]
-    rmse = float(np.sqrt(np.mean(err_valid ** 2)))
-    mae = float(np.mean(np.abs(err_valid)))
-    max_abs = float(np.max(np.abs(err_valid)))
-    gt_var = float(np.sum((gt_valid - gt_valid.mean()) ** 2))
-    r2 = float(1.0 - np.sum(err_valid ** 2) / gt_var) if gt_var > 1e-12 else float("nan")
-
-    if verbose:
-        print(f"lambda_eq = {lambda_eq:.3f} mm")
-        print(f"RMSE = {rmse:.4f} mm, MAE = {mae:.4f} mm, max|err| = {max_abs:.4f} mm, R^2 = {r2:.4f}")
-
-    gt_span = gt_valid.max() - gt_valid.min()
-    vmin, vmax = float(gt_valid.min()), float(gt_valid.max())
-    if gt_span < 1e-9:  # flat surface: give the colormap a non-zero window to render in
-        vmin, vmax = -0.05, 0.05
-    height_masked = np.where(valid, height, np.nan)
-    cv2.imwrite(str(out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
-    cv2.imwrite(str(out_dir / "height_ground_truth.png"), colorize(np.where(valid, ground_truth, vmin), vmin, vmax))
-    err_abs_max = max(float(np.abs(err_valid).max()), 1e-9)
-    err_masked = np.where(valid, error, 0.0)
-    cv2.imwrite(str(out_dir / "height_error.png"), colorize(err_masked, -err_abs_max, err_abs_max))
-
     metrics = {
         "surface": surface,
         "frames": n,
         "valid_pixels": int(valid.sum()),
         "total_pixels": int(valid.size),
         "lambda_eq_mm": lambda_eq,
-        "rmse": rmse,
-        "mae": mae,
-        "max_abs": max_abs,
-        "r2": r2,
     }
+
+    if ground_truth_fn is not None:
+        ground_truth = ground_truth_fn(world_x, world_y)
+        error = height - ground_truth
+        err_valid = error[valid]
+        gt_valid = ground_truth[valid]
+        rmse = float(np.sqrt(np.mean(err_valid ** 2)))
+        mae = float(np.mean(np.abs(err_valid)))
+        max_abs = float(np.max(np.abs(err_valid)))
+        gt_var = float(np.sum((gt_valid - gt_valid.mean()) ** 2))
+        r2 = float(1.0 - np.sum(err_valid ** 2) / gt_var) if gt_var > 1e-12 else float("nan")
+        metrics.update({"rmse": rmse, "mae": mae, "max_abs": max_abs, "r2": r2})
+
+        if verbose:
+            print(f"lambda_eq = {lambda_eq:.3f} mm")
+            print(f"RMSE = {rmse:.4f} mm, MAE = {mae:.4f} mm, max|err| = {max_abs:.4f} mm, R^2 = {r2:.4f}")
+
+        gt_span = gt_valid.max() - gt_valid.min()
+        vmin, vmax = float(gt_valid.min()), float(gt_valid.max())
+        if gt_span < 1e-9:  # flat surface: give the colormap a non-zero window to render in
+            vmin, vmax = -0.05, 0.05
+        height_masked = np.where(valid, height, np.nan)
+        cv2.imwrite(str(out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
+        cv2.imwrite(str(out_dir / "height_ground_truth.png"), colorize(np.where(valid, ground_truth, vmin), vmin, vmax))
+        err_abs_max = max(float(np.abs(err_valid).max()), 1e-9)
+        err_masked = np.where(valid, error, 0.0)
+        cv2.imwrite(str(out_dir / "height_error.png"), colorize(err_masked, -err_abs_max, err_abs_max))
+    else:
+        # No ground truth (real capture): render the height map over its own
+        # valid range, and skip the ground-truth / error maps entirely.
+        if valid.any():
+            h_valid = height[valid]
+            vmin, vmax = float(np.percentile(h_valid, 1)), float(np.percentile(h_valid, 99))
+        else:
+            vmin, vmax = -0.05, 0.05
+        if vmax - vmin < 1e-9:
+            vmin, vmax = vmin - 0.05, vmax + 0.05
+        if verbose:
+            print(f"lambda_eq = {lambda_eq:.3f} mm (no ground truth; height map only)")
+        height_masked = np.where(valid, height, np.nan)
+        cv2.imwrite(str(out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
     with open(out_dir / "metrics.txt", "w") as f:
         for key, value in metrics.items():
             f.write(f"{key}: {value}\n")

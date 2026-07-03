@@ -23,11 +23,10 @@ from PySide6.QtWidgets import (
 
 from logbus import get_logger, success
 from version import __version__
-from backend import SimulationBackend
+from backend import Backend, SimulationBackend
 from ui.canvas import Canvas
 from ui.console import Console
 from ui.imaging import gray_to_qimage
-from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
 
 log = get_logger("ui")
@@ -71,7 +70,7 @@ class MainWindow(QMainWindow):
     canvas views, Console as movable panes), the layout menus, and exposes
     `maestro_commands()`."""
 
-    def __init__(self, backend: SimulationBackend | None = None) -> None:
+    def __init__(self, backend: Backend | None = None) -> None:
         super().__init__()
         self.backend = backend or SimulationBackend()
         self.setObjectName("mainWindow")
@@ -102,13 +101,14 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._build_status_bar()
 
-        # Blender capture runs as a child process, streamed to the console.
-        self._capture_runner = ProcessRunner(self)
+        # Capture runs asynchronously (Blender subprocess in sim, project+grab
+        # worker on hardware); the backend supplies the controller, but both
+        # report through the same line/finished/failed signals.
+        self._capture_runner = self.backend.new_capture_controller(self)
         self._capture_runner.line.connect(self._on_capture_line)
         self._capture_runner.finished.connect(self._on_capture_finished)
         self._capture_runner.failed.connect(self._on_capture_failed)
         self._capture_tail: deque[str] = deque(maxlen=25)
-        self._capture_spec = None
         self._capture_surface = ""
         self._capture_purpose = "single"  # "single" (preview) or "pipeline"
 
@@ -146,7 +146,11 @@ class MainWindow(QMainWindow):
         The console shares a vertical splitter with the views (rather than
         spanning the full bottom), so its height is actually adjustable -- a
         full-width bottom dock over a central-less layout can't be sized down."""
-        self.sidebar = Sidebar(self.backend.available_surfaces(), self)
+        self.sidebar = Sidebar(
+            self.backend.available_surfaces(),
+            header=getattr(self.backend, "kind_label", "Backend"),
+            parent=self,
+        )
         self.sidebar.project_requested.connect(self._on_project)
         self.sidebar.capture_requested.connect(self._on_capture)
         self.sidebar.pipeline_requested.connect(self._on_pipeline)
@@ -210,9 +214,13 @@ class MainWindow(QMainWindow):
         return bool(self.restoreState(state))
 
     def closeEvent(self, event) -> None:
-        """Persist the current layout on the way out."""
+        """Persist the current layout on the way out, and let the backend
+        release any hardware (e.g. close the projector window)."""
         self._settings.setValue("layout/version", LAYOUT_VERSION)
         self._settings.setValue("layout/state", self.saveState())
+        shutdown = getattr(self.backend, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
         super().closeEvent(event)
 
     def _build_status_bar(self) -> None:
@@ -321,6 +329,7 @@ class MainWindow(QMainWindow):
     def _project(self, surface: str) -> None:
         fringe = self.backend.generate_fringe()
         self.canvases["projectedCanvas"].set_image(gray_to_qimage(fringe))
+        self.backend.project(fringe)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
         success(log, f"projected {self.backend.n_periods:g}-period fringe")
 
@@ -343,11 +352,14 @@ class MainWindow(QMainWindow):
 
     def _log_metrics(self, surface: str, m: dict) -> None:
         valid_pct = 100.0 * m["valid_pixels"] / m["total_pixels"]
-        success(
-            log,
-            f"reconstructed {surface}: RMSE={m['rmse']:.4f} mm, "
-            f"R^2={m['r2']:.4f}, valid={valid_pct:.1f}%",
-        )
+        if "rmse" in m:  # a known specimen was scored against its ground truth
+            success(
+                log,
+                f"reconstructed {surface}: RMSE={m['rmse']:.4f} mm, "
+                f"R^2={m['r2']:.4f}, valid={valid_pct:.1f}%",
+            )
+        else:  # real capture: no ground truth to score against
+            success(log, f"reconstructed {surface}: height map, valid={valid_pct:.1f}%")
 
     # -- capture (async Blender subprocess) -----------------------------------
 
@@ -369,13 +381,13 @@ class MainWindow(QMainWindow):
             log.warning(f"cannot start pipeline: {exc}")
 
     def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
-        """Kick off a Blender capture of `surface` (raises on bad state)."""
+        """Kick off a capture of `surface` through the backend's controller
+        (raises on bad state). Returns the controller, which knows where the
+        frames will land and how many to expect."""
         if self._capture_runner.is_running():
             raise RuntimeError("a capture is already running")
         if not surface:
             raise ValueError("no specimen selected")
-        spec = self.backend.capture_command(surface, n_steps=n_steps, subdir=subdir, **kwargs)
-        self._capture_spec = spec
         self._capture_surface = surface
         self._capture_purpose = purpose
         self.sidebar.specimen.setCurrentText(surface)  # reflect what's being captured
@@ -384,13 +396,15 @@ class MainWindow(QMainWindow):
         plural = "s" if n_steps != 1 else ""
         prefix = "pipeline: capturing" if purpose == "pipeline" else "capturing"
         self._status_left.setText(f"Capturing {surface}...")
-        log.info(f"{prefix} {surface}: Blender rendering {n_steps} frame{plural}...")
-        self._capture_runner.start(spec.argv, str(spec.cwd))
-        return spec
+        log.info(f"{prefix} {surface}: acquiring {n_steps} frame{plural}...")
+        self._capture_runner.start(surface=surface, n_steps=n_steps, subdir=subdir, **kwargs)
+        return self._capture_runner
 
     def _on_capture_line(self, line: str) -> None:
         self._capture_tail.append(line)
-        if "[capture_pipeline]" in line:
+        # Progress lines are tagged "[capture_pipeline] ..." (Blender) or
+        # "[capture] ..." (hardware); surface either, plus the final summary.
+        if line.startswith("[") and "]" in line:
             log.info(line.split("]", 1)[-1].strip())
         elif line.startswith("Captured "):
             log.info(line)
@@ -403,13 +417,13 @@ class MainWindow(QMainWindow):
             for tail in list(self._capture_tail)[-6:]:
                 log.error(tail)
             return
-        spec = self._capture_spec
-        frames = sorted(spec.capture_dir.glob("frame_*.png"))
+        capture_dir = self._capture_runner.capture_dir
+        frames = sorted(capture_dir.glob("frame_*.png")) if capture_dir else []
         if frames:
             self.canvases["capturedCanvas"].set_image(QImage(str(frames[0])))
             self._show_tab("capturedCanvas")
         if self._capture_purpose == "pipeline":
-            success(log, f"captured {self._capture_surface}: {spec.n_steps} frames")
+            success(log, f"captured {self._capture_surface}: {self._capture_runner.n_steps} frames")
             self._reconstruct(self._capture_surface)
         else:
             success(log, f"captured {self._capture_surface}: single frame")
@@ -494,6 +508,7 @@ class MainWindow(QMainWindow):
         phase = float(args.get("phase", 0.0))
         fringe = self.backend.generate_fringe(n_periods=n_periods, phase=phase)
         self.canvases["projectedCanvas"].set_image(gray_to_qimage(fringe))
+        self.backend.project(fringe)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
         return {"projected": {"n_periods": n_periods, "phase": phase}}
 

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 import logbus
-from backend import SimulationBackend
+from backend import create_backend
 from maestro import attach
 from single_instance import SingleInstance
 from ui.console import ConsoleLogHandler
@@ -84,14 +84,14 @@ def main(argv: list[str] | None = None) -> int:
             print("micro-projection is already running", file=sys.stderr)
             return 0
 
-    backend = SimulationBackend()
+    backend = create_backend()
     window = MainWindow(backend=backend)
     logbus.configure(ConsoleLogHandler(window.console))
     if guard is not None:
         guard.setParent(window)  # tie its lifetime to the window
         guard.activate_requested.connect(lambda: _activate(window))
 
-    logbus.success(log, "Micro-Projection control shell started")
+    logbus.success(log, f"Micro-Projection control shell started ({backend.kind_label} backend)")
     specimens = backend.available_surfaces()
     if specimens:
         log.info(f"simulation backend: {len(specimens)} specimens ({', '.join(specimens)})")

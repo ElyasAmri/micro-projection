@@ -24,7 +24,8 @@ class Sidebar(QWidget):
     capture_requested = Signal()   # single capture of the fringe on the surface
     pipeline_requested = Signal()  # full project -> capture -> reconstruct
 
-    def __init__(self, surfaces: list[str], parent: QWidget | None = None) -> None:
+    def __init__(self, surfaces: list[str], header: str = "Simulation",
+                 parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("sidebar")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
@@ -34,9 +35,9 @@ class Sidebar(QWidget):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(6)
 
-        header = QLabel("Simulation")
-        header.setProperty("role", "sectionHeader")
-        layout.addWidget(header)
+        header_label = QLabel(header)  # the active backend: "Simulation" / "Hardware"
+        header_label.setProperty("role", "sectionHeader")
+        layout.addWidget(header_label)
 
         specimen_label = QLabel("Specimen")
         specimen_label.setObjectName("fieldLabel")
