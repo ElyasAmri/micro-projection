@@ -1,11 +1,17 @@
-"""The application shell: a tabbed canvas in the center (projected image,
-captured surface, reconstructed surface), a sidebar docked left, and a console
-docked along the bottom, plus the command surface maestro drives."""
+"""The application shell: a movable-pane workspace built on native Qt docking.
+Control, the three canvas views (projected / captured / reconstructed, tabbed
+together), and the Console are each a QDockWidget in a QMainWindow with dock
+nesting enabled -- draggable, splittable, tab-mergeable, and floatable, with no
+third-party dependency. Layouts persist across restarts (QMainWindow.saveState)
+and a Reset Layout action restores the default arrangement.
+
+(This is the native-Qt alternative to the QtAds workspace on `dev`, kept on a
+branch for comparison.)"""
 from __future__ import annotations
 
 from collections import deque
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
 
@@ -20,17 +26,23 @@ from ui.sidebar import Sidebar
 
 log = get_logger("ui")
 
-# Tab label -> canvas objectName, in display order.
-CANVAS_TABS = [
-    ("Projected Image", "projectedCanvas"),
-    ("Captured Surface", "capturedCanvas"),
-    ("Reconstructed Surface", "reconstructedCanvas"),
+# View label -> (canvas objectName, dock objectName), in display order. Tabbed
+# together by default; each is an independent dock, so they can be torn apart.
+VIEW_PANES = [
+    ("Projected Image", "projectedCanvas", "projectedDock"),
+    ("Captured Surface", "capturedCanvas", "capturedDock"),
+    ("Reconstructed Surface", "reconstructedCanvas", "reconstructedDock"),
 ]
+
+# Bump when the pane set / dock objectNames change so a saved layout from an
+# older shape is ignored instead of restored into a mismatched tree.
+LAYOUT_VERSION = 1
 
 
 class MainWindow(QMainWindow):
-    """Top-level window. Owns the tabbed canvas, sidebar, and console, and
-    exposes `maestro_commands()`."""
+    """Top-level window. Hosts the native-docking workspace (Control, three
+    canvas views, Console as movable panes), the layout menus, and exposes
+    `maestro_commands()`."""
 
     def __init__(self, backend: SimulationBackend | None = None) -> None:
         super().__init__()
@@ -38,26 +50,29 @@ class MainWindow(QMainWindow):
         self.setObjectName("mainWindow")
         self.setWindowTitle("Micro-Projection Control")
         self.resize(1280, 820)
+        self._settings = QSettings()
 
-        self.canvas_tabs = self._build_canvas_tabs()
-        self.setCentralWidget(self.canvas_tabs)
+        # Let docks nest, tab-merge, and drag as groups; no fixed central widget
+        # (a zero-size placeholder) so the panes own the whole window.
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(
+            QMainWindow.AllowNestedDocks
+            | QMainWindow.AllowTabbedDocks
+            | QMainWindow.AnimatedDocks
+            | QMainWindow.GroupedDragging
+        )
+        self.setTabPosition(Qt.AllDockWidgetAreas, QTabWidget.North)  # tabs on top
+        placeholder = QWidget()
+        placeholder.setObjectName("centralPlaceholder")
+        placeholder.setFixedSize(0, 0)
+        self.setCentralWidget(placeholder)
 
-        self.sidebar = Sidebar(self.backend.available_surfaces(), self)
-        self.sidebar.project_requested.connect(self._on_project)
-        self.sidebar.capture_requested.connect(self._on_capture)
-        self.sidebar.pipeline_requested.connect(self._on_pipeline)
-        self.sidebar_dock = self._dock("Control", "sidebarDock", self.sidebar,
-                                       Qt.LeftDockWidgetArea, Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.canvases: dict[str, Canvas] = {}
+        self.docks: dict[str, QDockWidget] = {}
+        self.view_docks: dict[str, QDockWidget] = {}
 
-        self.console = Console(self)
-        self.console_dock = self._dock("Console", "consoleDock", self.console,
-                                       Qt.BottomDockWidgetArea, Qt.BottomDockWidgetArea | Qt.TopDockWidgetArea)
-
-        # Let the console own the full width of the bottom edge; the sidebar
-        # keeps the left edge above it.
-        self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
-        self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
-
+        self._build_panes()
+        self._build_menus()
         self._build_status_bar()
 
         # Blender capture runs as a child process, streamed to the console.
@@ -71,28 +86,92 @@ class MainWindow(QMainWindow):
         self._capture_purpose = "single"  # "single" (preview) or "pipeline"
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
+
         self.apply_dock_sizes()
+        self._default_state = self.saveState()  # what Reset Layout restores
+        self._restore_layout()
 
     # -- construction helpers -------------------------------------------------
 
-    def _build_canvas_tabs(self) -> QTabWidget:
-        tabs = QTabWidget()
-        tabs.setObjectName("canvasTabs")
-        self.canvases: dict[str, Canvas] = {}
-        for label, name in CANVAS_TABS:
-            canvas = Canvas(name)
-            self.canvases[name] = canvas
-            tabs.addTab(canvas, label)
-        return tabs
-
-    def _dock(self, title: str, name: str, widget: QWidget, area, allowed) -> QDockWidget:
+    def _dock(self, title: str, name: str, widget: QWidget, area) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(name)
         dock.setWidget(widget)
-        dock.setAllowedAreas(allowed)
-        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        dock.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
         self.addDockWidget(area, dock)
+        self.docks[name] = dock
         return dock
+
+    def _build_panes(self) -> None:
+        """Control on the left, the three views tab-merged to its right, Console
+        across the bottom:  [ Control | views ] / [ Console ]."""
+        self.sidebar = Sidebar(self.backend.available_surfaces(), self)
+        self.sidebar.project_requested.connect(self._on_project)
+        self.sidebar.capture_requested.connect(self._on_capture)
+        self.sidebar.pipeline_requested.connect(self._on_pipeline)
+        self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
+
+        previous = None
+        for label, name, dock_name in VIEW_PANES:
+            canvas = Canvas(name)
+            self.canvases[name] = canvas
+            dock = self._dock(label, dock_name, canvas, Qt.RightDockWidgetArea)
+            self.view_docks[name] = dock
+            if previous is not None:
+                self.tabifyDockWidget(previous, dock)  # merge into one tab group
+            previous = dock
+        self.view_docks[VIEW_PANES[0][1]].raise_()     # open on the first view
+
+        self.console = Console(self)
+        self._dock("Console", "consoleDock", self.console, Qt.BottomDockWidgetArea)
+        # Console owns the full width of the bottom edge.
+        self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
+        self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
+        # Cap the console's initial height so it doesn't swallow the window, then
+        # relax it once the event loop runs so the user can still resize it.
+        # (Offscreen renders have no live loop, so the cap stays for screenshots.)
+        self.console.setMaximumHeight(220)
+        if QApplication.platformName() != "offscreen":
+            QTimer.singleShot(0, lambda: self.console.setMaximumHeight(16777215))
+
+    # -- layout menu + persistence --------------------------------------------
+
+    def _build_menus(self) -> None:
+        bar = self.menuBar()
+        view = bar.addMenu("View")
+        for dock in self.docks.values():
+            view.addAction(dock.toggleViewAction())
+        layout = bar.addMenu("Layout")
+        layout.addAction("Reset Layout", self.reset_layout)
+
+    def reset_layout(self) -> None:
+        """Restore the default pane arrangement captured at startup."""
+        self.restoreState(self._default_state)
+        self.apply_dock_sizes()
+
+    def _restore_layout(self) -> None:
+        """Reapply the last session's layout, unless the schema version changed."""
+        try:
+            if int(self._settings.value("layout/version", 0)) != LAYOUT_VERSION:
+                return
+        except (TypeError, ValueError):
+            return
+        state = self._settings.value("layout/state")
+        if state is None:
+            return
+        if not isinstance(state, QByteArray):
+            state = QByteArray(state)
+        self.restoreState(state)
+
+    def closeEvent(self, event) -> None:
+        """Persist the current layout on the way out."""
+        self._settings.setValue("layout/version", LAYOUT_VERSION)
+        self._settings.setValue("layout/state", self.saveState())
+        super().closeEvent(event)
 
     def _build_status_bar(self) -> None:
         bar = self.statusBar()
@@ -113,13 +192,25 @@ class MainWindow(QMainWindow):
     def apply_dock_sizes(self) -> None:
         """Give the docks sensible starting extents (must run after they exist,
         and is cheap to re-run e.g. right before an offscreen screenshot)."""
-        self.resizeDocks([self.sidebar_dock], [260], Qt.Horizontal)
-        self.resizeDocks([self.console_dock], [200], Qt.Vertical)
+        self.resizeDocks([self.docks["controlDock"]], [260], Qt.Horizontal)
+        # Split the vertical space between a view pane and the console so the
+        # console doesn't swallow the window (native docking distributes leftover
+        # space unpredictably around the zero-size central widget otherwise).
+        self.resizeDocks(
+            [self.docks["projectedDock"], self.docks["consoleDock"]],
+            [560, 200],
+            Qt.Vertical,
+        )
 
     # -- behavior -------------------------------------------------------------
 
     def _show_tab(self, canvas_name: str) -> None:
-        self.canvas_tabs.setCurrentWidget(self.canvases[canvas_name])
+        """Bring a view pane to the front of its tab group (and un-hide it)."""
+        dock = self.view_docks.get(canvas_name)
+        if dock is None:
+            return
+        dock.show()
+        dock.raise_()
 
     def _on_project(self) -> None:
         self._project(self.sidebar.selected_surface())
@@ -273,22 +364,22 @@ class MainWindow(QMainWindow):
         return {"cleared": True}
 
     def _cmd_select_tab(self, args: dict):
-        """Switch canvas tab by index or (case-insensitive) label match."""
+        """Raise a view pane by index or (case-insensitive) label match."""
         key = args.get("tab")
-        tabs = self.canvas_tabs
         index = None
         if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
             index = int(key)
         elif isinstance(key, str):
             wanted = key.lower()
-            for i in range(tabs.count()):
-                if wanted in tabs.tabText(i).lower():
+            for i, (label, _name, _dock) in enumerate(VIEW_PANES):
+                if wanted in label.lower():
                     index = i
                     break
-        if index is None or not (0 <= index < tabs.count()):
+        if index is None or not (0 <= index < len(VIEW_PANES)):
             raise ValueError(f"no tab matching {key!r}")
-        tabs.setCurrentIndex(index)
-        return {"tab": tabs.tabText(index), "index": index}
+        label, name, _dock = VIEW_PANES[index]
+        self._show_tab(name)
+        return {"tab": label, "index": index}
 
     def _cmd_set_status(self, args: dict):
         text = str(args.get("text", ""))
