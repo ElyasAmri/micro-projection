@@ -40,9 +40,10 @@ VIEW_PANES = [
     ("Reconstructed", "reconstructedCanvas", "reconstructedDock"),
 ]
 
-# Bump when the pane set / dock objectNames change so a saved layout from an
-# older shape is ignored instead of restored into a mismatched tree.
-LAYOUT_VERSION = 1
+# Bump when the pane set / dock objectNames change (or the default sizing does)
+# so a saved layout from an older shape is ignored instead of restored into a
+# mismatched tree. v2: control width is sized by naming both sides of the split.
+LAYOUT_VERSION = 2
 
 
 class _DockTitleTab(QWidget):
@@ -193,19 +194,20 @@ class MainWindow(QMainWindow):
         self.apply_dock_sizes()
         self._refresh_dock_chrome()
 
-    def _restore_layout(self) -> None:
-        """Reapply the last session's layout, unless the schema version changed."""
+    def _restore_layout(self) -> bool:
+        """Reapply the last session's layout unless the schema version changed;
+        return True if a layout was actually restored."""
         try:
             if int(self._settings.value("layout/version", 0)) != LAYOUT_VERSION:
-                return
+                return False
         except (TypeError, ValueError):
-            return
+            return False
         state = self._settings.value("layout/state")
         if state is None:
-            return
+            return False
         if not isinstance(state, QByteArray):
             state = QByteArray(state)
-        self.restoreState(state)
+        return bool(self.restoreState(state))
 
     def closeEvent(self, event) -> None:
         """Persist the current layout on the way out."""
@@ -230,15 +232,24 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(version)
 
     def showEvent(self, event) -> None:
-        """First real geometry arrives here; size the docks, snapshot the default
-        layout for Reset, then reapply any persisted layout."""
+        """First show: snapshot the default arrangement for Reset, then bring the
+        layout up on the next tick. Both restoreState and resizeDocks are
+        silently dropped if issued during this first show (before the window
+        reaches its final, maximized geometry), so the actual layout work is
+        deferred to _init_layout; Reset works synchronously only because by then
+        the window has already settled."""
         super().showEvent(event)
         if self._sized:
             return
         self._sized = True
-        self.apply_dock_sizes()
         self._default_state = self.saveState()
-        self._restore_layout()
+        QTimer.singleShot(0, self._init_layout)
+
+    def _init_layout(self) -> None:
+        """Reapply the persisted layout, or size to defaults on a first-ever
+        launch. Runs once the window has its final geometry (see showEvent)."""
+        if not self._restore_layout():
+            self.apply_dock_sizes()
         self._apply_dock_chrome()
 
     def _apply_dock_chrome(self) -> None:
@@ -282,8 +293,15 @@ class MainWindow(QMainWindow):
         """Size the docks from the current window geometry: Control ~260 wide,
         Console ~a quarter of the height. Runs once the window is shown (real
         geometry), so resizeDocks actually takes -- doing it pre-show is why the
-        console swallowed the window before."""
-        self.resizeDocks([self.docks["controlDock"]], [260], Qt.Horizontal)
+        console swallowed the window before.
+
+        Control lives in the Left area and the views/console in the Right column;
+        resizeDocks on the control dock ALONE is ignored across that division (Qt
+        leaves it at ~half the window), so name both sides of the split and give
+        the right column the remaining width."""
+        control = self.docks["controlDock"]
+        right = next(iter(self.view_docks.values()))
+        self.resizeDocks([control, right], [260, max(320, self.width() - 260)], Qt.Horizontal)
         console_h = max(160, self.height() // 4)
         self.resizeDocks([self.docks["consoleDock"]], [console_h], Qt.Vertical)
 

@@ -196,8 +196,7 @@ def build_stylesheet() -> str:
     }}
     QPlainTextEdit#console {{
         background: {c['viewport']};
-        border: 1px solid {c['border']};
-        border-radius: 6px;
+        border: none;
         color: {c['text']};
         selection-background-color: {c['accent_dim']};
     }}

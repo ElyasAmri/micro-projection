@@ -44,8 +44,8 @@ class Console(QWidget):
         self.setObjectName("consolePanel")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 10)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)  # log fills the pane edge-to-edge
+        layout.setSpacing(0)
 
         self.view = _LogView()
         self.view.setObjectName("console")
