@@ -65,9 +65,9 @@ Two questions follow from this geometry:
 \toprule
 Component & Key parameters & Source \\
 \midrule
-Wintech PRO4500 & 460\,nm LED, 700\,mm lens & Wintech PRO4500 \\
-(3D-measurement config.) & $D_0 = 700$\,mm, FOV $400\times250$\,mm & brochure \\
- & projected pixel $305\,\mu$m & \\[2pt]
+Wintech PRO4500 & 460\,nm LED, 184\,mm lens & Wintech PRO4500 \\
+(3D-measurement config.) & $D_0 = 184$\,mm, FOV $131.2\times82$\,mm & brochure \\
+ & projected pixel $100\,\mu$m & \\[2pt]
 FLIR Blackfly S & ON Semi PYTHON 1300 CMOS & FLIR / Edmund \\
 BFS-U3-13Y3M-C & $1280\times1024$\,px, $4.8\,\mu$m pitch & Optics datasheets \\
  & sensing area $6.14\times4.92$\,mm & \\[2pt]
@@ -76,10 +76,11 @@ $\tfrac{1}{2}''$ GoldTL & focusable WD $132$--$182$\,mm & \#58-259 (15171) \\
 telecentric lens & max sensor format $\tfrac{1}{2}''$ & \\
 \bottomrule
 \end{tabular}
-\caption{Hardware specifications used below. The PRO4500's other
-lens/LED options (92/184\,mm working distance, $65.6{\times}41$ /
-$131.2{\times}82$\,mm FOV) belong to a different, lower-quality projector
-and are not used here.}
+\caption{Hardware specifications used below. The 460\,nm module ships with
+92\,/\,184\,/\,700\,mm lens options; we use the 184\,mm lens. The 92\,mm lens
+is the same throw ratio at half the distance and FOV ($65.6{\times}41$\,mm,
+$50\,\mu$m pixel); the 700\,mm lens ($400{\times}250$\,mm FOV, $305\,\mu$m
+pixel) images far too large a field for a $\sim$55\,mm part and is not used.}
 \end{table}
 
 \section{Camera's fixed field of view}
@@ -105,27 +106,30 @@ that does not affect $W_0, H_0$.
 
 For a fixed projection lens, image size scales linearly with throw
 distance (similar triangles about the lens's exit pupil). Using the
-PRO4500's rated point $(D_0, H_{\text{proj},0}) = (700, 250)$\,mm as the
+184\,mm lens's rated point $(D_0, H_{\text{proj},0}) = (184, 82)$\,mm as the
 calibration point:
 \begin{equation}
-  H_{\text{proj}}(D) = D \cdot \frac{250}{700} = D \cdot \frac{5}{14},
+  H_{\text{proj}}(D) = D \cdot \frac{82}{184} = D \cdot \frac{41}{92},
   \qquad
-  W_{\text{proj}}(D) = D \cdot \frac{400}{700} = D \cdot \frac{4}{7}.
+  W_{\text{proj}}(D) = D \cdot \frac{131.2}{184} = D \cdot \frac{65.6}{92}.
 \end{equation}
-Both preserve the PRO4500's fixed image aspect ratio
-$400/250 = 1.6$.
+Both preserve the DMD's fixed image aspect ratio
+$131.2/82 = 1.6$.
 
 \section{Matching distance \texorpdfstring{$D$}{D}}
 
 Set $H_{\text{proj}}(D) = H_0$:
 \begin{equation}
-  D = H_0 \cdot \frac{14}{5} = 54.67 \times 2.8 \approx 153.1\text{\,mm}.
+  D = H_0 \cdot \frac{92}{41} = 54.67 \times 2.244 \approx 122.7\text{\,mm}.
 \end{equation}
-At this distance the projector's image is
+This lands inside the 92--184\,mm lens family's span (below the 184\,mm
+lens's nominal point, above the 92\,mm lens's), so it is a modest refocus,
+not an extrapolation. At this distance the projector's image is
 \begin{equation}
   W_{\text{proj}}(D) = H_0 \times 1.6 = 54.67 \times 1.6 \approx 87.47\text{\,mm}
 \end{equation}
 wide, by $H_0 = 54.67$\,mm tall --- matching the camera's height exactly.
+The projected pixel there is $50\,\mu\text{m}\times 122.7/92 \approx 67\,\mu$m.
 
 \section{Telecentric footprint under an oblique view}
 
@@ -170,8 +174,9 @@ Quantity & Value \\
 \midrule
 Camera FOV, square-on ($W_0 \times H_0$) & $68.22 \times 54.67$\,mm \\
 Camera working distance (free choice) & $132$--$182$\,mm \\
-Projector working distance $D$ & $\approx 153.1$\,mm \\
-Projector image at $D$ & $87.47 \times 54.67$\,mm \\
+Projector lens (460\,nm module) & 184\,mm, run below nominal \\
+Projector working distance $D$ & $\approx 122.7$\,mm \\
+Projector image at $D$ & $87.47 \times 54.67$\,mm, $67\,\mu$m px \\
 \textbf{Camera tilt angle $\theta$} & $\approx 38.7^\circ$ \\
 Covered surface & $87.47 \times 54.67$\,mm \\
 \bottomrule
@@ -182,11 +187,12 @@ Covered surface & $87.47 \times 54.67$\,mm \\
 
 \begin{itemize}
   \item The projector's image-size-vs-distance law is a first-order
-        (thin-lens, linear) approximation calibrated on a single
-        datasheet point ($700$\,mm); the brochure does not document a
-        focus range for the $700$\,mm lens, so operating it at
-        $153$\,mm assumes it can be refocused that far from its nominal
-        point.
+        (thin-lens, linear) approximation calibrated on the 184\,mm
+        lens's datasheet point. Operating at $122.7$\,mm is $\sim$33\%
+        inside its nominal distance; the brochure does not document the
+        lens's focus range, so this modest refocus should be confirmed on
+        the bench (far less of a reach than the unused $700$\,mm lens,
+        which would need $153$\,mm --- $4.6\times$ below its nominal).
   \item The telecentric lens is assumed to fill the sensor format
         uniformly in both axes, i.e.\ FOV aspect ratio equals sensor
         aspect ratio.
@@ -306,8 +312,8 @@ both arms share the same optics.
 at the footprint center. To first order in $h/D$ (identical in spirit to
 Samara's repeated linearizations, e.g.\ dropping the $x_1\tan\theta \ll a$
 term in Eq.~2-46), the projector's own perspective divide is evaluated at
-$z=0$ rather than $z=h$; the resulting error is $O(h/D) \approx 3/153 \approx
-2\%$, small relative to $\lambda_{eq}$ below and neglected, exactly as
+$z=0$ rather than $z=h$; the resulting error is $O(h/D) \approx 3/122.7 \approx
+2.4\%$, small relative to $\lambda_{eq}$ below and neglected, exactly as
 Samara neglects analogous second-order terms (e.g.\ Eq.~4-16).
 
 \paragraph{Combining.} A fixed pixel's measured phase shifts by
