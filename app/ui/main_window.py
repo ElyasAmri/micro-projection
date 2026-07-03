@@ -1,19 +1,16 @@
-"""The application shell: a workspace of movable, dockable panes (Unity-style)
-driven by the Qt Advanced Docking System. The three canvas views (projected
-image, captured surface, reconstructed surface), the Control pane, and the
-Console are each their own dock widget -- draggable, splittable, tab-mergeable,
-and floatable -- plus the command surface maestro drives.
-
-Layouts persist across restarts and can be saved as named perspectives; a
-"Reset Layout" action restores the default arrangement."""
+"""The application shell: a movable-pane workspace built on native Qt docking.
+Control, the three canvas views (projected / captured / reconstructed, tabbed
+together), and the Console are each a QDockWidget in a QMainWindow with dock
+nesting enabled -- draggable, splittable, tab-mergeable, and floatable, with no
+third-party dependency. Layouts persist across restarts (QMainWindow.saveState)
+and a Reset Layout action restores the default arrangement."""
 from __future__ import annotations
 
 from collections import deque
 
-import PySide6QtAds as ads
 from PySide6.QtCore import QByteArray, QSettings, Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMainWindow, QWidget
+from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
 
 from logbus import get_logger, success
 from version import __version__
@@ -23,13 +20,11 @@ from ui.console import Console
 from ui.imaging import gray_to_qimage
 from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
-from ui.styles import qtads_stylesheet
 
 log = get_logger("ui")
 
-# View label -> (canvas objectName, dock objectName), in display order. These
-# three panes are tab-merged into one area by default; each is independently
-# dockable, so they can be pulled apart for side-by-side comparison.
+# View label -> (canvas objectName, dock objectName), in display order. Tabbed
+# together by default; each is an independent dock, so they can be torn apart.
 VIEW_PANES = [
     ("Projected Image", "projectedCanvas", "projectedDock"),
     ("Captured Surface", "capturedCanvas", "capturedDock"),
@@ -39,12 +34,11 @@ VIEW_PANES = [
 # Bump when the pane set / dock objectNames change so a saved layout from an
 # older shape is ignored instead of restored into a mismatched tree.
 LAYOUT_VERSION = 1
-DEFAULT_PERSPECTIVE = "Default"
 
 
 class MainWindow(QMainWindow):
-    """Top-level window. Hosts the QtAds dock manager (Control, three canvas
-    views, and Console as movable panes), the layout menus, and exposes
+    """Top-level window. Hosts the native-docking workspace (Control, three
+    canvas views, Console as movable panes), the layout menus, and exposes
     `maestro_commands()`."""
 
     def __init__(self, backend: SimulationBackend | None = None) -> None:
@@ -55,15 +49,24 @@ class MainWindow(QMainWindow):
         self.resize(1280, 820)
         self._settings = QSettings()
 
-        # The dock manager is the central widget; every pane is a CDockWidget.
-        self._configure_dock_flags()
-        self.dock_manager = ads.CDockManager(self)
-        self.dock_manager.setStyleSheet(qtads_stylesheet())
-        self.setCentralWidget(self.dock_manager)
+        # Let docks nest, tab-merge, and drag as groups; no fixed central widget
+        # (a zero-size placeholder) so the panes own the whole window.
+        self.setDockNestingEnabled(True)
+        self.setDockOptions(
+            QMainWindow.AllowNestedDocks
+            | QMainWindow.AllowTabbedDocks
+            | QMainWindow.AnimatedDocks
+            | QMainWindow.GroupedDragging
+        )
+        self.setTabPosition(Qt.AllDockWidgetAreas, QTabWidget.North)  # tabs on top
+        placeholder = QWidget()
+        placeholder.setObjectName("centralPlaceholder")
+        placeholder.setFixedSize(0, 0)
+        self.setCentralWidget(placeholder)
 
         self.canvases: dict[str, Canvas] = {}
-        self.docks: dict[str, ads.CDockWidget] = {}       # dock objectName -> dock
-        self.view_docks: dict[str, ads.CDockWidget] = {}  # canvas name -> dock
+        self.docks: dict[str, QDockWidget] = {}
+        self.view_docks: dict[str, QDockWidget] = {}
 
         self._build_panes()
         self._build_menus()
@@ -81,111 +84,77 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
 
-        # Load any user-saved perspectives first (this replaces the in-memory
-        # set), THEN snapshot the just-built arrangement as "Default" so Reset
-        # Layout always restores the current code's default, not a stale copy.
-        # Finally restore the last session's layout if its schema still matches.
-        self.dock_manager.loadPerspectives(self._settings)
-        self.dock_manager.addPerspective(DEFAULT_PERSPECTIVE)
-        self._rebuild_layout_menu()
-        self.apply_dock_sizes()
-        self._restore_layout()
+        # Dock sizing needs real window geometry, which only exists once shown,
+        # so it happens in showEvent (below), not here.
+        self._sized = False
+        self._default_state = None
 
     # -- construction helpers -------------------------------------------------
 
-    @staticmethod
-    def _configure_dock_flags() -> None:
-        """Global QtAds behavior. Must be set before the manager is created."""
-        cm = ads.CDockManager
-        f = cm.eConfigFlag
-        cm.setConfigFlag(f.OpaqueSplitterResize, True)      # live resize while dragging
-        cm.setConfigFlag(f.FocusHighlighting, True)         # accent the focused pane
-        cm.setConfigFlag(f.EqualSplitOnInsertion, True)     # even splits when tearing off
-        cm.setConfigFlag(f.AllTabsHaveCloseButton, False)   # close via the area button, Unity-style
-        cm.setConfigFlag(f.ActiveTabHasCloseButton, False)  # ...including the active tab
-        cm.setConfigFlag(f.DisableTabTextEliding, True)     # tabs size to their full label
-        cm.setConfigFlag(f.DockAreaHasCloseButton, True)
-        cm.setConfigFlag(f.DockAreaHasUndockButton, True)
-        cm.setConfigFlag(f.DockAreaHasTabsMenuButton, True)
-        cm.setConfigFlag(f.MiddleMouseButtonClosesTab, True)
-        cm.setConfigFlag(f.FloatingContainerHasWidgetTitle, True)
-
-    def _make_dock(self, title: str, object_name: str, widget: QWidget) -> "ads.CDockWidget":
-        dock = ads.CDockWidget(self.dock_manager, title)
-        dock.setObjectName(object_name)
+    def _dock(self, title: str, name: str, widget: QWidget, area=None) -> QDockWidget:
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
         dock.setWidget(widget)
-        self.docks[object_name] = dock
+        dock.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        if area is not None:
+            self.addDockWidget(area, dock)
+        self.docks[name] = dock
         return dock
 
     def _build_panes(self) -> None:
-        """Create the panes and their default arrangement. QtAds builds outward
-        from the center, so add the views first, then Control to their left, then
-        Console across the bottom:  [ Control | views ] / [ Console ]."""
-        # The three views, tab-merged into one central area.
-        center_area = None
-        for label, name, dock_name in VIEW_PANES:
-            canvas = Canvas(name)
-            self.canvases[name] = canvas
-            dock = self._make_dock(label, dock_name, canvas)
-            self.view_docks[name] = dock
-            if center_area is None:
-                center_area = self.dock_manager.addDockWidget(ads.CenterDockWidgetArea, dock)
-            else:
-                self.dock_manager.addDockWidget(ads.CenterDockWidgetArea, dock, center_area)
-        self._center_area = center_area
+        """Control as a full-height left rail, the three views tab-merged in the
+        main area, Console below the views:  [ Control | views / Console ].
 
-        # Control pane, docked to the left of the views.
+        The console shares a vertical splitter with the views (rather than
+        spanning the full bottom), so its height is actually adjustable -- a
+        full-width bottom dock over a central-less layout can't be sized down."""
         self.sidebar = Sidebar(self.backend.available_surfaces(), self)
         self.sidebar.project_requested.connect(self._on_project)
         self.sidebar.capture_requested.connect(self._on_capture)
         self.sidebar.pipeline_requested.connect(self._on_pipeline)
-        control = self._make_dock("Control", "controlDock", self.sidebar)
-        self.dock_manager.addDockWidget(ads.LeftDockWidgetArea, control)
+        self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
-        # Console spanning the full width along the bottom.
+        # Build the first view alone in the right area, split the console below it
+        # (a clean vertical splitter while the view is un-tabbed), THEN tab the
+        # remaining views onto the first -- so they share the top sub-area and the
+        # console keeps the bottom. Splitting after tabbing merges into the tabs.
+        first_label, first_name, first_dockname = VIEW_PANES[0]
+        first_canvas = Canvas(first_name)
+        self.canvases[first_name] = first_canvas
+        first_dock = self._dock(first_label, first_dockname, first_canvas, Qt.RightDockWidgetArea)
+        self.view_docks[first_name] = first_dock
+
         self.console = Console(self)
-        console = self._make_dock("Console", "consoleDock", self.console)
-        self.dock_manager.addDockWidget(ads.BottomDockWidgetArea, console)
+        console = self._dock("Console", "consoleDock", self.console)
+        self.splitDockWidget(first_dock, console, Qt.Vertical)
 
-        # Open on the first view (Projected), not whichever was added last.
-        self._show_tab(VIEW_PANES[0][1])
+        for label, name, dock_name in VIEW_PANES[1:]:
+            canvas = Canvas(name)
+            self.canvases[name] = canvas
+            dock = self._dock(label, dock_name, canvas)
+            self.view_docks[name] = dock
+            self.tabifyDockWidget(first_dock, dock)  # merge into the top tab group
+        first_dock.raise_()  # open on the first view
 
-    # -- layout menu, perspectives, persistence -------------------------------
+    # -- layout menu + persistence --------------------------------------------
 
     def _build_menus(self) -> None:
         bar = self.menuBar()
         view = bar.addMenu("View")
         for dock in self.docks.values():
             view.addAction(dock.toggleViewAction())
-        self._layout_menu = bar.addMenu("Layout")
-
-    def _rebuild_layout_menu(self) -> None:
-        """(Re)populate the Layout menu: fixed actions plus one entry per saved
-        perspective (Unity's Layouts dropdown)."""
-        m = self._layout_menu
-        m.clear()
-        m.addAction("Reset Layout", self.reset_layout)
-        m.addAction("Save Layout As...", self._save_layout_as)
-        names = [n for n in self.dock_manager.perspectiveNames() if n != DEFAULT_PERSPECTIVE]
-        if names:
-            m.addSeparator()
-            for name in names:
-                m.addAction(name, lambda checked=False, n=name: self.dock_manager.openPerspective(n))
+        layout = bar.addMenu("Layout")
+        layout.addAction("Reset Layout", self.reset_layout)
 
     def reset_layout(self) -> None:
-        """Restore the default pane arrangement."""
-        self.dock_manager.openPerspective(DEFAULT_PERSPECTIVE)
+        """Restore the default pane arrangement captured at first show."""
+        if self._default_state is not None:
+            self.restoreState(self._default_state)
         self.apply_dock_sizes()
-
-    def _save_layout_as(self) -> None:
-        name, ok = QInputDialog.getText(self, "Save Layout", "Layout name:")
-        name = name.strip()
-        if not (ok and name) or name == DEFAULT_PERSPECTIVE:
-            return
-        self.dock_manager.addPerspective(name)
-        self.dock_manager.savePerspectives(self._settings)
-        self._rebuild_layout_menu()
-        success(log, f"saved layout {name!r}")
 
     def _restore_layout(self) -> None:
         """Reapply the last session's layout, unless the schema version changed."""
@@ -199,13 +168,12 @@ class MainWindow(QMainWindow):
             return
         if not isinstance(state, QByteArray):
             state = QByteArray(state)
-        self.dock_manager.restoreState(state)
+        self.restoreState(state)
 
     def closeEvent(self, event) -> None:
-        """Persist the current layout and saved perspectives on the way out."""
+        """Persist the current layout on the way out."""
         self._settings.setValue("layout/version", LAYOUT_VERSION)
-        self._settings.setValue("layout/state", self.dock_manager.saveState())
-        self.dock_manager.savePerspectives(self._settings)
+        self._settings.setValue("layout/state", self.saveState())
         super().closeEvent(event)
 
     def _build_status_bar(self) -> None:
@@ -224,33 +192,34 @@ class MainWindow(QMainWindow):
         version.setObjectName("versionLabel")
         bar.addPermanentWidget(version)
 
+    def showEvent(self, event) -> None:
+        """First real geometry arrives here; size the docks, snapshot the default
+        layout for Reset, then reapply any persisted layout."""
+        super().showEvent(event)
+        if self._sized:
+            return
+        self._sized = True
+        self.apply_dock_sizes()
+        self._default_state = self.saveState()
+        self._restore_layout()
+
     def apply_dock_sizes(self) -> None:
-        """Nudge the default split proportions (Control ~260px, Console ~200px).
-        Best-effort: QtAds otherwise distributes space evenly, and a restored
-        layout supersedes this. Cheap to re-run (e.g. before an offscreen grab)."""
-        try:
-            width, height = max(self.width(), 800), max(self.height(), 600)
-            control_area = self.docks["controlDock"].dockAreaWidget()
-            console_area = self.docks["consoleDock"].dockAreaWidget()
-            if control_area is not None:
-                self.dock_manager.setSplitterSizes(control_area, [260, width - 260])
-            if console_area is not None:
-                self.dock_manager.setSplitterSizes(console_area, [height - 200, 200])
-        except Exception:  # noqa: BLE001 - sizing is cosmetic; never block startup
-            pass
+        """Size the docks from the current window geometry: Control ~260 wide,
+        Console ~a quarter of the height. Runs once the window is shown (real
+        geometry), so resizeDocks actually takes -- doing it pre-show is why the
+        console swallowed the window before."""
+        self.resizeDocks([self.docks["controlDock"]], [260], Qt.Horizontal)
+        console_h = max(160, self.height() // 4)
+        self.resizeDocks([self.docks["consoleDock"]], [console_h], Qt.Vertical)
 
     # -- behavior -------------------------------------------------------------
 
     def _show_tab(self, canvas_name: str) -> None:
-        """Bring a view pane to the front: restore it if closed, make it the
-        current tab in its dock area, and raise its window if floated."""
+        """Bring a view pane to the front of its tab group (and un-hide it)."""
         dock = self.view_docks.get(canvas_name)
         if dock is None:
             return
-        dock.toggleView(True)
-        area = dock.dockAreaWidget()
-        if area is not None:
-            area.setCurrentDockWidget(dock)
+        dock.show()
         dock.raise_()
 
     def _on_project(self) -> None:
