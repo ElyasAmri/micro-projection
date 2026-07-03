@@ -185,6 +185,17 @@ def _write_and_score(
     ground_truth_fn = surfaces.SURFACES[surface] if surface is not None else None
     lambda_eq = metrics.get("lambda_eq_mm", float("nan"))
 
+    # Persist the raw height + mask (and the per-axis pixel pitch) so downstream
+    # tools -- roughness.py above all -- consume the height map without redoing
+    # the reconstruction. The grid is uniform per axis (pixel_to_world), so a
+    # single dx/dy describes it.
+    np.save(out_dir / "height.npy", height)
+    np.save(out_dir / "valid.npy", valid)
+    if world_x.shape[1] > 1:
+        metrics["dx_mm"] = float(abs(world_x[0, 1] - world_x[0, 0]))
+    if world_y.shape[0] > 1:
+        metrics["dy_mm"] = float(abs(world_y[1, 0] - world_y[0, 0]))
+
     if ground_truth_fn is not None:
         ground_truth = ground_truth_fn(world_x, world_y)
         error = height - ground_truth

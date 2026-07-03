@@ -98,6 +98,46 @@ def twin_bump_height_mm(x_mm, y_mm):
     return total
 
 
+# A rough surface: a large smooth *form* (waviness) with a small, band-limited
+# *roughness* texture on top -- the specimen the multi-frequency ladder exists
+# to measure (report/math.tex "Roughness"; Chapter 3's form-vs-finish split).
+# The two live in cleanly separated spatial bands so an ISO-25178 Gaussian
+# high-pass (roughness.gaussian_highpass) recovers the texture without form
+# bleed:
+#   * form: a broad dome, sigma 25mm -> dominant wavelength ~100mm (>> cutoff),
+#   * texture: a deterministic sum of sinusoids at 2.5-6mm wavelengths -- above
+#     ~2x the finest rung's projected fringe period (1.09mm at n=80), so it's
+#     actually resolvable, and below a ~10mm form/roughness cutoff.
+# Deterministic (a fixed sinusoid sum, not a random draw) so it's an exact
+# function of (x, y): the forward model and the ground-truth score evaluate the
+# identical texture at identical world coords. Amplitudes are in micrometres.
+ROUGH_FORM_AMPLITUDE_MM = 1.5
+ROUGH_FORM_SIGMA_MM = 25.0
+# (wavelength_mm, orientation_deg, amplitude_um, phase_rad)
+_ROUGH_TEXTURE = (
+    (6.0, 10.0, 20.0, 0.0),
+    (4.0, 75.0, 15.0, 1.3),
+    (3.0, 130.0, 12.0, 2.1),
+    (2.5, 40.0, 10.0, 0.7),
+)
+
+
+def rough_height_mm(x_mm, y_mm):
+    """Broad dome (form) + a band-limited sinusoidal texture (roughness). The
+    texture's areal Sa/Sq (~tens of um) is what roughness.py recovers after the
+    form is filtered out."""
+    x = np.asarray(x_mm, dtype=float)
+    y = np.asarray(y_mm, dtype=float)
+    r2 = x ** 2 + y ** 2
+    form = ROUGH_FORM_AMPLITUDE_MM * np.exp(-r2 / (2.0 * ROUGH_FORM_SIGMA_MM ** 2))
+    texture = np.zeros_like(x + y)
+    for wavelength_mm, angle_deg, amp_um, phase in _ROUGH_TEXTURE:
+        angle = np.radians(angle_deg)
+        proj = x * np.cos(angle) + y * np.sin(angle)  # distance along the wave's direction
+        texture = texture + (amp_um / 1000.0) * np.cos(2.0 * np.pi * proj / wavelength_mm + phase)
+    return form + texture
+
+
 SURFACES = {
     "flat": flat_height_mm,
     "bump": bump_height_mm,
@@ -105,4 +145,5 @@ SURFACES = {
     "crater": crater_height_mm,
     "ridge": ridge_height_mm,
     "twin_bump": twin_bump_height_mm,
+    "rough": rough_height_mm,
 }
