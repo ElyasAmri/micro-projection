@@ -32,6 +32,7 @@ import math
 from pathlib import Path
 
 import bpy
+import numpy as np
 from mathutils import Quaternion, Vector
 
 import surfaces
@@ -100,7 +101,8 @@ def _mask_node(nt, value_socket):
     return both.outputs[0]
 
 
-def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm):
+def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm,
+                subdivisions: int = SURFACE_GRID_SUBDIVISIONS):
     """Add the surface, with the projected fringe pattern computed live in
     its material. Returns (surface_object, phase_fraction_node) -- update
     phase_fraction_node.outputs[0].default_value (a fraction of one cycle,
@@ -112,13 +114,19 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     projected pattern's material graph doesn't need to know about this --
     it already reads the real shading-point position, so it distorts over
     the bump exactly as a real projector's fringes would.
+
+    `subdivisions` sets the mesh grid density. The default (~1.7mm vertex
+    spacing over the 300mm plane) is plenty for the smooth mm-scale test
+    surfaces, but a fine roughness texture (sub-mm features, surfaces.rough)
+    needs a much denser mesh to *carry* the displacement -- otherwise the
+    camera images an aliased mesh, not the surface. Raise it accordingly.
     """
     if height_fn is None:
         bpy.ops.mesh.primitive_plane_add(size=SURFACE_SIZE_M, location=(0.0, 0.0, 0.0))
     else:
         bpy.ops.mesh.primitive_grid_add(
-            x_subdivisions=SURFACE_GRID_SUBDIVISIONS,
-            y_subdivisions=SURFACE_GRID_SUBDIVISIONS,
+            x_subdivisions=subdivisions,
+            y_subdivisions=subdivisions,
             size=SURFACE_SIZE_M,
             location=(0.0, 0.0, 0.0),
         )
@@ -126,9 +134,16 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     surface.name = "Surface"
 
     if height_fn is not None:
+        # Vectorized per-vertex displacement: read all coords, evaluate the
+        # ground-truth height on the arrays, write them back. A Python per-vertex
+        # loop is unusable at the ~1M vertices a roughness mesh needs.
         mesh = surface.data
-        for vert in mesh.vertices:
-            vert.co.z = float(height_fn(vert.co.x / MM, vert.co.y / MM)) * MM
+        n = len(mesh.vertices)
+        co = np.empty(n * 3, dtype=np.float64)
+        mesh.vertices.foreach_get("co", co)
+        co = co.reshape(n, 3)
+        co[:, 2] = np.asarray(height_fn(co[:, 0] / MM, co[:, 1] / MM), dtype=np.float64) * MM
+        mesh.vertices.foreach_set("co", co.reshape(-1))
         mesh.update()
         bpy.ops.object.shade_smooth()
 

@@ -32,6 +32,8 @@ def parse_args():
     parser.add_argument("--n-periods", type=float, default=8.0)
     parser.add_argument("--samples", type=int, default=64)
     parser.add_argument("--surface", default="bump", choices=sorted(surfaces.SURFACES))
+    parser.add_argument("--subdivisions", type=int, default=rig.SURFACE_GRID_SUBDIVISIONS,
+                        help="surface mesh grid density; raise it for fine roughness (surfaces.rough)")
     return parser.parse_args(argv)
 
 
@@ -43,7 +45,8 @@ def main() -> None:
     rig.clear_scene()
     projector = rig.add_projector()
     height_fn = surfaces.SURFACES[args.surface]
-    _, phase_fraction = rig.add_surface(projector, n_periods=args.n_periods, height_fn=height_fn)
+    _, phase_fraction = rig.add_surface(projector, n_periods=args.n_periods, height_fn=height_fn,
+                                        subdivisions=args.subdivisions)
     cam = rig.add_telecentric_camera()
 
     scene = bpy.context.scene

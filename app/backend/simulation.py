@@ -34,6 +34,15 @@ class CaptureSpec:
     n_steps: int
 
 
+# A fine roughness texture (surfaces.rough) needs a dense surface mesh to carry
+# its sub-mm displacement -- otherwise the camera images an aliased mesh, not the
+# roughness. Smooth mm-scale specimens don't: capture_pipeline's default grid is
+# plenty for them. Keyed by surface name; anything not listed renders at the
+# default density.
+FINE_MESH_SUBDIVISIONS = 1000
+_FINE_MESH_SURFACES = {"rough"}
+
+
 class SimulationBackend(Backend):
     """Drives the fringe-projection loop against the simulation instead of
     hardware."""
@@ -75,10 +84,17 @@ class SimulationBackend(Backend):
         n_periods: float | None = None,
         samples: int = 64,
         subdir: str = "capture",
+        subdivisions: int | None = None,
     ) -> CaptureSpec:
         """Describe how to render `surface`'s frames with Blender (an argv the
-        UI runs in a QProcess). Frames land in out/app/<surface>/<subdir>."""
+        UI runs in a QProcess). Frames land in out/app/<surface>/<subdir>.
+
+        `subdivisions` overrides the surface mesh density; left None, it's chosen
+        per surface (fine for roughness specimens, capture_pipeline's default
+        otherwise)."""
         n = self.n_periods if n_periods is None else n_periods
+        if subdivisions is None and surface in _FINE_MESH_SURFACES:
+            subdivisions = FINE_MESH_SUBDIVISIONS
         script = sim_dir() / "capture_pipeline.py"
         if not script.is_file():
             raise FileNotFoundError(f"capture_pipeline.py not found at {script} (set MP_SIMULATION_DIR)")
@@ -91,6 +107,8 @@ class SimulationBackend(Backend):
             "--n-periods", str(n),
             "--samples", str(samples),
         ]
+        if subdivisions:
+            argv += ["--subdivisions", str(subdivisions)]
         return CaptureSpec(argv=argv, cwd=repo_root(), capture_dir=capture_dir, n_steps=n_steps)
 
     def blender_path(self) -> str:
@@ -130,8 +148,10 @@ class BlenderCapture(CaptureController):
         if self._runner.is_running():
             raise RuntimeError("a capture is already running")
         samples = int(kwargs["samples"]) if "samples" in kwargs else 64
+        subdivisions = int(kwargs["subdivisions"]) if "subdivisions" in kwargs else None
         spec = self._backend.capture_command(
-            surface, n_steps=n_steps, n_periods=n_periods, samples=samples, subdir=subdir
+            surface, n_steps=n_steps, n_periods=n_periods, samples=samples,
+            subdir=subdir, subdivisions=subdivisions,
         )
         self.capture_dir = spec.capture_dir
         self.n_steps = spec.n_steps
