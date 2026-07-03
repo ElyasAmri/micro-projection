@@ -1,13 +1,19 @@
-"""The application shell: a tabbed canvas in the center (projected image,
-captured surface, reconstructed surface), a sidebar docked left, and a console
-docked along the bottom, plus the command surface maestro drives."""
+"""The application shell: a workspace of movable, dockable panes (Unity-style)
+driven by the Qt Advanced Docking System. The three canvas views (projected
+image, captured surface, reconstructed surface), the Control pane, and the
+Console are each their own dock widget -- draggable, splittable, tab-mergeable,
+and floatable -- plus the command surface maestro drives.
+
+Layouts persist across restarts and can be saved as named perspectives; a
+"Reset Layout" action restores the default arrangement."""
 from __future__ import annotations
 
 from collections import deque
 
-from PySide6.QtCore import Qt
+import PySide6QtAds as ads
+from PySide6.QtCore import QByteArray, QSettings, Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
+from PySide6.QtWidgets import QApplication, QInputDialog, QLabel, QMainWindow, QWidget
 
 from logbus import get_logger, success
 from version import __version__
@@ -17,20 +23,29 @@ from ui.console import Console
 from ui.imaging import gray_to_qimage
 from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
+from ui.styles import qtads_stylesheet
 
 log = get_logger("ui")
 
-# Tab label -> canvas objectName, in display order.
-CANVAS_TABS = [
-    ("Projected Image", "projectedCanvas"),
-    ("Captured Surface", "capturedCanvas"),
-    ("Reconstructed Surface", "reconstructedCanvas"),
+# View label -> (canvas objectName, dock objectName), in display order. These
+# three panes are tab-merged into one area by default; each is independently
+# dockable, so they can be pulled apart for side-by-side comparison.
+VIEW_PANES = [
+    ("Projected Image", "projectedCanvas", "projectedDock"),
+    ("Captured Surface", "capturedCanvas", "capturedDock"),
+    ("Reconstructed Surface", "reconstructedCanvas", "reconstructedDock"),
 ]
+
+# Bump when the pane set / dock objectNames change so a saved layout from an
+# older shape is ignored instead of restored into a mismatched tree.
+LAYOUT_VERSION = 1
+DEFAULT_PERSPECTIVE = "Default"
 
 
 class MainWindow(QMainWindow):
-    """Top-level window. Owns the tabbed canvas, sidebar, and console, and
-    exposes `maestro_commands()`."""
+    """Top-level window. Hosts the QtAds dock manager (Control, three canvas
+    views, and Console as movable panes), the layout menus, and exposes
+    `maestro_commands()`."""
 
     def __init__(self, backend: SimulationBackend | None = None) -> None:
         super().__init__()
@@ -38,26 +53,20 @@ class MainWindow(QMainWindow):
         self.setObjectName("mainWindow")
         self.setWindowTitle("Micro-Projection Control")
         self.resize(1280, 820)
+        self._settings = QSettings()
 
-        self.canvas_tabs = self._build_canvas_tabs()
-        self.setCentralWidget(self.canvas_tabs)
+        # The dock manager is the central widget; every pane is a CDockWidget.
+        self._configure_dock_flags()
+        self.dock_manager = ads.CDockManager(self)
+        self.dock_manager.setStyleSheet(qtads_stylesheet())
+        self.setCentralWidget(self.dock_manager)
 
-        self.sidebar = Sidebar(self.backend.available_surfaces(), self)
-        self.sidebar.project_requested.connect(self._on_project)
-        self.sidebar.capture_requested.connect(self._on_capture)
-        self.sidebar.pipeline_requested.connect(self._on_pipeline)
-        self.sidebar_dock = self._dock("Control", "sidebarDock", self.sidebar,
-                                       Qt.LeftDockWidgetArea, Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.canvases: dict[str, Canvas] = {}
+        self.docks: dict[str, ads.CDockWidget] = {}       # dock objectName -> dock
+        self.view_docks: dict[str, ads.CDockWidget] = {}  # canvas name -> dock
 
-        self.console = Console(self)
-        self.console_dock = self._dock("Console", "consoleDock", self.console,
-                                       Qt.BottomDockWidgetArea, Qt.BottomDockWidgetArea | Qt.TopDockWidgetArea)
-
-        # Let the console own the full width of the bottom edge; the sidebar
-        # keeps the left edge above it.
-        self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
-        self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
-
+        self._build_panes()
+        self._build_menus()
         self._build_status_bar()
 
         # Blender capture runs as a child process, streamed to the console.
@@ -71,28 +80,133 @@ class MainWindow(QMainWindow):
         self._capture_purpose = "single"  # "single" (preview) or "pipeline"
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
+
+        # Load any user-saved perspectives first (this replaces the in-memory
+        # set), THEN snapshot the just-built arrangement as "Default" so Reset
+        # Layout always restores the current code's default, not a stale copy.
+        # Finally restore the last session's layout if its schema still matches.
+        self.dock_manager.loadPerspectives(self._settings)
+        self.dock_manager.addPerspective(DEFAULT_PERSPECTIVE)
+        self._rebuild_layout_menu()
         self.apply_dock_sizes()
+        self._restore_layout()
 
     # -- construction helpers -------------------------------------------------
 
-    def _build_canvas_tabs(self) -> QTabWidget:
-        tabs = QTabWidget()
-        tabs.setObjectName("canvasTabs")
-        self.canvases: dict[str, Canvas] = {}
-        for label, name in CANVAS_TABS:
+    @staticmethod
+    def _configure_dock_flags() -> None:
+        """Global QtAds behavior. Must be set before the manager is created."""
+        cm = ads.CDockManager
+        f = cm.eConfigFlag
+        cm.setConfigFlag(f.OpaqueSplitterResize, True)      # live resize while dragging
+        cm.setConfigFlag(f.FocusHighlighting, True)         # accent the focused pane
+        cm.setConfigFlag(f.EqualSplitOnInsertion, True)     # even splits when tearing off
+        cm.setConfigFlag(f.AllTabsHaveCloseButton, False)   # close via the area button, Unity-style
+        cm.setConfigFlag(f.ActiveTabHasCloseButton, False)  # ...including the active tab
+        cm.setConfigFlag(f.DisableTabTextEliding, True)     # tabs size to their full label
+        cm.setConfigFlag(f.DockAreaHasCloseButton, True)
+        cm.setConfigFlag(f.DockAreaHasUndockButton, True)
+        cm.setConfigFlag(f.DockAreaHasTabsMenuButton, True)
+        cm.setConfigFlag(f.MiddleMouseButtonClosesTab, True)
+        cm.setConfigFlag(f.FloatingContainerHasWidgetTitle, True)
+
+    def _make_dock(self, title: str, object_name: str, widget: QWidget) -> "ads.CDockWidget":
+        dock = ads.CDockWidget(self.dock_manager, title)
+        dock.setObjectName(object_name)
+        dock.setWidget(widget)
+        self.docks[object_name] = dock
+        return dock
+
+    def _build_panes(self) -> None:
+        """Create the panes and their default arrangement. QtAds builds outward
+        from the center, so add the views first, then Control to their left, then
+        Console across the bottom:  [ Control | views ] / [ Console ]."""
+        # The three views, tab-merged into one central area.
+        center_area = None
+        for label, name, dock_name in VIEW_PANES:
             canvas = Canvas(name)
             self.canvases[name] = canvas
-            tabs.addTab(canvas, label)
-        return tabs
+            dock = self._make_dock(label, dock_name, canvas)
+            self.view_docks[name] = dock
+            if center_area is None:
+                center_area = self.dock_manager.addDockWidget(ads.CenterDockWidgetArea, dock)
+            else:
+                self.dock_manager.addDockWidget(ads.CenterDockWidgetArea, dock, center_area)
+        self._center_area = center_area
 
-    def _dock(self, title: str, name: str, widget: QWidget, area, allowed) -> QDockWidget:
-        dock = QDockWidget(title, self)
-        dock.setObjectName(name)
-        dock.setWidget(widget)
-        dock.setAllowedAreas(allowed)
-        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        self.addDockWidget(area, dock)
-        return dock
+        # Control pane, docked to the left of the views.
+        self.sidebar = Sidebar(self.backend.available_surfaces(), self)
+        self.sidebar.project_requested.connect(self._on_project)
+        self.sidebar.capture_requested.connect(self._on_capture)
+        self.sidebar.pipeline_requested.connect(self._on_pipeline)
+        control = self._make_dock("Control", "controlDock", self.sidebar)
+        self.dock_manager.addDockWidget(ads.LeftDockWidgetArea, control)
+
+        # Console spanning the full width along the bottom.
+        self.console = Console(self)
+        console = self._make_dock("Console", "consoleDock", self.console)
+        self.dock_manager.addDockWidget(ads.BottomDockWidgetArea, console)
+
+        # Open on the first view (Projected), not whichever was added last.
+        self._show_tab(VIEW_PANES[0][1])
+
+    # -- layout menu, perspectives, persistence -------------------------------
+
+    def _build_menus(self) -> None:
+        bar = self.menuBar()
+        view = bar.addMenu("View")
+        for dock in self.docks.values():
+            view.addAction(dock.toggleViewAction())
+        self._layout_menu = bar.addMenu("Layout")
+
+    def _rebuild_layout_menu(self) -> None:
+        """(Re)populate the Layout menu: fixed actions plus one entry per saved
+        perspective (Unity's Layouts dropdown)."""
+        m = self._layout_menu
+        m.clear()
+        m.addAction("Reset Layout", self.reset_layout)
+        m.addAction("Save Layout As...", self._save_layout_as)
+        names = [n for n in self.dock_manager.perspectiveNames() if n != DEFAULT_PERSPECTIVE]
+        if names:
+            m.addSeparator()
+            for name in names:
+                m.addAction(name, lambda checked=False, n=name: self.dock_manager.openPerspective(n))
+
+    def reset_layout(self) -> None:
+        """Restore the default pane arrangement."""
+        self.dock_manager.openPerspective(DEFAULT_PERSPECTIVE)
+        self.apply_dock_sizes()
+
+    def _save_layout_as(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save Layout", "Layout name:")
+        name = name.strip()
+        if not (ok and name) or name == DEFAULT_PERSPECTIVE:
+            return
+        self.dock_manager.addPerspective(name)
+        self.dock_manager.savePerspectives(self._settings)
+        self._rebuild_layout_menu()
+        success(log, f"saved layout {name!r}")
+
+    def _restore_layout(self) -> None:
+        """Reapply the last session's layout, unless the schema version changed."""
+        try:
+            if int(self._settings.value("layout/version", 0)) != LAYOUT_VERSION:
+                return
+        except (TypeError, ValueError):
+            return
+        state = self._settings.value("layout/state")
+        if state is None:
+            return
+        if not isinstance(state, QByteArray):
+            state = QByteArray(state)
+        self.dock_manager.restoreState(state)
+
+    def closeEvent(self, event) -> None:
+        """Persist the current layout and saved perspectives on the way out."""
+        self._settings.setValue("layout/version", LAYOUT_VERSION)
+        self._settings.setValue("layout/state", self.dock_manager.saveState())
+        self.dock_manager.savePerspectives(self._settings)
+        super().closeEvent(event)
 
     def _build_status_bar(self) -> None:
         bar = self.statusBar()
@@ -111,15 +225,33 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(version)
 
     def apply_dock_sizes(self) -> None:
-        """Give the docks sensible starting extents (must run after they exist,
-        and is cheap to re-run e.g. right before an offscreen screenshot)."""
-        self.resizeDocks([self.sidebar_dock], [260], Qt.Horizontal)
-        self.resizeDocks([self.console_dock], [200], Qt.Vertical)
+        """Nudge the default split proportions (Control ~260px, Console ~200px).
+        Best-effort: QtAds otherwise distributes space evenly, and a restored
+        layout supersedes this. Cheap to re-run (e.g. before an offscreen grab)."""
+        try:
+            width, height = max(self.width(), 800), max(self.height(), 600)
+            control_area = self.docks["controlDock"].dockAreaWidget()
+            console_area = self.docks["consoleDock"].dockAreaWidget()
+            if control_area is not None:
+                self.dock_manager.setSplitterSizes(control_area, [260, width - 260])
+            if console_area is not None:
+                self.dock_manager.setSplitterSizes(console_area, [height - 200, 200])
+        except Exception:  # noqa: BLE001 - sizing is cosmetic; never block startup
+            pass
 
     # -- behavior -------------------------------------------------------------
 
     def _show_tab(self, canvas_name: str) -> None:
-        self.canvas_tabs.setCurrentWidget(self.canvases[canvas_name])
+        """Bring a view pane to the front: restore it if closed, make it the
+        current tab in its dock area, and raise its window if floated."""
+        dock = self.view_docks.get(canvas_name)
+        if dock is None:
+            return
+        dock.toggleView(True)
+        area = dock.dockAreaWidget()
+        if area is not None:
+            area.setCurrentDockWidget(dock)
+        dock.raise_()
 
     def _on_project(self) -> None:
         self._project(self.sidebar.selected_surface())
@@ -273,22 +405,22 @@ class MainWindow(QMainWindow):
         return {"cleared": True}
 
     def _cmd_select_tab(self, args: dict):
-        """Switch canvas tab by index or (case-insensitive) label match."""
+        """Raise a view pane by index or (case-insensitive) label match."""
         key = args.get("tab")
-        tabs = self.canvas_tabs
         index = None
         if isinstance(key, int) or (isinstance(key, str) and key.isdigit()):
             index = int(key)
         elif isinstance(key, str):
             wanted = key.lower()
-            for i in range(tabs.count()):
-                if wanted in tabs.tabText(i).lower():
+            for i, (label, _name, _dock) in enumerate(VIEW_PANES):
+                if wanted in label.lower():
                     index = i
                     break
-        if index is None or not (0 <= index < tabs.count()):
+        if index is None or not (0 <= index < len(VIEW_PANES)):
             raise ValueError(f"no tab matching {key!r}")
-        tabs.setCurrentIndex(index)
-        return {"tab": tabs.tabText(index), "index": index}
+        label, name, _dock = VIEW_PANES[index]
+        self._show_tab(name)
+        return {"tab": label, "index": index}
 
     def _cmd_set_status(self, args: dict):
         text = str(args.get("text", ""))

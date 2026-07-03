@@ -3,7 +3,12 @@ and a monospace font for the console. Kept in one place so every widget reads
 from the same source of truth (and so a future light theme is a single swap)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtGui import QFont, QFontDatabase
+
+# Where the dock title-bar button icons live (light-stroked, for dark chrome).
+ICON_DIR = Path(__file__).parent / "icons"
 
 # Instrument-console dark palette. Values are referenced by name in the
 # stylesheet below and directly by the canvas painter, so change them here only.
@@ -192,6 +197,28 @@ def build_stylesheet() -> str:
         letter-spacing: 1.5px;
     }}
 
+    /* -- Menu bar (Layout / View) --------------------------------------- */
+    QMenuBar {{
+        background: {c['surface_alt']};
+        color: {c['text_dim']};
+        border-bottom: 1px solid {c['border']};
+    }}
+    QMenuBar::item {{
+        background: transparent;
+        padding: 5px 11px;
+    }}
+    QMenuBar::item:selected {{ background: {c['surface']}; color: {c['text']}; }}
+    QMenuBar::item:pressed {{ background: {c['surface']}; color: {c['accent']}; }}
+    QMenu {{
+        background: {c['surface']};
+        color: {c['text']};
+        border: 1px solid {c['border']};
+        padding: 4px;
+    }}
+    QMenu::item {{ padding: 5px 22px 5px 14px; border-radius: 4px; }}
+    QMenu::item:selected {{ background: {c['accent_dim']}; color: {c['text']}; }}
+    QMenu::separator {{ height: 1px; background: {c['border']}; margin: 4px 8px; }}
+
     /* -- Status bar ----------------------------------------------------- */
     QStatusBar {{
         background: {c['surface_alt']};
@@ -218,4 +245,70 @@ def build_stylesheet() -> str:
         background: {c['border']}; border-radius: 4px; min-width: 24px;
     }}
     QScrollBar::handle:horizontal:hover {{ background: {c['accent_dim']}; }}
+    """
+
+
+def qtads_stylesheet() -> str:
+    """A dark recolor of QtAds's own stylesheet (the docking chrome: tabs, area
+    title bars, splitters, and the title-bar buttons). Replaces QtAds's light
+    default via ``CDockManager.setStyleSheet`` and repoints the close/undock/menu
+    buttons at our light icons so they read on dark title bars.
+
+    Selectors and button object names mirror QtAds's built-in sheet; only the
+    colors and icon URLs change."""
+    c = COLORS
+    icons = ICON_DIR.resolve().as_posix()
+    return f"""
+    ads--CDockContainerWidget {{ background: {c['window']}; }}
+    ads--CDockContainerWidget > QSplitter {{ padding: 0; }}
+    ads--CDockContainerWidget ads--CDockSplitter::handle {{ background: {c['border']}; }}
+    ads--CDockSplitter::handle:horizontal {{ width: 1px; }}
+    ads--CDockSplitter::handle:vertical {{ height: 1px; }}
+
+    ads--CDockAreaWidget {{
+        background: {c['viewport']};
+        border: 1px solid {c['border']};
+    }}
+    ads--CDockAreaTitleBar {{
+        background: {c['surface_alt']};
+        border-bottom: 1px solid {c['border']};
+        padding: 1px 4px;
+    }}
+    ads--CTitleBarButton {{
+        background: transparent;
+        border: none;
+        padding: 2px 4px;
+        border-radius: 4px;
+    }}
+    ads--CTitleBarButton:hover {{ background: {c['surface']}; }}
+
+    #tabsMenuButton::menu-indicator {{ image: none; }}
+    #tabsMenuButton {{ qproperty-icon: url({icons}/menu.svg); qproperty-iconSize: 14px; }}
+    #dockAreaCloseButton {{ qproperty-icon: url({icons}/close.svg); qproperty-iconSize: 14px; }}
+    #detachGroupButton {{ qproperty-icon: url({icons}/detach.svg); qproperty-iconSize: 14px; }}
+
+    ads--CDockWidgetTab {{
+        background: {c['surface']};
+        border: none;
+        border-right: 1px solid {c['border']};
+        min-height: 30px;
+    }}
+    ads--CDockWidgetTab[activeTab="true"] {{
+        background: {c['viewport']};
+        border-bottom: 2px solid {c['accent']};
+    }}
+    ads--CDockWidgetTab QLabel {{ color: {c['text_dim']}; padding: 0 10px; }}
+    ads--CDockWidgetTab[activeTab="true"] QLabel {{ color: {c['accent']}; }}
+
+    #tabCloseButton {{
+        background: none;
+        border: none;
+        padding: 0 2px;
+        qproperty-icon: url({icons}/close.svg);
+        qproperty-iconSize: 12px;
+    }}
+    #tabCloseButton:hover {{ background: {c['surface_alt']}; border-radius: 4px; }}
+
+    ads--CDockWidget {{ background: {c['viewport']}; border: none; }}
+    #autoHideTitleLabel {{ color: {c['text_dim']}; padding-left: 4px; }}
     """
