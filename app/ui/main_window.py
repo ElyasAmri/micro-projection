@@ -38,13 +38,14 @@ VIEW_PANES = [
     ("Captured", "capturedCanvas", "capturedDock"),
     ("Reconstructed", "reconstructedCanvas", "reconstructedDock"),
     ("Noise", "noiseCanvas", "noiseDock"),
+    ("Roughness", "roughnessCanvas", "roughnessDock"),
 ]
 
 # Bump when the pane set / dock objectNames change (or the default sizing does)
 # so a saved layout from an older shape is ignored instead of restored into a
 # mismatched tree. v2: control width is sized by naming both sides of the split.
-# v3: added the Noise view.
-LAYOUT_VERSION = 3
+# v3: added the Noise view. v4: added the Roughness view.
+LAYOUT_VERSION = 4
 
 
 class _DockTitleTab(QWidget):
@@ -362,7 +363,8 @@ class MainWindow(QMainWindow):
         self._status_left.setText("Ready")
 
     def _reconstruct_multifreq(self, surface: str) -> None:
-        """Coarse->fine unwrap of the ladder just captured (self._ladder_dirs)."""
+        """Coarse->fine unwrap of the ladder just captured (self._ladder_dirs),
+        then roughness off the resulting height map."""
         self._status_left.setText(f"Reconstructing {surface} (multi-frequency)...")
         QApplication.processEvents()  # paint the status before the brief blocking run
         try:
@@ -371,9 +373,45 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:  # noqa: BLE001 - surface any failure to the console
             log.error(f"multi-frequency reconstruct failed: {exc}")
-        else:
-            self._display_reconstruction(surface, result)
+            self._status_left.setText("Ready")
+            return
+        self._display_reconstruction(surface, result)
+        self._measure_roughness(surface)  # roughness rides on the just-made height map
         self._status_left.setText("Ready")
+
+    def _measure_roughness(self, surface: str) -> None:
+        """Measure roughness off `surface`'s latest reconstruction (the one just
+        produced). Uses the finest ladder rung for the noise floor when known."""
+        self._status_left.setText(f"Measuring roughness of {surface}...")
+        QApplication.processEvents()
+        fine_dir = self._ladder_dirs[-1] if self._ladder_dirs else None
+        fine_n = self._ladder[-1] if self._ladder else None
+        try:
+            result = self.backend.measure_roughness(
+                surface, fine_capture_dir=fine_dir, fine_n_periods=fine_n
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the console
+            log.error(f"roughness measurement failed: {exc}")
+        else:
+            self._display_roughness(surface, result)
+
+    def _display_roughness(self, surface: str, result) -> None:
+        self.canvases["roughnessCanvas"].set_image(QImage(str(result.roughness_png)))
+        self._show_tab("roughnessCanvas")
+        self._log_roughness_metrics(surface, result.metrics)
+
+    def _log_roughness_metrics(self, surface: str, m: dict) -> None:
+        line = (f"roughness {surface}: Sa={m['Sa_um']:.2f} um, "
+                f"Sq={m['Sq_um']:.2f} um, Sz={m['Sz_um']:.2f} um")
+        if "Sq_true_um" in m:  # known specimen: scored against ground truth
+            line += f" (true Sq={m['Sq_true_um']:.2f} um, err {m['Sq_err_um']:+.2f} um)"
+        success(log, line)
+        if "roughness_snr" in m:  # noise floor + SNR reported
+            success(
+                log,
+                f"  noise floor {m['noise_floor_um']:.2f} um -> "
+                f"Sq(denoised)={m['Sq_denoised_um']:.2f} um, SNR={m['roughness_snr']:.1f}",
+            )
 
     def _log_metrics(self, surface: str, m: dict) -> None:
         valid_pct = 100.0 * m["valid_pixels"] / m["total_pixels"]
@@ -610,6 +648,7 @@ class MainWindow(QMainWindow):
             "run_multifreq": self._cmd_run_multifreq,
             "reconstruct": self._cmd_reconstruct,
             "reconstruct_multifreq": self._cmd_reconstruct_multifreq,
+            "measure_roughness": self._cmd_measure_roughness,
             "estimate_noise": self._cmd_estimate_noise,
         }
 
@@ -711,6 +750,21 @@ class MainWindow(QMainWindow):
         ladder = [float(n) for n in ladder] if ladder is not None else None
         result = self.backend.reconstruct_multifreq(surface, n_periods_ladder=ladder)
         self._display_reconstruction(surface, result)
+        return {"surface": surface, "metrics": result.metrics}
+
+    def _cmd_measure_roughness(self, args: dict):
+        """Measure roughness from `surface`'s latest reconstruction (run pipeline /
+        multi-freq first). `cutoff_mm` overrides the form/roughness separation
+        wavelength. Reads the finest ladder rung for the noise floor, if known."""
+        surface = str(args.get("surface") or self.sidebar.selected_surface())
+        self.sidebar.specimen.setCurrentText(surface)
+        cutoff = float(args.get("cutoff_mm", 10.0))
+        fine_dir = self._ladder_dirs[-1] if self._ladder_dirs else None
+        fine_n = self._ladder[-1] if self._ladder else None
+        result = self.backend.measure_roughness(
+            surface, cutoff_mm=cutoff, fine_capture_dir=fine_dir, fine_n_periods=fine_n
+        )
+        self._display_roughness(surface, result)
         return {"surface": surface, "metrics": result.metrics}
 
     def _cmd_estimate_noise(self, args: dict):

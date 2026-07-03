@@ -127,6 +127,17 @@ on top (the Chapter 3 multi-frequency method).
 - Maestro: `run_multifreq` (capture + reconstruct) and `reconstruct_multifreq`
   (re-unwrap an already-captured ladder without re-capturing).
 
+**Run Multi-Freq** ends with a **roughness** readout in the Roughness view: the
+form (waviness) is removed with an ISO 25178 Gaussian filter (cutoff 10 mm by
+default) and the residual is reported as areal **Sa / Sq / Sz**, with a noise
+floor and a noise-corrected Sq from the finest rung's height uncertainty (so a
+near-1 SNR flags a roughness that's mostly noise). For a known simulation
+specimen the parameters are scored against ground truth. Maestro:
+`measure_roughness` (`cutoff_mm` overrides the form/roughness cutoff) runs it off
+the latest reconstruction. What's resolvable is coarse on this large-field rig —
+lateral features ≳2.5 mm (the finest fringe period is ~1.1 mm) and Sa/Sq in the
+tens-of-µm band; see `report/math.tex` §"Resolution and roughness budget".
+
 ## What still needs the real rig
 
 The reconstruction currently trusts the **nominal** rig geometry

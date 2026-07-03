@@ -105,44 +105,38 @@ def denoise_sq(sq_meas_um: float, sigma_h_um: float) -> tuple[float, float]:
     return corrected, snr
 
 
-def run(
-    capture_dirs: list[Path],
+def measure(
+    height: np.ndarray,
+    valid: np.ndarray,
+    dx_mm: float,
+    dy_mm: float,
     out_dir: Path,
-    surface: str | None = "rough",
-    n_periods_ladder: list[float] | None = None,
+    surface: str | None = None,
     cutoff_mm: float = 10.0,
-    estimate_noise: bool = True,
+    fine_capture_dir: Path | None = None,
+    fine_n_periods: float | None = None,
+    lambda_eq_fine_mm: float | None = None,
     verbose: bool = True,
 ) -> dict:
-    """Measure roughness from a coarse->fine ladder of capture stacks: unwrap to a
-    height map (reconstruct.run_multifreq), remove the form, and report areal
-    Sa/Sq/Sz. For a known specimen the same filter is applied to the exact ground
-    truth and the recovered parameters are scored against it. With
-    `estimate_noise`, the finest rung's height uncertainty gives a noise floor,
-    a noise-corrected Sq, and a roughness SNR. Writes a roughness map + metrics."""
-    if n_periods_ladder is None:
-        n_periods_ladder = list(N_PERIODS_LADDER)
+    """Roughness from an already-reconstructed height map: remove the form and
+    report areal Sa/Sq/Sz. For a known specimen the identical filter is applied
+    to the exact ground truth and the result is scored against it. If
+    `fine_capture_dir` (the finest rung's stack) is given, its height
+    uncertainty sets a noise floor -> a noise-corrected Sq and a roughness SNR.
+    Writes a roughness map + metrics; returns the metrics dict."""
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    recon = reconstruct.run_multifreq(
-        capture_dirs, out_dir, n_periods_ladder=n_periods_ladder, surface=surface, verbose=False
-    )
-    height = np.load(out_dir / "height.npy")
-    valid = np.load(out_dir / "valid.npy")
-    dx_mm = recon["dx_mm"]
-    dy_mm = recon["dy_mm"]
-
     roughness, _form = gaussian_highpass(height, valid, dx_mm, dy_mm, cutoff_mm)
     params = areal_parameters(roughness, valid)
 
     metrics = {
         "surface": surface,
         "cutoff_mm": cutoff_mm,
-        "lambda_eq_fine_mm": recon["lambda_eq_mm"],
         "valid_pixels": int(valid.sum()),
         "total_pixels": int(valid.size),
         **params,
     }
+    if lambda_eq_fine_mm is not None:
+        metrics["lambda_eq_fine_mm"] = lambda_eq_fine_mm
 
     # Score against ground truth: run the identical filter on the exact surface,
     # so any gap is the reconstruction's, not the form model's.
@@ -156,10 +150,10 @@ def run(
         metrics["Sa_err_um"] = params["Sa_um"] - gt_params["Sa_um"]
         metrics["Sq_err_um"] = params["Sq_um"] - gt_params["Sq_um"]
 
-    if estimate_noise:
+    if fine_capture_dir is not None:
         nm = noise_estimate.run(
-            Path(capture_dirs[-1]), out_dir / "roughness_noise",
-            n_periods=n_periods_ladder[-1], surface=None, verbose=False,
+            Path(fine_capture_dir), out_dir / "roughness_noise",
+            n_periods=fine_n_periods, surface=None, verbose=False,
         )
         sigma_h_um = nm["height_uncertainty_um_median"]
         sq_corr, snr = denoise_sq(params["Sq_um"], sigma_h_um)
@@ -188,6 +182,38 @@ def run(
         for key, value in metrics.items():
             f.write(f"{key}: {value}\n")
     return metrics
+
+
+def run(
+    capture_dirs: list[Path],
+    out_dir: Path,
+    surface: str | None = "rough",
+    n_periods_ladder: list[float] | None = None,
+    cutoff_mm: float = 10.0,
+    estimate_noise: bool = True,
+    verbose: bool = True,
+) -> dict:
+    """Measure roughness from a coarse->fine ladder of capture stacks: unwrap to a
+    height map (reconstruct.run_multifreq), then measure() the form-removed
+    roughness. The full CLI path; the app measures straight off an existing
+    reconstruction via measure()."""
+    if n_periods_ladder is None:
+        n_periods_ladder = list(N_PERIODS_LADDER)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    recon = reconstruct.run_multifreq(
+        capture_dirs, out_dir, n_periods_ladder=n_periods_ladder, surface=surface, verbose=False
+    )
+    height = np.load(out_dir / "height.npy")
+    valid = np.load(out_dir / "valid.npy")
+    return measure(
+        height, valid, recon["dx_mm"], recon["dy_mm"], out_dir,
+        surface=surface, cutoff_mm=cutoff_mm,
+        fine_capture_dir=(Path(capture_dirs[-1]) if estimate_noise else None),
+        fine_n_periods=n_periods_ladder[-1],
+        lambda_eq_fine_mm=recon["lambda_eq_mm"],
+        verbose=verbose,
+    )
 
 
 def parse_args():

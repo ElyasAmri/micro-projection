@@ -117,6 +117,31 @@ def test_ladder_beats_a_single_frequency_for_roughness(sim, tmp_path):
     assert coarse_sq > full["Sq_um"] + 4.0
 
 
+# -- backend: measure off an existing reconstruction --------------------------
+
+def test_backend_measure_roughness_off_reconstruction(sim):
+    # Lay a ladder into the default rung dirs, reconstruct, then measure roughness
+    # straight off the written height.npy (no re-reconstruction).
+    noise = sim._load_sim_noise()
+    ladder = sim.capture_ladder()
+    dirs = sim.multifreq_capture_dirs("rough", len(ladder))
+    for d, n in zip(dirs, ladder):
+        noise.synth_noisy_stack(d, "rough", n_periods=n, n_steps=8,
+                                sigma=3.0 / 255.0, shape=(512, 640), seed=int(n))
+    sim.reconstruct_multifreq("rough")  # writes height.npy / valid.npy
+
+    result = sim.measure_roughness("rough", fine_capture_dir=dirs[-1], fine_n_periods=ladder[-1])
+    m = result.metrics
+    assert result.roughness_png.exists()
+    assert m["Sq_denoised_um"] == pytest.approx(m["Sq_true_um"], abs=1.5)
+    assert m["noise_floor_um"] > 0.5 and m["roughness_snr"] > 2.0
+
+
+def test_backend_measure_roughness_needs_a_reconstruction(sim):
+    with pytest.raises(FileNotFoundError):
+        sim.measure_roughness("rough")  # nothing reconstructed yet
+
+
 # -- helpers ------------------------------------------------------------------
 
 def _load(sim, name):

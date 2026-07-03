@@ -178,6 +178,8 @@ def test_mainwindow_multifreq_pipeline_end_to_end(qapp, tmp_path, monkeypatch):
         dirs = backend.multifreq_capture_dirs("live", len(win._ladder))
         for d in dirs:
             assert len(sorted(d.glob("frame_*.png"))) == 8
+        # the pipeline chains into roughness off the unwrapped height map
+        assert (tmp_path / "app" / "live" / "roughness_map.png").exists()
     finally:
         if hasattr(backend, "shutdown"):
             backend.shutdown()

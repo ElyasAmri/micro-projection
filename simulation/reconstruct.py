@@ -71,6 +71,16 @@ def pixel_to_world(shape: tuple[int, int], theta_deg: float) -> tuple[np.ndarray
     return world_x, world_y
 
 
+def pixel_pitch_mm(shape: tuple[int, int], theta_deg: float) -> tuple[float, float]:
+    """Per-axis world pixel pitch (dx, dy) in mm for the reconstruction grid.
+    The grid is uniform per axis (pixel_to_world), so a single dx/dy describes
+    it -- what roughness's areal filter needs to size its cutoff in mm."""
+    world_x, world_y = pixel_to_world(shape, theta_deg)
+    dx = float(abs(world_x[0, 1] - world_x[0, 0])) if shape[1] > 1 else 0.0
+    dy = float(abs(world_y[1, 0] - world_y[0, 0])) if shape[0] > 1 else 0.0
+    return dx, dy
+
+
 def carrier_phase(world_x: np.ndarray, n_periods: float) -> np.ndarray:
     """phi_carrier: what the N-step PSA would measure at each pixel for a
     flat (h=0) reference, computed analytically from known rig geometry
@@ -191,10 +201,8 @@ def _write_and_score(
     # single dx/dy describes it.
     np.save(out_dir / "height.npy", height)
     np.save(out_dir / "valid.npy", valid)
-    if world_x.shape[1] > 1:
-        metrics["dx_mm"] = float(abs(world_x[0, 1] - world_x[0, 0]))
-    if world_y.shape[0] > 1:
-        metrics["dy_mm"] = float(abs(world_y[1, 0] - world_y[0, 0]))
+    dx_mm, dy_mm = pixel_pitch_mm(height.shape, THETA_DEG)
+    metrics["dx_mm"], metrics["dy_mm"] = dx_mm, dy_mm
 
     if ground_truth_fn is not None:
         ground_truth = ground_truth_fn(world_x, world_y)

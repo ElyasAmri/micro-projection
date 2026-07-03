@@ -84,6 +84,7 @@ pixel) images far too large a field for a $\sim$55\,mm part and is not used.}
 \end{table}
 
 \section{Camera's fixed field of view}
+\label{sec:camera-fov}
 
 A telecentric lens holds magnification $M$ constant across its focus
 range, so the object-side field of view is simply the sensor size divided
@@ -382,9 +383,12 @@ $3$\,mm), the largest expected phase shift is
   \approx 1.38\text{\,rad} \approx 79.2^\circ,
 \end{equation}
 comfortably inside $(-\pi,\pi]$. A single fringe frequency therefore
-resolves this bump's phase unambiguously; multi-frequency temporal phase
-unwrapping is not needed for this validation and is left for a
-larger/steeper ground-truth surface.
+resolves this bump's phase unambiguously. Measuring \emph{roughness},
+however, demands a much smaller $\lambda_{eq}$ (finer fringes) for vertical
+resolution --- past the point where a single frequency wraps ---
+motivating the multi-frequency ladder of
+Section~\ref{sec:multifreq} and the roughness extraction of
+Section~\ref{sec:roughness}.
 
 \section{Reconstruction validation}
 \label{sec:validation}
@@ -529,5 +533,123 @@ $x<0$) outweighs its benefit when the larger, unmodeled bias is still
 present. The fix was reverted rather than shipped: Table~3's numbers are
 the unmodified pipeline. The local-magnification hypothesis above is
 where the next attempt should start.
+
+\section{Multi-frequency temporal phase unwrapping}
+\label{sec:multifreq}
+
+The single-frequency reconstruction of Section~\ref{sec:height-from-phase}
+recovers height only modulo one equivalent wavelength: from
+Eq.~\ref{eq:height-from-phase}, $h = (\psi/2\pi)\,\lambda_{eq}$ with
+$\psi\in(-\pi,\pi]$, so heights outside $\pm\lambda_{eq}/2$ alias. Vertical
+resolution and unambiguous range are therefore in direct tension: a small
+$\lambda_{eq}$ (dense fringes) is what resolves a fine, tens-of-micron
+roughness, but a large form ($h\gg\lambda_{eq}/2$) then wraps it beyond
+recovery --- exactly the dynamic-range limit Samara's Chapter~3 poses for
+roughness measurement.
+
+The resolution is fixed by projecting a \emph{ladder} of frequencies,
+coarse to fine, and unwrapping temporally. For rung $i$ with $n_{p,i}$
+periods, Eq.~\ref{eq:height-from-phase} gives $\lambda_{eq,i} =
+(W_{\text{proj}}/n_{p,i})/\tan\theta$, and the $N$-step PSA
+(Eq.~\ref{eq:nstep-psa}) yields a wrapped surface phase $\psi_i\in(-\pi,\pi]$.
+The coarsest rung is chosen unambiguous over the whole height range
+($|h|<\lambda_{eq,0}/2$) and taken at face value, $h_0 =
+(\psi_0/2\pi)\,\lambda_{eq,0}$. Each finer rung's integer fringe order is
+then pinned by the running (coarser) estimate:
+\begin{equation}
+  k_i = \operatorname{round}\!\left(\frac{2\pi\,h_{i-1}/\lambda_{eq,i} -
+  \psi_i}{2\pi}\right), \qquad
+  h_i = \left(\frac{\psi_i}{2\pi} + k_i\right)\lambda_{eq,i}.
+  \label{eq:unwrap}
+\end{equation}
+The finest rung's $h_i$ is the result: its resolution, with the ambiguity
+removed. Eq.~\ref{eq:unwrap} picks the correct order provided the guide is
+within $\pm\lambda_{eq,i}/2$ of the truth, i.e.\ the consecutive ratio
+$\lambda_{eq,i-1}/\lambda_{eq,i} = n_{p,i}/n_{p,i-1}$ is not so large that
+the coarser rung's own noise exceeds half a fine fringe. The implemented
+ladder (\texttt{geometry\_constants.N\_PERIODS\_LADDER}) is $n_p =
+8\to24\to80$ (ratios $3,\,3.\overline{3}$), giving $\lambda_{eq} =
+13.6\to4.5\to1.4$\,mm: a $\pm6.8$\,mm unambiguous range with a
+$1.4$\,mm final wavelength, so $\sim\!10\times$ the vertical resolution of
+the coarse rung alone. \texttt{reconstruct.unwrap\_multifreq} implements
+Eq.~\ref{eq:unwrap} for an arbitrary-length ladder; a higher-magnification
+lens later simply supplies a denser one. In a clean forward-model test a
+$3$\,mm bump --- which the $n_p=80$ rung alone reconstructs at $1.2$\,mm
+RMSE (badly aliased) --- unwraps to $0.4$\,\textmu m RMSE ($R^2=1.0$), and
+holds every fringe order under $3$\,DN of injected noise ($2.9$\,\textmu m).
+
+\section{Roughness: form removal and areal parameters}
+\label{sec:roughness}
+
+The unwrapped height map $h(x,y)$ carries a large, smooth \emph{form}
+(waviness) with a small, high-frequency \emph{roughness} on top. The two
+are separated by spatial wavelength with an ISO~16610-61 Gaussian
+regression filter: the form is $h$ convolved with a Gaussian of cutoff
+wavelength $\lambda_c$,
+\begin{equation}
+  \sigma_g = \lambda_c\sqrt{\frac{\ln 2}{2\pi^2}} \approx 0.1874\,\lambda_c,
+\end{equation}
+and the roughness is the residual $r = h - (h * g_{\sigma_g})$. The
+convolution is mask-aware (a normalized convolution over the valid
+region, $\text{form} = (h\,m)*g \,/\, m*g$ with $m$ the valid mask) so
+unlit pixels at the field boundary do not drag a false slope into the
+form. Everything coarser than $\lambda_c$ is form, everything finer
+roughness; $\lambda_c$ must sit between the two bands. On the residual,
+over the valid region and relative to its mean plane, the ISO~25178 areal
+parameters follow directly:
+\begin{equation}
+  S_a = \frac1A\!\int|r|\,dA, \quad
+  S_q = \sqrt{\frac1A\!\int r^2\,dA}, \quad
+  S_z = \max r + |\!\min r|,
+\end{equation}
+with $S_p,S_v,S_{sk},S_{ku}$ likewise (\texttt{roughness.py}).
+
+\emph{Noise floor.} Per-pixel height noise $\sigma_h$
+(Section~\ref{sec:height-from-phase}'s $\lambda_{eq}$ divided into the
+phase noise; estimated on the finest rung by \texttt{noise\_estimate.py})
+is broadband and passes the high-pass, so it adds in quadrature to the RMS
+roughness:
+\begin{equation}
+  S_q^{\text{meas}\,2} = S_q^{\text{true}\,2} + \sigma_h^2
+  \ \Rightarrow\
+  S_q^{\text{true}} = \sqrt{\max(S_q^{\text{meas}\,2} - \sigma_h^2,\,0)},
+  \label{eq:sq-denoise}
+\end{equation}
+and the roughness SNR is $S_q/\sigma_h$. Against a synthetic specimen
+(\texttt{surfaces.rough}: a $1.5$\,mm dome plus a band-limited sinusoid
+texture, true $S_q=19.9$\,\textmu m), the ladder recovers $S_a/S_q$ to
+$\pm0.1$\,\textmu m clean, and Eq.~\ref{eq:sq-denoise} returns the true
+$S_q$ ($19.9$\,\textmu m) at $0$, $2$ and $5$\,DN of noise (raw $S_q$
+inflating to $20.5$\,\textmu m at $5$\,DN before correction). The point of
+the ladder is stark here: the coarse rung alone, with its $\sim\!10\times$
+larger noise floor ($\approx19$\,\textmu m at $2$\,DN), reads
+$S_q\approx27.6$\,\textmu m --- the roughness is entirely below its floor,
+whereas the ladder brings the floor to $1.9$\,\textmu m (SNR $\approx10$).
+
+\section{Resolution and roughness budget}
+\label{sec:roughness-budget}
+
+What roughness is actually measurable is set by three limits, all of which
+this large-field rig makes coarse. Laterally, the camera samples the
+$68.2\times54.7$\,mm footprint at $\approx53$--$68$\,\textmu m/pixel
+(Section~\ref{sec:camera-fov}), and the finest rung's projected fringe
+period on the surface is $W_{\text{proj}}/n_p = 87.5/80 \approx
+1.1$\,mm; the fringe pitch, not the pixel, is the binding constraint, so
+roughness wavelengths below $\sim\!2$--$3\times$ that pitch
+($\gtrsim2.5$\,mm) are the reliably resolvable band. (The synthetic
+forward model of Section~\ref{sec:multifreq} idealizes away the optical
+low-pass of the finite fringe, so it will ``recover'' finer texture than
+hardware can --- the sim validates the reconstruction and separation
+maths, not the optical resolution.) Vertically, the floor is
+$\sigma_h\approx1.9$\,\textmu m at the $n_p=80$ rung (a few DN of camera
+noise, Eq.~\ref{eq:sq-denoise}), so this rig targets $S_a/S_q$ in the
+tens-of-microns-and-up band with lateral features $\gtrsim2.5$\,mm ---
+mid-spatial-frequency waviness, not the sub-micron finish of a
+high-magnification setup. Finer roughness needs a denser ladder
+\emph{and} a higher-magnification lens over a smaller field (in the
+spirit of the crop-mode fallback, Section~\ref{sec:crop}): the code
+(\texttt{N\_PERIODS\_LADDER}, and geometry in
+\texttt{geometry\_constants.py}) is written so that is a configuration
+change, not a rewrite.
 
 \end{document}

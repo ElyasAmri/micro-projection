@@ -100,6 +100,18 @@ class NoiseEstimateResult:
     noise_map_png: Path
 
 
+@dataclass
+class RoughnessResult:
+    """What a roughness measurement produced: the areal parameters (Sa/Sq/Sz,
+    and -- for a known specimen -- how they compare to ground truth, plus the
+    noise floor / SNR) and the form-removed roughness map."""
+
+    surface: str
+    metrics: dict
+    roughness_png: Path
+    height_png: Path
+
+
 class Backend(ABC):
     """The rig, as the UI sees it. Concrete backends fill in how specimens are
     listed, how a capture stack is produced, and (optionally) how a pattern is
@@ -114,6 +126,7 @@ class Backend(ABC):
         self._sim_reconstruct = None  # imported lazily on first reconstruct()
         self._sim_surfaces = None  # imported lazily on first surface lookup
         self._sim_noise = None  # imported lazily on first estimate_noise()
+        self._sim_roughness = None  # imported lazily on first measure_roughness()
 
     # -- projection ----------------------------------------------------------
 
@@ -228,6 +241,45 @@ class Backend(ABC):
             error_png=out_dir / "height_error.png",
         )
 
+    # -- roughness (shared: same maths for sim and hardware) -----------------
+
+    def measure_roughness(
+        self,
+        surface: str,
+        cutoff_mm: float = 10.0,
+        fine_capture_dir: Path | None = None,
+        fine_n_periods: float | None = None,
+    ) -> RoughnessResult:
+        """Measure roughness from `surface`'s latest reconstruction -- the
+        height.npy the reconstruct step wrote. A reconstruction (ideally
+        multi-frequency, for the vertical resolution roughness needs) must have
+        run first. Removes the form, reports areal Sa/Sq/Sz, scores against
+        ground truth for a known specimen, and -- if `fine_capture_dir` (the
+        finest rung's stack) is given -- sets a noise floor / SNR from it."""
+        rough = self._load_sim_roughness()
+        rec = self._load_sim_reconstruct()
+        out_dir = out_root() / "app" / surface
+        height_npy, valid_npy = out_dir / "height.npy", out_dir / "valid.npy"
+        if not height_npy.exists() or not valid_npy.exists():
+            raise FileNotFoundError(f"no reconstruction for '{surface}' at {out_dir} (reconstruct first)")
+        height = np.load(height_npy)
+        valid = np.load(valid_npy)
+        dx_mm, dy_mm = rec.pixel_pitch_mm(height.shape, rec.THETA_DEG)
+        lambda_fine = rec.equivalent_wavelength_mm(fine_n_periods, rec.THETA_DEG) if fine_n_periods else None
+        gt_surface = surface if self._has_ground_truth(surface) else None
+        metrics = rough.measure(
+            height, valid, dx_mm, dy_mm, out_dir,
+            surface=gt_surface, cutoff_mm=cutoff_mm,
+            fine_capture_dir=fine_capture_dir, fine_n_periods=fine_n_periods,
+            lambda_eq_fine_mm=lambda_fine, verbose=False,
+        )
+        return RoughnessResult(
+            surface=surface,
+            metrics=metrics,
+            roughness_png=out_dir / "roughness_map.png",
+            height_png=out_dir / "height_reconstructed.png",
+        )
+
     # -- noise estimation (shared) -------------------------------------------
 
     def estimate_noise(
@@ -330,3 +382,11 @@ class Backend(ABC):
 
             self._sim_noise = sim_noise
         return self._sim_noise
+
+    def _load_sim_roughness(self):
+        if self._sim_roughness is None:
+            self._ensure_sim_on_path()
+            import roughness as sim_roughness  # noqa: E402  (sibling sim package)
+
+            self._sim_roughness = sim_roughness
+        return self._sim_roughness
