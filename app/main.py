@@ -90,10 +90,10 @@ def main(argv: list[str] | None = None) -> int:
         window.set_maestro_status("listening")
         log.info("maestro connector attached (kind=qt); watching for a server")
 
-    window.show()
-
     if args.screenshot:
+        window.show()  # fixed 1280x820 for a deterministic offscreen grab
         return _render_screenshot(app, window, args.screenshot)
+    window.showMaximized()
     return app.exec()
 
 

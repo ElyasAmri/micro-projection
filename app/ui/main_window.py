@@ -10,7 +10,15 @@ from collections import deque
 
 from PySide6.QtCore import QByteArray, QSettings, Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDockWidget,
+    QLabel,
+    QMainWindow,
+    QTabBar,
+    QTabWidget,
+    QWidget,
+)
 
 from logbus import get_logger, success
 from version import __version__
@@ -26,9 +34,9 @@ log = get_logger("ui")
 # View label -> (canvas objectName, dock objectName), in display order. Tabbed
 # together by default; each is an independent dock, so they can be torn apart.
 VIEW_PANES = [
-    ("Projected Image", "projectedCanvas", "projectedDock"),
-    ("Captured Surface", "capturedCanvas", "capturedDock"),
-    ("Reconstructed Surface", "reconstructedCanvas", "reconstructedDock"),
+    ("Projected", "projectedCanvas", "projectedDock"),
+    ("Captured", "capturedCanvas", "capturedDock"),
+    ("Reconstructed", "reconstructedCanvas", "reconstructedDock"),
 ]
 
 # Bump when the pane set / dock objectNames change so a saved layout from an
@@ -140,6 +148,11 @@ class MainWindow(QMainWindow):
             self.tabifyDockWidget(first_dock, dock)  # merge into the top tab group
         first_dock.raise_()  # open on the first view
 
+        # The views are a tab group, so each dock's own title bar just repeats
+        # its tab label -- a duplicate header. Drop it; the tab is label enough.
+        for dock in self.view_docks.values():
+            dock.setTitleBarWidget(QWidget())
+
     # -- layout menu + persistence --------------------------------------------
 
     def _build_menus(self) -> None:
@@ -202,6 +215,14 @@ class MainWindow(QMainWindow):
         self.apply_dock_sizes()
         self._default_state = self.saveState()
         self._restore_layout()
+        self._show_tabs_in_full()
+
+    def _show_tabs_in_full(self) -> None:
+        """Stop the dock tab bars from eliding tab text -- Qt defaults to
+        ElideRight even with room to spare, which clipped the single-word labels
+        ("Projected" -> "Project...")."""
+        for tab_bar in self.findChildren(QTabBar):
+            tab_bar.setElideMode(Qt.ElideNone)
 
     def apply_dock_sizes(self) -> None:
         """Size the docks from the current window geometry: Control ~260 wide,

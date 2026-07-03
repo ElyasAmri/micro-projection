@@ -13,10 +13,7 @@ from datetime import datetime
 
 from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
     QPlainTextEdit,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -27,8 +24,20 @@ from ui.styles import LEVEL_COLORS, COLORS, monospace_font
 MAX_BLOCKS = 5000  # cap scrollback so a long session can't grow without bound
 
 
+class _LogView(QPlainTextEdit):
+    """The read-only log view. Its right-click menu is the standard one (Copy,
+    Select All) plus a Clear action -- there is no on-panel Clear button."""
+
+    def contextMenuEvent(self, event) -> None:
+        menu = self.createStandardContextMenu()
+        menu.addSeparator()
+        menu.addAction("Clear", self.clear)
+        menu.exec(event.globalPos())
+
+
 class Console(QWidget):
-    """A titled panel wrapping a read-only monospace log with a Clear action."""
+    """A panel wrapping a read-only monospace log; Clear lives in its right-click
+    menu (and the maestro `clear_console` command / Ctrl+L)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -38,20 +47,7 @@ class Console(QWidget):
         layout.setContentsMargins(10, 8, 10, 10)
         layout.setSpacing(6)
 
-        header = QHBoxLayout()
-        title = QLabel("Console")
-        title.setObjectName("consoleHeader")
-        header.addWidget(title)
-        header.addStretch(1)
-
-        self.clear_button = QPushButton("Clear")
-        self.clear_button.setObjectName("clearConsoleButton")
-        self.clear_button.setProperty("role", "chip")
-        self.clear_button.clicked.connect(self.clear)
-        header.addWidget(self.clear_button)
-        layout.addLayout(header)
-
-        self.view = QPlainTextEdit()
+        self.view = _LogView()
         self.view.setObjectName("console")
         self.view.setReadOnly(True)
         self.view.setFont(monospace_font(12))
