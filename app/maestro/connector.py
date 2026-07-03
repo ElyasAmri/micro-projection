@@ -21,7 +21,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, QUrl, Slot
 
 from maestro.actions import Command, dispatch
-from maestro.discovery import discover_one
+from maestro.discovery import Server, discover_one, forget
 
 try:
     from PySide6.QtWebSockets import QWebSocket
@@ -62,6 +62,13 @@ class MaestroConnector(QObject):
         self._commands: dict[str, Command] = dict(commands or {})
         self._token = ""
         self._registered = False
+        # The server this connect attempt targets, and whether the WS
+        # handshake completed for it -- lets the error/rejection handlers
+        # below tell "never even reached the port" (stale lockfile, prune it)
+        # from "was talking to it, then something happened" (ambiguous, leave
+        # the lockfile alone; it may still be a genuinely live server).
+        self._server: Server | None = None
+        self._connected = False
 
         self._socket = QWebSocket()
         self._socket.connected.connect(self._on_connected)
@@ -95,6 +102,8 @@ class MaestroConnector(QObject):
             # No maestro running yet; check again shortly.
             self._reconnect.start()
             return
+        self._server = server
+        self._connected = False
         self._token = server.token
         self._registered = False
         logger.debug("maestro: connecting to ws://127.0.0.1:%d/ext", server.port)
@@ -102,6 +111,7 @@ class MaestroConnector(QObject):
 
     @Slot()
     def _on_connected(self) -> None:
+        self._connected = True
         self._send(
             {
                 "t": "register",
@@ -121,6 +131,14 @@ class MaestroConnector(QObject):
     def _on_socket_error(self, *_args: Any) -> None:
         # A failed open emits errorOccurred (and may not emit disconnected), so
         # ensure a retry is scheduled. The single-shot timer coalesces repeats.
+        if self._server is not None and not self._connected:
+            # Never even reached the WS handshake: the port is dead (crashed
+            # owner) or now belongs to something else entirely. Prune the
+            # lockfile so the next attempt, 2s from now, doesn't retry the
+            # same dead candidate forever -- discover_one() only ever offers
+            # the single best-ranked server, so without this an unreachable
+            # top-ranked lockfile would wedge the connector permanently.
+            forget(self._server.port)
         if not self._reconnect.isActive():
             self._reconnect.start()
 
@@ -142,7 +160,12 @@ class MaestroConnector(QObject):
             logger.info("maestro: registered as kind %r", self._kind)
         elif kind == "error":
             logger.warning("maestro: register rejected: %s", frame.get("message"))
-            # The harness closes after an error; _on_disconnected reschedules.
+            # Registration is rejected only for a token mismatch, so the
+            # lockfile is definitely stale or now describes an unrelated
+            # server -- prune it. The harness closes after an error;
+            # _on_disconnected reschedules.
+            if self._server is not None:
+                forget(self._server.port)
 
     def _handle_request(self, frame: dict) -> None:
         req_id = frame.get("req_id")
