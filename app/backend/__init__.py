@@ -8,12 +8,13 @@ under `hardware/` never loads in simulation mode.
 """
 from __future__ import annotations
 
-from backend.base import Backend, ReconstructionResult
+from backend.base import Backend, NoiseEstimateResult, ReconstructionResult
 from backend.factory import create_backend
 from backend.simulation import SimulationBackend
 
 __all__ = [
     "Backend",
+    "NoiseEstimateResult",
     "ReconstructionResult",
     "SimulationBackend",
     "create_backend",

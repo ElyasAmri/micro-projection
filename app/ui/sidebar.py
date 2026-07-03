@@ -9,6 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -23,6 +24,7 @@ class Sidebar(QWidget):
     project_requested = Signal()   # show the projected fringe pattern
     capture_requested = Signal()   # single capture of the fringe on the surface
     pipeline_requested = Signal()  # full project -> capture -> reconstruct
+    noise_requested = Signal()     # estimate imaging noise + its error margin
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -70,7 +72,38 @@ class Sidebar(QWidget):
         self.pipeline_button.clicked.connect(lambda: self.pipeline_requested.emit())
         layout.addWidget(self.pipeline_button)
 
+        # -- Noise: estimate imaging noise and the error margin it imposes ------
+        noise_header = QLabel("Noise")
+        noise_header.setProperty("role", "sectionHeader")
+        layout.addWidget(noise_header)
+
+        noise_label = QLabel("Injected noise (DN)")
+        noise_label.setObjectName("fieldLabel")
+        layout.addWidget(noise_label)
+
+        self.noise_level = QDoubleSpinBox()
+        self.noise_level.setObjectName("noiseLevel")
+        self.noise_level.setRange(0.0, 30.0)
+        self.noise_level.setSingleStep(0.5)
+        self.noise_level.setDecimals(1)
+        self.noise_level.setValue(5.0)
+        self.noise_level.setToolTip(
+            "Known noise to inject into a simulated specimen, to check the "
+            "estimator. Ignored for a real capture (its noise is measured)."
+        )
+        layout.addWidget(self.noise_level)
+
+        self.noise_button = QPushButton("Estimate Noise")
+        self.noise_button.setObjectName("noiseButton")
+        self.noise_button.setEnabled(bool(surfaces))
+        self.noise_button.clicked.connect(lambda: self.noise_requested.emit())
+        layout.addWidget(self.noise_button)
+
         layout.addStretch(1)
 
     def selected_surface(self) -> str:
         return self.specimen.currentText()
+
+    def injected_noise_dn(self) -> float:
+        """The noise level (in 8-bit DN) to inject in a simulated run."""
+        return self.noise_level.value()

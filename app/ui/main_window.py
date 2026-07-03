@@ -37,12 +37,14 @@ VIEW_PANES = [
     ("Projected", "projectedCanvas", "projectedDock"),
     ("Captured", "capturedCanvas", "capturedDock"),
     ("Reconstructed", "reconstructedCanvas", "reconstructedDock"),
+    ("Noise", "noiseCanvas", "noiseDock"),
 ]
 
 # Bump when the pane set / dock objectNames change (or the default sizing does)
 # so a saved layout from an older shape is ignored instead of restored into a
 # mismatched tree. v2: control width is sized by naming both sides of the split.
-LAYOUT_VERSION = 2
+# v3: added the Noise view.
+LAYOUT_VERSION = 3
 
 
 class _DockTitleTab(QWidget):
@@ -154,6 +156,7 @@ class MainWindow(QMainWindow):
         self.sidebar.project_requested.connect(self._on_project)
         self.sidebar.capture_requested.connect(self._on_capture)
         self.sidebar.pipeline_requested.connect(self._on_pipeline)
+        self.sidebar.noise_requested.connect(self._on_estimate_noise)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -361,6 +364,46 @@ class MainWindow(QMainWindow):
         else:  # real capture: no ground truth to score against
             success(log, f"reconstructed {surface}: height map, valid={valid_pct:.1f}%")
 
+    # -- noise estimation (inline, ~0.4s) -------------------------------------
+
+    def _on_estimate_noise(self) -> None:
+        self._estimate_noise(self.sidebar.selected_surface())
+
+    def _estimate_noise(self, surface: str) -> None:
+        """Estimate imaging noise for `surface` and its reconstruction error
+        margin. In simulation the injected level (sidebar) is recovered and
+        checked; for a real capture the noise already in the frames is measured."""
+        injected = self.sidebar.injected_noise_dn()
+        self._status_left.setText(f"Estimating noise for {surface}...")
+        QApplication.processEvents()  # paint the status before the brief blocking run
+        try:
+            result = self.backend.estimate_noise(surface, injected_sigma_dn=injected)
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the console
+            log.error(f"noise estimation failed: {exc}")
+        else:
+            self._display_noise(surface, result)
+        self._status_left.setText("Ready")
+
+    def _display_noise(self, surface: str, result) -> None:
+        self.canvases["noiseCanvas"].set_image(QImage(str(result.uncertainty_png)))
+        self._show_tab("noiseCanvas")
+        self._log_noise_metrics(surface, result.metrics)
+
+    def _log_noise_metrics(self, surface: str, m: dict) -> None:
+        parts = [f"noise {surface}: sigma={m['sigma_est_dn']:.2f} DN (spatial {m['sigma_spatial_dn']:.2f})"]
+        if "injected_sigma_dn" in m:  # controlled run: scored against the injected level
+            parts.append(f"injected {m['injected_sigma_dn']:.2f} DN, err {100 * m['sigma_rel_error']:+.1f}%")
+        parts.append(
+            f"height margin mean {m['height_uncertainty_um_mean']:.0f} um / "
+            f"p95 {m['height_uncertainty_um_p95']:.0f} um"
+        )
+        if m.get("actual_rmse_mm") is not None:  # predicted vs actual reconstruction error
+            parts.append(
+                f"recon RMSE {m['actual_rmse_mm'] * 1000:.0f} um "
+                f"(predicted {m['predicted_rmse_mm'] * 1000:.0f} um)"
+            )
+        success(log, "; ".join(parts))
+
     # -- capture (async Blender subprocess) -----------------------------------
 
     def _on_capture(self) -> None:
@@ -461,6 +504,7 @@ class MainWindow(QMainWindow):
             "capture": self._cmd_capture,
             "pipeline": self._cmd_pipeline,
             "reconstruct": self._cmd_reconstruct,
+            "estimate_noise": self._cmd_estimate_noise,
         }
 
     def _cmd_log(self, args: dict):
@@ -538,4 +582,15 @@ class MainWindow(QMainWindow):
         self.sidebar.specimen.setCurrentText(surface)
         result = self.backend.reconstruct(surface)
         self._display_reconstruction(surface, result)
+        return {"surface": surface, "metrics": result.metrics}
+
+    def _cmd_estimate_noise(self, args: dict):
+        """Estimate noise + error margin. `injected_sigma_dn` overrides the
+        sidebar's injected level (simulation only; ignored for a real capture)."""
+        surface = str(args.get("surface") or self.sidebar.selected_surface())
+        injected = args.get("injected_sigma_dn", self.sidebar.injected_noise_dn())
+        injected = float(injected) if injected is not None else None
+        self.sidebar.specimen.setCurrentText(surface)
+        result = self.backend.estimate_noise(surface, injected_sigma_dn=injected)
+        self._display_noise(surface, result)
         return {"surface": surface, "metrics": result.metrics}

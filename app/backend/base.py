@@ -87,6 +87,19 @@ class ReconstructionResult:
     error_png: Path
 
 
+@dataclass
+class NoiseEstimateResult:
+    """What a noise estimation produced: the metrics (estimated sigma, and -- in
+    a controlled run -- how it compares to the injected level, plus the height
+    error margin the reconstruction inherits) and the images written (a
+    per-pixel height-uncertainty map and a per-pixel noise map)."""
+
+    surface: str
+    metrics: dict
+    uncertainty_png: Path
+    noise_map_png: Path
+
+
 class Backend(ABC):
     """The rig, as the UI sees it. Concrete backends fill in how specimens are
     listed, how a capture stack is produced, and (optionally) how a pattern is
@@ -100,6 +113,7 @@ class Backend(ABC):
         self.n_periods = n_periods
         self._sim_reconstruct = None  # imported lazily on first reconstruct()
         self._sim_surfaces = None  # imported lazily on first surface lookup
+        self._sim_noise = None  # imported lazily on first estimate_noise()
 
     # -- projection ----------------------------------------------------------
 
@@ -161,6 +175,58 @@ class Backend(ABC):
             error_png=out_dir / "height_error.png",
         )
 
+    # -- noise estimation (shared) -------------------------------------------
+
+    def estimate_noise(
+        self,
+        surface: str,
+        injected_sigma_dn: float | None = None,
+        n_periods: float | None = None,
+    ) -> NoiseEstimateResult:
+        """Estimate imaging noise and turn it into a reconstruction error margin.
+
+        For a known specimen with `injected_sigma_dn` set, this is the controlled
+        experiment: synthesize a stack with that *known* noise, estimate it back,
+        and (via a reconstruction of the same stack) check the predicted error
+        margin against the actual reconstruction error. Otherwise it estimates
+        the noise in the specimen's existing capture stack (a real target has no
+        injected level and no ground-truth reconstruction to compare against)."""
+        n = self.n_periods if n_periods is None else n_periods
+        sim_noise = self._load_sim_noise()
+        known = self._has_ground_truth(surface)
+        out_dir = out_root() / "app" / surface
+
+        injected = None
+        if injected_sigma_dn and known:  # controlled experiment: known noise
+            stack_dir = out_dir / "noise_stack"
+            sim_noise.synth_noisy_stack(
+                stack_dir, surface, n_periods=n, n_steps=8, sigma=injected_sigma_dn / 255.0
+            )
+            injected = injected_sigma_dn / 255.0
+        else:  # estimate the noise already in a captured stack
+            stack_dir = self.capture_dir(surface)
+            if not stack_dir.is_dir() or not any(stack_dir.glob("frame_*.png")):
+                raise FileNotFoundError(f"no capture stack for '{surface}' at {stack_dir}")
+
+        metrics = sim_noise.run(
+            stack_dir, out_dir, n_periods=n,
+            surface=(surface if known else None), injected_sigma=injected, verbose=False,
+        )
+        # Cross-check: the actual reconstruction error on this stack, so the
+        # predicted noise margin can be held against a real number.
+        if known:
+            rec = self._load_sim_reconstruct().run(
+                stack_dir, out_dir / "noise_recon", n_periods=n, surface=surface, verbose=False
+            )
+            metrics["actual_rmse_mm"] = rec.get("rmse")
+
+        return NoiseEstimateResult(
+            surface=surface,
+            metrics=metrics,
+            uncertainty_png=out_dir / "noise_uncertainty.png",
+            noise_map_png=out_dir / "noise_map.png",
+        )
+
     def _has_ground_truth(self, surface: str) -> bool:
         try:
             return surface in self._load_sim_surfaces().SURFACES
@@ -191,3 +257,11 @@ class Backend(ABC):
 
             self._sim_surfaces = sim_surfaces
         return self._sim_surfaces
+
+    def _load_sim_noise(self):
+        if self._sim_noise is None:
+            self._ensure_sim_on_path()
+            import noise_estimate as sim_noise  # noqa: E402  (sibling sim package)
+
+            self._sim_noise = sim_noise
+        return self._sim_noise
