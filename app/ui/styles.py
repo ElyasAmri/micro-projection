@@ -120,7 +120,8 @@ def build_stylesheet() -> str:
     QTabBar::tab {{
         background: {c['surface']};
         color: {c['text_dim']};
-        padding: 8px 18px;
+        min-width: 92px;
+        padding: 8px 20px;
         border: 1px solid {c['border']};
         border-bottom: none;
         border-top-left-radius: 5px;
@@ -134,6 +135,22 @@ def build_stylesheet() -> str:
     }}
     QTabBar::tab:hover:!selected {{
         color: {c['text']};
+    }}
+
+    /* -- Standalone dock header: a single Unity-style tab ---------------- */
+    QWidget#dockTabBar {{
+        background: {c['window']};
+    }}
+    QLabel#dockTab {{
+        background: {c['viewport']};
+        color: {c['accent']};
+        min-width: 92px;
+        padding: 8px 20px;
+        border: 1px solid {c['border']};
+        border-bottom: none;
+        border-top-left-radius: 5px;
+        border-top-right-radius: 5px;
+        font-size: 12px;
     }}
 
     /* -- Buttons -------------------------------------------------------- */

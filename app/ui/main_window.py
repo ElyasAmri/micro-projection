@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from collections import deque
 
-from PySide6.QtCore import QByteArray, QSettings, Qt
+from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QTabBar,
@@ -42,6 +43,26 @@ VIEW_PANES = [
 # Bump when the pane set / dock objectNames change so a saved layout from an
 # older shape is ignored instead of restored into a mismatched tree.
 LAYOUT_VERSION = 1
+
+
+class _DockTitleTab(QWidget):
+    """The title bar for a dock that stands alone: a single tab chip, so a lone
+    pane reads as a tab (Unity-style) instead of a full-width title bar. It is
+    transparent to the mouse, so dragging anywhere on it moves / re-docks the
+    pane just like a native title bar (and double-click still floats it)."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.setObjectName("dockTabBar")
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        chip = QLabel(title)
+        chip.setObjectName("dockTab")
+        chip.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        layout.addWidget(chip, 0, Qt.AlignLeft | Qt.AlignBottom)
+        layout.addStretch(1)
 
 
 class MainWindow(QMainWindow):
@@ -108,6 +129,10 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFloatable
             | QDockWidget.DockWidgetClosable
         )
+        # Moving/re-tabbing/floating a dock rebuilds its tab bar and changes
+        # whether it stands alone; refresh tab + title-bar chrome on any change.
+        dock.dockLocationChanged.connect(self._refresh_dock_chrome)
+        dock.topLevelChanged.connect(self._refresh_dock_chrome)
         if area is not None:
             self.addDockWidget(area, dock)
         self.docks[name] = dock
@@ -147,11 +172,9 @@ class MainWindow(QMainWindow):
             self.view_docks[name] = dock
             self.tabifyDockWidget(first_dock, dock)  # merge into the top tab group
         first_dock.raise_()  # open on the first view
-
-        # The views are a tab group, so each dock's own title bar just repeats
-        # its tab label -- a duplicate header. Drop it; the tab is label enough.
-        for dock in self.view_docks.values():
-            dock.setTitleBarWidget(QWidget())
+        # Title bars are managed by _sync_title_bars: a tab-merged dock gets an
+        # empty one (the shared tab bar labels it); a standalone dock gets a
+        # single-tab header -- so every pane always reads as a tab.
 
     # -- layout menu + persistence --------------------------------------------
 
@@ -168,6 +191,7 @@ class MainWindow(QMainWindow):
         if self._default_state is not None:
             self.restoreState(self._default_state)
         self.apply_dock_sizes()
+        self._refresh_dock_chrome()
 
     def _restore_layout(self) -> None:
         """Reapply the last session's layout, unless the schema version changed."""
@@ -215,14 +239,44 @@ class MainWindow(QMainWindow):
         self.apply_dock_sizes()
         self._default_state = self.saveState()
         self._restore_layout()
+        self._apply_dock_chrome()
+
+    def _apply_dock_chrome(self) -> None:
+        """Keep tab bars and title bars consistent after any rearrangement."""
         self._show_tabs_in_full()
+        self._sync_title_bars()
+
+    def _refresh_dock_chrome(self, *_) -> None:
+        """Deferred so the just-rebuilt tab/title bars exist before we restyle."""
+        QTimer.singleShot(0, self._apply_dock_chrome)
 
     def _show_tabs_in_full(self) -> None:
         """Stop the dock tab bars from eliding tab text -- Qt defaults to
         ElideRight even with room to spare, which clipped the single-word labels
-        ("Projected" -> "Project...")."""
+        ("Projected" -> "Project..."). Also give the bar its natural width and
+        drop the scroll buttons so every tab renders full."""
         for tab_bar in self.findChildren(QTabBar):
             tab_bar.setElideMode(Qt.ElideNone)
+            tab_bar.setExpanding(False)
+            tab_bar.setUsesScrollButtons(False)
+
+    def _sync_title_bars(self) -> None:
+        """Every pane reads as a tab (Unity-style). Qt only draws a real tab bar
+        for a tab-merged group, so a dock that stands alone (or floats) gets a
+        one-tab header (`_DockTitleTab`) in place of a full-width title bar, while
+        a tab-merged dock gets an empty title bar so only the shared tab bar
+        shows. The single-tab header doubles as the drag handle, so a torn-out
+        pane can always be moved or re-docked."""
+        for dock in self.docks.values():
+            merged = bool(self.tabifiedDockWidgets(dock)) and not dock.isFloating()
+            want = "empty" if merged else "tab"
+            if getattr(dock, "_tb_kind", None) == want:
+                continue  # already in the right state; don't churn the widget
+            dock._tb_kind = want
+            if want == "empty":
+                dock.setTitleBarWidget(QWidget())
+            else:
+                dock.setTitleBarWidget(_DockTitleTab(dock.windowTitle()))
 
     def apply_dock_sizes(self) -> None:
         """Size the docks from the current window geometry: Control ~260 wide,
