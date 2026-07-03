@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
+from PySide6.QtCore import QByteArray, QSettings, Qt
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabWidget, QWidget
 
@@ -87,13 +87,14 @@ class MainWindow(QMainWindow):
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
 
-        self.apply_dock_sizes()
-        self._default_state = self.saveState()  # what Reset Layout restores
-        self._restore_layout()
+        # Dock sizing needs real window geometry, which only exists once shown,
+        # so it happens in showEvent (below), not here.
+        self._sized = False
+        self._default_state = None
 
     # -- construction helpers -------------------------------------------------
 
-    def _dock(self, title: str, name: str, widget: QWidget, area) -> QDockWidget:
+    def _dock(self, title: str, name: str, widget: QWidget, area=None) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(name)
         dock.setWidget(widget)
@@ -102,41 +103,45 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFloatable
             | QDockWidget.DockWidgetClosable
         )
-        self.addDockWidget(area, dock)
+        if area is not None:
+            self.addDockWidget(area, dock)
         self.docks[name] = dock
         return dock
 
     def _build_panes(self) -> None:
-        """Control on the left, the three views tab-merged to its right, Console
-        across the bottom:  [ Control | views ] / [ Console ]."""
+        """Control as a full-height left rail, the three views tab-merged in the
+        main area, Console below the views:  [ Control | views / Console ].
+
+        The console shares a vertical splitter with the views (rather than
+        spanning the full bottom), so its height is actually adjustable -- a
+        full-width bottom dock over a central-less layout can't be sized down."""
         self.sidebar = Sidebar(self.backend.available_surfaces(), self)
         self.sidebar.project_requested.connect(self._on_project)
         self.sidebar.capture_requested.connect(self._on_capture)
         self.sidebar.pipeline_requested.connect(self._on_pipeline)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
-        previous = None
-        for label, name, dock_name in VIEW_PANES:
-            canvas = Canvas(name)
-            self.canvases[name] = canvas
-            dock = self._dock(label, dock_name, canvas, Qt.RightDockWidgetArea)
-            self.view_docks[name] = dock
-            if previous is not None:
-                self.tabifyDockWidget(previous, dock)  # merge into one tab group
-            previous = dock
-        self.view_docks[VIEW_PANES[0][1]].raise_()     # open on the first view
+        # Build the first view alone in the right area, split the console below it
+        # (a clean vertical splitter while the view is un-tabbed), THEN tab the
+        # remaining views onto the first -- so they share the top sub-area and the
+        # console keeps the bottom. Splitting after tabbing merges into the tabs.
+        first_label, first_name, first_dockname = VIEW_PANES[0]
+        first_canvas = Canvas(first_name)
+        self.canvases[first_name] = first_canvas
+        first_dock = self._dock(first_label, first_dockname, first_canvas, Qt.RightDockWidgetArea)
+        self.view_docks[first_name] = first_dock
 
         self.console = Console(self)
-        self._dock("Console", "consoleDock", self.console, Qt.BottomDockWidgetArea)
-        # Console owns the full width of the bottom edge.
-        self.setCorner(Qt.BottomLeftCorner, Qt.BottomDockWidgetArea)
-        self.setCorner(Qt.BottomRightCorner, Qt.BottomDockWidgetArea)
-        # Cap the console's initial height so it doesn't swallow the window, then
-        # relax it once the event loop runs so the user can still resize it.
-        # (Offscreen renders have no live loop, so the cap stays for screenshots.)
-        self.console.setMaximumHeight(220)
-        if QApplication.platformName() != "offscreen":
-            QTimer.singleShot(0, lambda: self.console.setMaximumHeight(16777215))
+        console = self._dock("Console", "consoleDock", self.console)
+        self.splitDockWidget(first_dock, console, Qt.Vertical)
+
+        for label, name, dock_name in VIEW_PANES[1:]:
+            canvas = Canvas(name)
+            self.canvases[name] = canvas
+            dock = self._dock(label, dock_name, canvas)
+            self.view_docks[name] = dock
+            self.tabifyDockWidget(first_dock, dock)  # merge into the top tab group
+        first_dock.raise_()  # open on the first view
 
     # -- layout menu + persistence --------------------------------------------
 
@@ -149,8 +154,9 @@ class MainWindow(QMainWindow):
         layout.addAction("Reset Layout", self.reset_layout)
 
     def reset_layout(self) -> None:
-        """Restore the default pane arrangement captured at startup."""
-        self.restoreState(self._default_state)
+        """Restore the default pane arrangement captured at first show."""
+        if self._default_state is not None:
+            self.restoreState(self._default_state)
         self.apply_dock_sizes()
 
     def _restore_layout(self) -> None:
@@ -189,18 +195,25 @@ class MainWindow(QMainWindow):
         version.setObjectName("versionLabel")
         bar.addPermanentWidget(version)
 
+    def showEvent(self, event) -> None:
+        """First real geometry arrives here; size the docks, snapshot the default
+        layout for Reset, then reapply any persisted layout."""
+        super().showEvent(event)
+        if self._sized:
+            return
+        self._sized = True
+        self.apply_dock_sizes()
+        self._default_state = self.saveState()
+        self._restore_layout()
+
     def apply_dock_sizes(self) -> None:
-        """Give the docks sensible starting extents (must run after they exist,
-        and is cheap to re-run e.g. right before an offscreen screenshot)."""
+        """Size the docks from the current window geometry: Control ~260 wide,
+        Console ~a quarter of the height. Runs once the window is shown (real
+        geometry), so resizeDocks actually takes -- doing it pre-show is why the
+        console swallowed the window before."""
         self.resizeDocks([self.docks["controlDock"]], [260], Qt.Horizontal)
-        # Split the vertical space between a view pane and the console so the
-        # console doesn't swallow the window (native docking distributes leftover
-        # space unpredictably around the zero-size central widget otherwise).
-        self.resizeDocks(
-            [self.docks["projectedDock"], self.docks["consoleDock"]],
-            [560, 200],
-            Qt.Vertical,
-        )
+        console_h = max(160, self.height() // 4)
+        self.resizeDocks([self.docks["consoleDock"]], [console_h], Qt.Vertical)
 
     # -- behavior -------------------------------------------------------------
 
