@@ -142,10 +142,27 @@ roughness *map* is laterally mis-registered ~0.5 mm by the nominal geometry
 **calibration**, not fringe density or noise (a denser rung was tried and did
 nothing). See `report/math.tex` §"Roughness under a real camera".
 
-## What still needs the real rig
+## Geometry calibration
 
-The reconstruction currently trusts the **nominal** rig geometry
-(`simulation/geometry_constants.py`: camera tilt, projector footprint). On
-hardware those should come from a calibration, not constants — until then a
-real height map is only as accurate as the nominal geometry. Capturing and
-reconstruction work today; a pose/geometry calibration step is the next piece.
+The reconstruction otherwise trusts the **nominal** geometry
+(`simulation/geometry_constants.py`: a constant λ_eq, the analytic carrier).
+`simulation/calibration.py` replaces that with a **measured** phase-to-height
+map: image a flat plane at several known heights z (a z-stage; in sim,
+`capture_pipeline --z-offset`) and fit, per pixel, `psi = c0 + k·z`, then
+reconstruct via `z = (psi − c0)/k`. `k(p) = dpsi/dz` is a per-pixel λ_eq that
+absorbs the projector's perspective, which a single nominal λ_eq misses.
+
+```sh
+# render z-planes, then:
+python simulation/calibration.py --plane-dirs out/cal/z-0.5 out/cal/z0 out/cal/z0.5 \
+    --z-values -0.5 0.0 0.5 --n-periods 80 --out out/cal/calib.npz
+```
+
+Validated against a Blender camera render (known true geometry): the fit
+recovers the mean sensitivity exactly and its real 2.3× across-field variation,
+cutting the `rough` height RMSE from **134 µm → 24 µm** (R² 0.85 → 0.995). This
+is the **vertical** half — it fixes the height scale / off-center bias but not
+the ~0.5 mm **lateral** mis-registration (that needs a pixel→world calibration
+against a known target, the next step). See `report/math.tex` §"Geometry
+calibration". On real hardware this replaces the nominal constants; capturing and
+reconstruction work today, calibration makes the height map accurate.

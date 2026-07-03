@@ -684,4 +684,51 @@ the height reconstruction already wants, now quantified for roughness:
 without it the texture lands $\sim\!0.5$\,mm off; with the offset removed,
 $r=0.92$.
 
+\section{Geometry calibration}
+\label{sec:calibration}
+
+Everything above trusts the \emph{nominal} geometry
+(\texttt{geometry\_constants.py}): a constant $\lambda_{eq}$ and the analytic
+carrier of Section~\ref{sec:height-from-phase}. Calibration replaces that with a
+\emph{measured} phase-to-height map. Image a flat plane at several known heights
+$z$ (a z-stage; in simulation, \texttt{capture\_pipeline}'s \texttt{--z-offset})
+and, at every pixel $p$, fit the surface phase $\psi$ (relative to the analytic
+carrier) linearly in $z$:
+\begin{equation}
+  \psi(p,z) = c_0(p) + k(p)\,z, \qquad
+  z(p) = \frac{\psi(p) - c_0(p)}{k(p)} ,
+  \label{eq:calib}
+\end{equation}
+where $c_0(p)$ is the residual carrier error and $k(p)=\partial\psi/\partial z =
+2\pi/\lambda_{eq}(p)$ is the per-pixel sensitivity, absorbing the perspective's
+spatial variation. The per-plane phase is wrapped, and at high-$k$ pixels a
+$\pm0.5$\,mm sweep exceeds one fringe, so it is unwrapped across $z$ by snapping
+each plane to the nearest fringe of the expected $k_{\text{nom}}z$ (a plain
+\texttt{np.unwrap} over a few planes mis-jumps by $2\pi$ on the high-$k$ tail ---
+it corrupted $\sim\!5\%$ of pixels and \emph{tripled} the error before this fix).
+This is the standard fringe-projection height calibration (cf.\ the Chapter~4
+paper's $\lambda_{eq}$ calibration against a VLSI step, done here per pixel);
+\texttt{simulation/calibration.py} implements it, and reconstruction re-maps the
+ladder-unwrapped fine phase through Eq.~\ref{eq:calib}.
+
+Validated against Blender, where the true geometry is known: the fit recovers the
+mean sensitivity exactly ($k=4.597$ vs nominal $4.604$\,rad/mm) and, tellingly,
+its \emph{variation} --- $k$ ranges $2.8$--$6.4$\,rad/mm across the field, a
+$2.3\times$ spread matching the perspective prediction $\lambda_{eq}(x)=
+p_{\text{eff}}/(\tan\theta+x/D)$ of Section~\ref{sec:off-center-followup}
+($1.16/0.44\approx2.6\times$). Feeding the measured map into the \texttt{rough}
+reconstruction cuts the height RMSE from $134$ to $\mathbf{24}$\,\textmu m
+($R^2\,0.85\to0.995$): the constant-$\lambda_{eq}$ off-center bias is what the
+calibration removes. The carrier residual $c_0$ is small ($\approx9$\,\textmu m
+RMS as a height) --- the analytic carrier is good; it is the \emph{scale} that
+varies.
+
+This is the \emph{vertical} half. It does \emph{not} fix the lateral
+mis-registration of Section~\ref{sec:roughness-camera}: the roughness-map
+correlation moves only $0.73\to0.74$ (the $\sim\!0.5$\,mm offset persists),
+because Eq.~\ref{eq:calib} corrects height per pixel but does not re-map pixels to
+world $(x,y)$. Closing that needs a lateral calibration --- a known target
+(checkerboard/dots) fixing pixel$\,\to\,(x,y)$ --- which the same z-plane rig can
+carry, and is the next step.
+
 \end{document}

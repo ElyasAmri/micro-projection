@@ -109,6 +109,7 @@ def synth_noisy_stack(
     gain_swing: float = 0.0,
     shape: tuple[int, int] = (512, 640),
     seed: int = 0,
+    z_offset_mm: float = 0.0,
 ) -> dict:
     """Write an N-step phase-shift stack of `surface` with a KNOWN additive
     Gaussian noise `sigma` (normalized) and, optionally, a KNOWN per-frame
@@ -123,7 +124,7 @@ def synth_noisy_stack(
 
     world_x, world_y = reconstruct.pixel_to_world(shape, THETA_DEG)
     lambda_eq = reconstruct.equivalent_wavelength_mm(n_periods, THETA_DEG)
-    height = surfaces.SURFACES[surface](world_x, world_y)
+    height = surfaces.SURFACES[surface](world_x, world_y) + z_offset_mm
     carrier = reconstruct.carrier_phase(world_x, n_periods)
     phi = carrier + height * 2.0 * np.pi / lambda_eq
 

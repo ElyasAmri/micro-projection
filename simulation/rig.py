@@ -102,7 +102,7 @@ def _mask_node(nt, value_socket):
 
 
 def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm,
-                subdivisions: int = SURFACE_GRID_SUBDIVISIONS):
+                subdivisions: int = SURFACE_GRID_SUBDIVISIONS, z_offset_mm: float = 0.0):
     """Add the surface, with the projected fringe pattern computed live in
     its material. Returns (surface_object, phase_fraction_node) -- update
     phase_fraction_node.outputs[0].default_value (a fraction of one cycle,
@@ -120,6 +120,10 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     surfaces, but a fine roughness texture (sub-mm features, surfaces.rough)
     needs a much denser mesh to *carry* the displacement -- otherwise the
     camera images an aliased mesh, not the surface. Raise it accordingly.
+
+    `z_offset_mm` raises the whole surface by a constant height -- a simulated
+    z-stage. Rendering a flat plane at a few known offsets is the input to the
+    phase-to-height calibration (simulation/calibration.py).
     """
     if height_fn is None:
         bpy.ops.mesh.primitive_plane_add(size=SURFACE_SIZE_M, location=(0.0, 0.0, 0.0))
@@ -142,7 +146,8 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
         co = np.empty(n * 3, dtype=np.float64)
         mesh.vertices.foreach_get("co", co)
         co = co.reshape(n, 3)
-        co[:, 2] = np.asarray(height_fn(co[:, 0] / MM, co[:, 1] / MM), dtype=np.float64) * MM
+        co[:, 2] = (np.asarray(height_fn(co[:, 0] / MM, co[:, 1] / MM), dtype=np.float64)
+                    + z_offset_mm) * MM
         mesh.vertices.foreach_set("co", co.reshape(-1))
         mesh.update()
         bpy.ops.object.shade_smooth()
