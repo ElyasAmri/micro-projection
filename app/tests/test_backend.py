@@ -124,6 +124,33 @@ def test_hardware_capture_and_reconstruct(qapp, tmp_path, monkeypatch):
     assert result.metrics["valid_pixels"] > 0
 
 
+def test_hardware_multifreq_ladder_capture_and_reconstruct(qapp, tmp_path, monkeypatch):
+    monkeypatch.setenv("MP_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("MP_CAMERA", "dummy")
+
+    backend = create_backend("hardware")
+    controller = backend.new_capture_controller()
+
+    # Walk a 2-rung ladder through the one controller, each rung into its own
+    # capture_f<i> subdir -- exactly what the UI's multi-frequency pipeline does.
+    ladder = [8.0, 24.0]
+    for i, n in enumerate(ladder):
+        outcome = _run_capture(
+            controller, surface="live", n_steps=8,
+            subdir=backend.multifreq_subdir(i), n_periods=n, settle_ms=1,
+        )
+        assert outcome.get("code") == 0, f"rung {i} failed: {outcome}"
+
+    for d in backend.multifreq_capture_dirs("live", len(ladder)):
+        assert len(sorted(d.glob("frame_*.png"))) == 8
+
+    result = backend.reconstruct_multifreq("live", n_periods_ladder=ladder)
+    assert result.height_png.exists()
+    assert "rmse" not in result.metrics  # live target: no ground truth
+    assert result.metrics["valid_pixels"] > 0
+    assert result.metrics["n_periods_ladder"] == ladder
+
+
 def test_capture_rejects_concurrent_start(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("MP_OUT_DIR", str(tmp_path))
     monkeypatch.setenv("MP_CAMERA", "dummy")

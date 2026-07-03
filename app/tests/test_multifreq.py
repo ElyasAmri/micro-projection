@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from PySide6.QtTest import QTest
 
-from backend import SimulationBackend
+from backend import SimulationBackend, create_backend
 
 
 @pytest.fixture
@@ -114,3 +115,70 @@ def test_unwrap_multifreq_rejects_bad_ladders(sim):
         rec.unwrap_multifreq([z, z], [1.0])
     with pytest.raises(ValueError):  # lambdas must strictly decrease
         rec.unwrap_multifreq([z, z], [1.0, 2.0])
+
+
+# -- backend integration: reconstruct from the per-rung capture dirs ----------
+
+def test_backend_reconstruct_multifreq_uses_default_rung_dirs(sim):
+    # The sim fixture points MP_OUT_DIR at a tmp dir; lay a synthesized ladder
+    # into the exact dirs the backend reads by default (out/app/bump/capture_f*).
+    noise = sim._load_sim_noise()
+    ladder = sim.capture_ladder()
+    dirs = sim.multifreq_capture_dirs("bump", len(ladder))
+    for d, n in zip(dirs, ladder):
+        noise.synth_noisy_stack(d, "bump", n_periods=n, n_steps=8, sigma=0.0)
+
+    result = sim.reconstruct_multifreq("bump")  # no explicit dirs -> the defaults
+    m = result.metrics
+    assert result.height_png.exists()
+    assert result.ground_truth_png.exists()  # known specimen -> scored + gt map
+    assert m["n_periods_ladder"] == list(ladder)
+    assert m["rmse"] < 0.05 and m["r2"] > 0.999
+
+
+def test_backend_reconstruct_multifreq_reports_missing_rung(sim):
+    noise = sim._load_sim_noise()
+    ladder = sim.capture_ladder()
+    dirs = sim.multifreq_capture_dirs("bump", len(ladder))
+    # populate all but the last rung
+    for d, n in zip(dirs[:-1], ladder[:-1]):
+        noise.synth_noisy_stack(d, "bump", n_periods=n, n_steps=8, sigma=0.0)
+    with pytest.raises(FileNotFoundError):
+        sim.reconstruct_multifreq("bump")
+
+
+# -- UI orchestration: the async coarse->fine ladder state machine ------------
+
+def test_mainwindow_multifreq_pipeline_end_to_end(qapp, tmp_path, monkeypatch):
+    """Drive the whole multi-frequency pipeline through MainWindow on the
+    hardware backend + synthetic camera (no device, no Blender): it must capture
+    every rung into its own capture_f<i> dir, then unwrap them into a height map.
+    Covers the _advance_or_reconstruct_ladder sequencing the backend tests skip."""
+    monkeypatch.setenv("MP_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("MP_CAMERA", "dummy")
+    monkeypatch.setenv("MP_CAPTURE_SETTLE_MS", "1")  # don't wait 200ms/frame in a test
+    from ui.main_window import MainWindow
+
+    backend = create_backend("hardware")
+    monkeypatch.setattr(backend, "capture_ladder", lambda: [8.0, 24.0])  # short ladder
+    win = MainWindow(backend=backend)
+    try:
+        win._cmd_run_multifreq({"surface": "live"})
+        height = tmp_path / "app" / "live" / "height_reconstructed.png"
+        for _ in range(3000):  # <= 30s ceiling; breaks as soon as it lands
+            done = (win._ladder_i >= len(win._ladder)
+                    and not win._capture_runner.is_running()
+                    and height.exists())
+            if done:
+                break
+            QTest.qWait(10)
+
+        assert height.exists(), "multi-frequency pipeline did not produce a height map"
+        assert win._ladder_i == len(win._ladder)  # both rungs captured, in order
+        dirs = backend.multifreq_capture_dirs("live", len(win._ladder))
+        for d in dirs:
+            assert len(sorted(d.glob("frame_*.png"))) == 8
+    finally:
+        if hasattr(backend, "shutdown"):
+            backend.shutdown()
+        win.close()

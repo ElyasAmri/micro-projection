@@ -105,6 +105,28 @@ the measured brightness swing, and (in simulation, against a known injected
 swing) the reconstruction RMSE with and without the correction -- so you can see
 the swing's cost directly.
 
+## Multi-frequency scanning (toward roughness)
+
+Roughness measurement needs a small equivalent wavelength (dense fringes) for
+vertical resolution, but a dense map alone wraps ambiguously on anything taller
+than λ_eq/2. **Run Multi-Freq** captures a coarse→fine *ladder* of frequencies
+(`geometry_constants.N_PERIODS_LADDER`, default n = 8 → 24 → 80, λ_eq 13.6 → 1.4 mm)
+and reconstructs by temporal phase unwrapping: the coarse rung fixes the range,
+each finer rung's 2π ambiguity is resolved by the running (coarser) estimate.
+The result is the finest rung's resolution (~10× the coarse rung) without its
+ambiguity — the basis for separating a large *form* from the fine *roughness*
+on top (the Chapter 3 multi-frequency method).
+
+- Mechanically it's just N ordinary captures: each rung lands in
+  `out/app/<surface>/capture_f<i>`, then `reconstruct_multifreq` unwraps them.
+  Identical on simulation (a Blender render per rung) and hardware (a
+  project-and-grab per rung) — same as the single-frequency pipeline, repeated.
+- A pixel is trusted only where **every** rung is well modulated (the per-rung
+  masks are intersected), so a dim or washed-out region drops out of all of them
+  at once rather than contributing a mis-unwrapped height.
+- Maestro: `run_multifreq` (capture + reconstruct) and `reconstruct_multifreq`
+  (re-unwrap an already-captured ladder without re-capturing).
+
 ## What still needs the real rig
 
 The reconstruction currently trusts the **nominal** rig geometry

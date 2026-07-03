@@ -112,7 +112,14 @@ class MainWindow(QMainWindow):
         self._capture_runner.failed.connect(self._on_capture_failed)
         self._capture_tail: deque[str] = deque(maxlen=25)
         self._capture_surface = ""
-        self._capture_purpose = "single"  # "single" (preview) or "pipeline"
+        self._capture_purpose = "single"  # "single" / "pipeline" / "pipeline_mf"
+        # Multi-frequency ("pipeline_mf") ladder sequencing state: the rungs to
+        # capture, the current index, and the per-rung dirs collected so far.
+        self._ladder: list[float] = []
+        self._ladder_i = 0
+        self._ladder_dirs: list = []
+        self._ladder_n_steps = 8
+        self._ladder_kwargs: dict = {}
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
 
@@ -156,6 +163,7 @@ class MainWindow(QMainWindow):
         self.sidebar.project_requested.connect(self._on_project)
         self.sidebar.capture_requested.connect(self._on_capture)
         self.sidebar.pipeline_requested.connect(self._on_pipeline)
+        self.sidebar.multifreq_requested.connect(self._on_pipeline_multifreq)
         self.sidebar.noise_requested.connect(self._on_estimate_noise)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
@@ -353,6 +361,20 @@ class MainWindow(QMainWindow):
             self._display_reconstruction(surface, result)
         self._status_left.setText("Ready")
 
+    def _reconstruct_multifreq(self, surface: str) -> None:
+        """Coarse->fine unwrap of the ladder just captured (self._ladder_dirs)."""
+        self._status_left.setText(f"Reconstructing {surface} (multi-frequency)...")
+        QApplication.processEvents()  # paint the status before the brief blocking run
+        try:
+            result = self.backend.reconstruct_multifreq(
+                surface, capture_dirs=self._ladder_dirs, n_periods_ladder=self._ladder
+            )
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the console
+            log.error(f"multi-frequency reconstruct failed: {exc}")
+        else:
+            self._display_reconstruction(surface, result)
+        self._status_left.setText("Ready")
+
     def _log_metrics(self, surface: str, m: dict) -> None:
         valid_pct = 100.0 * m["valid_pixels"] / m["total_pixels"]
         if "rmse" in m:  # a known specimen was scored against its ground truth
@@ -363,6 +385,13 @@ class MainWindow(QMainWindow):
             )
         else:  # real capture: no ground truth to score against
             success(log, f"reconstructed {surface}: height map, valid={valid_pct:.1f}%")
+        if "n_periods_ladder" in m:  # multi-frequency: note the ladder's range/resolution
+            success(
+                log,
+                f"  multi-frequency {m['n_periods_ladder']}: lambda_eq "
+                f"{m['lambda_eq_coarse_mm']:.2f} -> {m['lambda_eq_mm']:.2f} mm "
+                f"(unambiguous +/-{m['unambiguous_range_mm']:.2f} mm)",
+            )
 
     # -- noise estimation (inline, ~0.4s) -------------------------------------
 
@@ -431,6 +460,35 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
             log.warning(f"cannot start pipeline: {exc}")
 
+    def _on_pipeline_multifreq(self, **kwargs) -> None:
+        """Multi-frequency pipeline: capture the coarse->fine ladder rung by rung,
+        then reconstruct by temporal unwrapping. Each rung is an ordinary capture
+        into out/app/<surface>/capture_f<i>; the sequencing (advance on `finished`)
+        lives in _advance_or_reconstruct_ladder."""
+        surface = self.sidebar.selected_surface()
+        try:
+            ladder = self.backend.capture_ladder()
+        except Exception as exc:  # noqa: BLE001 - sim/ladder unavailable
+            log.warning(f"cannot start multi-frequency pipeline: {exc}")
+            return
+        if len(ladder) < 2:
+            log.warning("multi-frequency needs >= 2 ladder rungs; use Run Pipeline")
+            return
+        self._project(surface)
+        self._ladder = ladder
+        self._ladder_i = 0
+        self._ladder_dirs = []
+        self._ladder_kwargs = {k: v for k, v in kwargs.items() if k in ("samples",)}
+        log.info(f"multi-frequency: {len(ladder)} frequencies {[f'{n:g}' for n in ladder]}")
+        try:
+            self._start_capture(
+                surface, purpose="pipeline_mf", n_steps=self._ladder_n_steps,
+                subdir=self.backend.multifreq_subdir(0), n_periods=ladder[0],
+                **self._ladder_kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
+            log.warning(f"cannot start multi-frequency pipeline: {exc}")
+
     def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
         """Kick off a capture of `surface` through the backend's controller
         (raises on bad state). Returns the controller, which knows where the
@@ -461,9 +519,8 @@ class MainWindow(QMainWindow):
             log.info(line)
 
     def _on_capture_finished(self, exit_code: int) -> None:
-        self._set_capture_busy(False)
-        self._status_left.setText("Ready")
         if exit_code != 0:
+            self._finish_capture_idle()
             log.error(f"capture failed (exit {exit_code})")
             for tail in list(self._capture_tail)[-6:]:
                 log.error(tail)
@@ -473,23 +530,62 @@ class MainWindow(QMainWindow):
         if frames:
             self.canvases["capturedCanvas"].set_image(QImage(str(frames[0])))
             self._show_tab("capturedCanvas")
+
+        if self._capture_purpose == "pipeline_mf":
+            self._ladder_dirs.append(capture_dir)
+            self._advance_or_reconstruct_ladder()  # keeps busy until the ladder is done
+            return
+
+        self._finish_capture_idle()
         if self._capture_purpose == "pipeline":
             success(log, f"captured {self._capture_surface}: {self._capture_runner.n_steps} frames")
             self._reconstruct(self._capture_surface)
         else:
             success(log, f"captured {self._capture_surface}: single frame")
 
-    def _on_capture_failed(self, message: str) -> None:
+    def _advance_or_reconstruct_ladder(self) -> None:
+        """After one ladder rung finishes: start the next, or (all captured)
+        reconstruct by multi-frequency unwrapping. Stays 'busy' throughout."""
+        surface = self._capture_surface
+        self._ladder_i += 1
+        if self._ladder_i < len(self._ladder):
+            n = self._ladder[self._ladder_i]
+            log.info(f"multi-frequency: rung {self._ladder_i + 1}/{len(self._ladder)} (n={n:g})...")
+            self._status_left.setText(f"Capturing {surface} (rung {self._ladder_i + 1}/{len(self._ladder)})...")
+            self._capture_tail.clear()
+            try:
+                self._capture_runner.start(
+                    surface=surface, n_steps=self._ladder_n_steps,
+                    subdir=self.backend.multifreq_subdir(self._ladder_i),
+                    n_periods=n, **self._ladder_kwargs,
+                )
+            except Exception as exc:  # noqa: BLE001 - abort the ladder on a failed start
+                self._finish_capture_idle()
+                log.error(f"multi-frequency capture aborted: {exc}")
+            return
+        self._finish_capture_idle()
+        success(log, f"captured {surface}: {len(self._ladder)} frequencies "
+                     f"({self._ladder_n_steps} frames each)")
+        self._reconstruct_multifreq(surface)
+
+    def _finish_capture_idle(self) -> None:
         self._set_capture_busy(False)
         self._status_left.setText("Ready")
+
+    def _on_capture_failed(self, message: str) -> None:
+        self._finish_capture_idle()
         log.error(f"capture failed: {message}")
 
     def _set_capture_busy(self, busy: bool) -> None:
         self.sidebar.capture_button.setEnabled(not busy)
         self.sidebar.pipeline_button.setEnabled(not busy)
+        self.sidebar.multifreq_button.setEnabled(not busy)
         if not busy:
             self.sidebar.capture_button.setText("Capture")
             self.sidebar.pipeline_button.setText("Run Pipeline")
+            self.sidebar.multifreq_button.setText("Run Multi-Freq")
+        elif self._capture_purpose == "pipeline_mf":
+            self.sidebar.multifreq_button.setText("Running...")
         elif self._capture_purpose == "pipeline":
             self.sidebar.pipeline_button.setText("Running...")
         else:
@@ -511,7 +607,9 @@ class MainWindow(QMainWindow):
             "project": self._cmd_project,
             "capture": self._cmd_capture,
             "pipeline": self._cmd_pipeline,
+            "run_multifreq": self._cmd_run_multifreq,
             "reconstruct": self._cmd_reconstruct,
+            "reconstruct_multifreq": self._cmd_reconstruct_multifreq,
             "estimate_noise": self._cmd_estimate_noise,
         }
 
@@ -585,10 +683,33 @@ class MainWindow(QMainWindow):
         spec = self._start_capture(surface, purpose="pipeline", n_steps=8, subdir="capture", **kwargs)
         return {"pipeline": "started", "surface": surface, "n_steps": spec.n_steps}
 
+    def _cmd_run_multifreq(self, args: dict):
+        """Start the multi-frequency pipeline (asynchronous): capture the
+        coarse->fine ladder rung by rung, then reconstruct by unwrapping. Returns
+        once the first rung's capture starts."""
+        surface = str(args.get("surface") or self.sidebar.selected_surface())
+        self.sidebar.specimen.setCurrentText(surface)
+        kwargs = {}
+        if "samples" in args:
+            kwargs["samples"] = int(args["samples"])
+        self._on_pipeline_multifreq(**kwargs)
+        return {"multifreq": "started", "surface": surface, "ladder": self._ladder}
+
     def _cmd_reconstruct(self, args: dict):
         surface = str(args.get("surface") or self.sidebar.selected_surface())
         self.sidebar.specimen.setCurrentText(surface)
         result = self.backend.reconstruct(surface)
+        self._display_reconstruction(surface, result)
+        return {"surface": surface, "metrics": result.metrics}
+
+    def _cmd_reconstruct_multifreq(self, args: dict):
+        """Reconstruct from an already-captured ladder (out/app/<surface>/capture_f*),
+        without re-capturing. `n_periods_ladder` optionally overrides the default."""
+        surface = str(args.get("surface") or self.sidebar.selected_surface())
+        self.sidebar.specimen.setCurrentText(surface)
+        ladder = args.get("n_periods_ladder")
+        ladder = [float(n) for n in ladder] if ladder is not None else None
+        result = self.backend.reconstruct_multifreq(surface, n_periods_ladder=ladder)
         self._display_reconstruction(surface, result)
         return {"surface": surface, "metrics": result.metrics}
 

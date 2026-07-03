@@ -175,6 +175,59 @@ class Backend(ABC):
             error_png=out_dir / "height_error.png",
         )
 
+    # -- multi-frequency reconstruction (coarse -> fine unwrapping) -----------
+
+    def capture_ladder(self) -> list[float]:
+        """The coarse->fine fringe counts a multi-frequency capture walks
+        (geometry_constants.N_PERIODS_LADDER). The coarsest rung fixes the
+        unambiguous range, the finest the vertical resolution."""
+        return list(self._load_sim_reconstruct().N_PERIODS_LADDER)
+
+    @staticmethod
+    def multifreq_subdir(rung: int) -> str:
+        """Capture subdirectory for ladder rung `rung` (out/app/<surface>/...).
+        The single source of the per-rung naming, shared by the capture
+        sequencing and reconstruct_multifreq's default dirs."""
+        return f"capture_f{rung}"
+
+    def multifreq_capture_dirs(self, surface: str, rungs: int) -> list[Path]:
+        """Where each ladder rung's frames land for `surface`."""
+        base = out_root() / "app" / surface
+        return [base / self.multifreq_subdir(i) for i in range(rungs)]
+
+    def reconstruct_multifreq(
+        self,
+        surface: str,
+        capture_dirs: list[Path] | None = None,
+        n_periods_ladder: list[float] | None = None,
+    ) -> ReconstructionResult:
+        """Reconstruct `surface` from a coarse->fine ladder of capture stacks,
+        temporally unwrapping the fine rung's high resolution without its 2*pi
+        ambiguity (the roughness path's backbone). `capture_dirs` default to this
+        surface's per-rung dirs (multifreq_capture_dirs); `n_periods_ladder`
+        defaults to capture_ladder(). Scored against ground truth for a known
+        specimen, height-map-only for a real target -- same as reconstruct()."""
+        sim = self._load_sim_reconstruct()
+        ladder = list(n_periods_ladder) if n_periods_ladder is not None else self.capture_ladder()
+        if capture_dirs is None:
+            capture_dirs = self.multifreq_capture_dirs(surface, len(ladder))
+        capture_dirs = [Path(d) for d in capture_dirs]
+        for d in capture_dirs:
+            if not d.is_dir() or not any(d.glob("frame_*.png")):
+                raise FileNotFoundError(f"missing multi-frequency capture rung for '{surface}': {d}")
+        out_dir = out_root() / "app" / surface
+        gt_surface = surface if self._has_ground_truth(surface) else None
+        metrics = sim.run_multifreq(
+            capture_dirs, out_dir, n_periods_ladder=ladder, surface=gt_surface, verbose=False
+        )
+        return ReconstructionResult(
+            surface=surface,
+            metrics=metrics,
+            height_png=out_dir / "height_reconstructed.png",
+            ground_truth_png=out_dir / "height_ground_truth.png",
+            error_png=out_dir / "height_error.png",
+        )
+
     # -- noise estimation (shared) -------------------------------------------
 
     def estimate_noise(

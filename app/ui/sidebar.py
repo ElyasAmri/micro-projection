@@ -24,6 +24,7 @@ class Sidebar(QWidget):
     project_requested = Signal()   # show the projected fringe pattern
     capture_requested = Signal()   # single capture of the fringe on the surface
     pipeline_requested = Signal()  # full project -> capture -> reconstruct
+    multifreq_requested = Signal() # coarse->fine ladder capture + unwrapping
     noise_requested = Signal()     # estimate imaging noise + its error margin
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
@@ -71,6 +72,18 @@ class Sidebar(QWidget):
         self.pipeline_button.setEnabled(bool(surfaces))
         self.pipeline_button.clicked.connect(lambda: self.pipeline_requested.emit())
         layout.addWidget(self.pipeline_button)
+
+        self.multifreq_button = QPushButton("Run Multi-Freq")
+        self.multifreq_button.setObjectName("multifreqButton")
+        self.multifreq_button.setProperty("variant", "primary")
+        self.multifreq_button.setEnabled(bool(surfaces))
+        self.multifreq_button.setToolTip(
+            "Capture a coarse->fine ladder of fringe frequencies and unwrap them "
+            "together: the coarse rung fixes the range, the fine rung the vertical "
+            "resolution (~10x sharper). The basis for measuring roughness."
+        )
+        self.multifreq_button.clicked.connect(lambda: self.multifreq_requested.emit())
+        layout.addWidget(self.multifreq_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.
