@@ -25,6 +25,11 @@ THROW_RATIO_H = 92.0 / 41.0   # = 184/82    = 2.244
 D_PROJ_MM = 122.7   # H0 * THROW_RATIO_H: distance for a 54.67mm-tall image (report/math.tex sec. 5)
 W_PROJ_MM = 87.47   # image width there (= H0 * 1.6); unchanged from the earlier design
 SPOT_CONE_DEG = 50.0  # full angle; wide enough to cover the footprint's corners at ~123mm
+# Fallback "crop mode" (if the lens won't focus at 122.7mm): run at the nominal
+# 184mm and let the camera crop the center of the larger field -- set
+# D_PROJ_MM=184, W_PROJ_MM=131.2 (throw ratios unchanged), and n_periods x1.5 to
+# hold the fringe density. Coarser (100um px), but no refocus. See
+# report/math.tex "Fallback: native distance with camera crop".
 
 # --- Camera tilt (report/math.tex sec. 7) -----------------------------------
 THETA_DEG = 38.7

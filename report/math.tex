@@ -131,6 +131,40 @@ not an extrapolation. At this distance the projector's image is
 wide, by $H_0 = 54.67$\,mm tall --- matching the camera's height exactly.
 The projected pixel there is $50\,\mu\text{m}\times 122.7/92 \approx 67\,\mu$m.
 
+\section{Fallback: native distance with camera crop}
+\label{sec:crop}
+
+If the 184\,mm lens cannot be refocused to $122.7$\,mm, an alternative is to
+run it at its \emph{nominal} distance $D_0 = 184$\,mm and let the camera image
+only the center of the larger projected field. There the image is
+\begin{equation}
+  W_{\text{proj}}(184) = 184 \times \tfrac{65.6}{92} = 131.2\text{\,mm}, \qquad
+  H_{\text{proj}}(184) = 184 \times \tfrac{41}{92} = 82\text{\,mm},
+\end{equation}
+so the projector over-fills the camera's $87.47\times54.67$\,mm footprint; the
+camera sees its central $87.47/131.2 = 66.7\%$ in each axis. Compared with the
+$122.7$\,mm fill:
+\begin{itemize}
+  \item \textbf{Focus} is guaranteed at the rated distance --- no refocus
+        assumption.
+  \item \textbf{Resolution} is coarser: the projected pixel stays at its rated
+        $100\,\mu$m (vs.\ $67\,\mu$m), and only $0.667^2 \approx 44\%$ of the
+        DMD falls inside the camera view; the rest is wasted.
+  \item \textbf{The reconstruction constant $W_{\text{proj}}$ changes.} The
+        fringe carrier now spans the full $131.2$\,mm image, so
+        $W_{\text{proj}} = 131.2$\,mm and the equivalent wavelength grows to
+        $\lambda_{eq} = (131.2/n_p)/\tan\theta$ --- $1.5\times$ the fill-mode
+        value, i.e.\ less height sensitivity per fringe. Raising the fringe
+        count by $131.2/87.47 = 1.5\times$ restores the fill-mode fringe
+        density across the measured region.
+  \item The tilt $\theta \approx 38.7^\circ$ is \emph{unchanged}: the covered
+        surface width $W_0/\cos\theta = 87.47$\,mm is a camera property; the
+        projector merely over-covers it.
+\end{itemize}
+In code this mode is $D_{\text{PROJ}} = 184$, $W_{\text{PROJ}} = 131.2$, the
+throw ratios unchanged, and $n_p$ scaled up by $1.5\times$; the $122.7$\,mm
+fill remains the default.
+
 \section{Telecentric footprint under an oblique view}
 
 A telecentric lens's imaging cone is a bundle of parallel rays with
