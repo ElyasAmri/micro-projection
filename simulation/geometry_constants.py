@@ -31,7 +31,7 @@ SPOT_CONE_DEG = 50.0  # full angle; wide enough to cover the footprint's corners
 # hold the fringe density. Coarser (100um px), but no refocus. See
 # report/math.tex "Fallback: native distance with camera crop".
 
-# --- Multi-frequency ladder (Phase 1 roughness path) ------------------------
+# --- Multi-frequency ladder (roughness path) --------------------------------
 # Coarse-to-fine fringe counts for temporal phase unwrapping. Roughness needs a
 # small equivalent wavelength (fine fringes) for vertical resolution, but a fine
 # map alone wraps ambiguously on anything taller than lambda_eq/2. So we capture
@@ -47,6 +47,13 @@ SPOT_CONE_DEG = 50.0  # full angle; wide enough to cover the footprint's corners
 # stays within +/- lambda_eq_i/2 of the truth, so the fringe order is picked
 # correctly. A high-magnification lens later (the "fine" regime) just supplies a
 # denser ladder here; unwrap_multifreq is agnostic to its length.
+#
+# A denser finest rung (n=160, lambda_eq ~0.68mm) was tried to sharpen roughness
+# and reverted: on Blender camera captures it changed the recovered roughness by
+# nothing (identical band correlations). The roughness map's error is not a
+# vertical-resolution or fringe-density limit but a ~0.5mm *lateral* registration
+# offset from the nominal geometry -- which a denser ladder can't touch and
+# calibration fixes (report/math.tex "Roughness under a real camera").
 N_PERIODS_LADDER = (8.0, 24.0, 80.0)
 
 # --- Camera tilt (report/math.tex sec. 7) -----------------------------------

@@ -629,27 +629,59 @@ whereas the ladder brings the floor to $1.9$\,\textmu m (SNR $\approx10$).
 \section{Resolution and roughness budget}
 \label{sec:roughness-budget}
 
-What roughness is actually measurable is set by three limits, all of which
-this large-field rig makes coarse. Laterally, the camera samples the
-$68.2\times54.7$\,mm footprint at $\approx53$--$68$\,\textmu m/pixel
-(Section~\ref{sec:camera-fov}), and the finest rung's projected fringe
-period on the surface is $W_{\text{proj}}/n_p = 87.5/80 \approx
-1.1$\,mm; the fringe pitch, not the pixel, is the binding constraint, so
-roughness wavelengths below $\sim\!2$--$3\times$ that pitch
-($\gtrsim2.5$\,mm) are the reliably resolvable band. (The synthetic
-forward model of Section~\ref{sec:multifreq} idealizes away the optical
-low-pass of the finite fringe, so it will ``recover'' finer texture than
-hardware can --- the sim validates the reconstruction and separation
-maths, not the optical resolution.) Vertically, the floor is
-$\sigma_h\approx1.9$\,\textmu m at the $n_p=80$ rung (a few DN of camera
-noise, Eq.~\ref{eq:sq-denoise}), so this rig targets $S_a/S_q$ in the
-tens-of-microns-and-up band with lateral features $\gtrsim2.5$\,mm ---
-mid-spatial-frequency waviness, not the sub-micron finish of a
-high-magnification setup. Finer roughness needs a denser ladder
-\emph{and} a higher-magnification lens over a smaller field (in the
-spirit of the crop-mode fallback, Section~\ref{sec:crop}): the code
-(\texttt{N\_PERIODS\_LADDER}, and geometry in
-\texttt{geometry\_constants.py}) is written so that is a configuration
-change, not a rewrite.
+What roughness is measurable is set by a vertical noise floor, a lateral
+limit, and a systematic-error term --- and tested against a real Blender
+camera render (Section~\ref{sec:roughness-camera}), the binding one is not
+what a fringe-pitch argument predicts. Vertically the random floor is
+small: $\sigma_h\approx1.9$\,\textmu m on the forward model at $n_p=80$,
+and on Blender the white (spatial) noise is only $\approx0.5$\,\textmu m.
+The temporal noise estimate is far larger there ($\approx11$ vs
+$0.5$\,DN), but that gap is a smooth systematic render artifact, not random
+noise; form-removal deletes most of it, so it is reported as a
+\emph{systematic} flag rather than folded into the floor
+(\texttt{roughness.py}, \texttt{SYSTEMATIC\_RATIO\_THRESH}). So this rig
+targets $S_a/S_q$ in the tens-of-microns-and-up band --- mid-spatial
+waviness, not sub-micron finish. A naive fringe-pitch argument would put
+the \emph{lateral} limit at $\sim\!2$--$3\times$ the finest projected
+period ($W_{\text{proj}}/n_p=87.5/80\approx1.1$\,mm, i.e.\
+$\gtrsim2.5$\,mm); Section~\ref{sec:roughness-camera} shows that is wrong
+--- the real limit is geometric registration, and a denser rung does not
+move it. Finer roughness therefore needs a geometry calibration first, and
+a higher-magnification lens over a smaller field (crop-mode spirit,
+Section~\ref{sec:crop}) --- which the code
+(\texttt{N\_PERIODS\_LADDER}, \texttt{geometry\_constants.py}) makes a
+configuration change, not a rewrite.
+
+\section{Roughness under a real camera}
+\label{sec:roughness-camera}
+
+The forward-model validation (Section~\ref{sec:roughness}) cannot test the
+\emph{camera}: it synthesizes intensities from the reconstruction's own
+equations, recovering roughness tautologically. To test capture, the
+\texttt{rough} specimen's coarse$\to$fine ladder ($n_p=8,24,80$, eight
+frames each) was rendered through Blender's ray-traced telecentric camera
+--- the surface carried as a $10^6$-vertex displaced mesh, since the
+default $\sim\!1.7$\,mm grid is far too coarse for sub-mm texture
+(\texttt{rig.add\_surface}'s \texttt{subdivisions}) --- and
+\texttt{roughness.py} run on the rendered frames.
+
+The aggregate parameters survive: $S_a=16.7$ (true $16.8$), $S_q=21.3$
+(true $20.9$)\,\textmu m, within $0.4$\,\textmu m. But the per-pixel
+roughness \emph{map} correlates with truth at only $r=0.73$ ($R^2=0.53$)
+--- until one allows a rigid lateral shift: a single $+8$\,px
+($\approx0.55$\,mm) offset along $x$ (the tilt/throw axis) raises it to
+$r=0.92$. The recovered texture is faithful in amplitude and shape; it is
+simply \emph{mis-registered} by $\sim\!0.5$\,mm, by the same
+nominal-geometry error
+(Sections~\ref{sec:validation-battery}--\ref{sec:off-center-followup}) that
+prints a $134$\,\textmu m form RMSE. Consistent with a registration --- not
+a resolution --- limit, adding a denser $n_p=160$ rung
+($\lambda_{eq}\approx0.68$\,mm, half the fringe period) changed the
+recovered roughness by \emph{nothing} (identical band correlations,
+$0.82/0.75/0.67/0.63$ at $6/4/3/2.5$\,mm), and was reverted. The fix is a
+geometry calibration, not more fringes or samples --- the same calibration
+the height reconstruction already wants, now quantified for roughness:
+without it the texture lands $\sim\!0.5$\,mm off; with the offset removed,
+$r=0.92$.
 
 \end{document}

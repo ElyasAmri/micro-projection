@@ -134,9 +134,13 @@ floor and a noise-corrected Sq from the finest rung's height uncertainty (so a
 near-1 SNR flags a roughness that's mostly noise). For a known simulation
 specimen the parameters are scored against ground truth. Maestro:
 `measure_roughness` (`cutoff_mm` overrides the form/roughness cutoff) runs it off
-the latest reconstruction. What's resolvable is coarse on this large-field rig —
-lateral features ≳2.5 mm (the finest fringe period is ~1.1 mm) and Sa/Sq in the
-tens-of-µm band; see `report/math.tex` §"Resolution and roughness budget".
+the latest reconstruction. This rig targets Sa/Sq in the tens-of-µm band (mid-
+spatial waviness, not sub-micron finish). Tested against a real Blender camera
+render, the texture is recovered faithfully in amplitude and shape, but the
+roughness *map* is laterally mis-registered ~0.5 mm by the nominal geometry
+(correlation 0.73 → 0.92 once that offset is removed) — so the limit is geometry
+**calibration**, not fringe density or noise (a denser rung was tried and did
+nothing). See `report/math.tex` §"Roughness under a real camera".
 
 ## What still needs the real rig
 
