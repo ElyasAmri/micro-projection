@@ -370,16 +370,20 @@ class MainWindow(QMainWindow):
         self._estimate_noise(self.sidebar.selected_surface())
 
     def _estimate_noise(self, surface: str) -> None:
-        """Estimate imaging noise for `surface` and its reconstruction error
-        margin. In simulation the injected level (sidebar) is recovered and
-        checked; for a real capture the noise already in the frames is measured."""
+        """Analyze the error a capture imposes on the reconstruction -- random
+        noise and auto-exposure brightness swing. In simulation the injected
+        levels (sidebar) are recovered and their cost shown; for a real capture
+        the noise and swing already in the frames are measured."""
         injected = self.sidebar.injected_noise_dn()
-        self._status_left.setText(f"Estimating noise for {surface}...")
+        swing = self.sidebar.exposure_swing_pct()
+        self._status_left.setText(f"Analyzing errors for {surface}...")
         QApplication.processEvents()  # paint the status before the brief blocking run
         try:
-            result = self.backend.estimate_noise(surface, injected_sigma_dn=injected)
+            result = self.backend.estimate_noise(
+                surface, injected_sigma_dn=injected, gain_swing_pct=swing
+            )
         except Exception as exc:  # noqa: BLE001 - surface any failure to the console
-            log.error(f"noise estimation failed: {exc}")
+            log.error(f"error analysis failed: {exc}")
         else:
             self._display_noise(surface, result)
         self._status_left.setText("Ready")
@@ -393,16 +397,20 @@ class MainWindow(QMainWindow):
         parts = [f"noise {surface}: sigma={m['sigma_est_dn']:.2f} DN (spatial {m['sigma_spatial_dn']:.2f})"]
         if "injected_sigma_dn" in m:  # controlled run: scored against the injected level
             parts.append(f"injected {m['injected_sigma_dn']:.2f} DN, err {100 * m['sigma_rel_error']:+.1f}%")
+        parts.append(f"exposure swing {m['brightness_swing_pct']:.1f}%")
         parts.append(
-            f"height margin mean {m['height_uncertainty_um_mean']:.0f} um / "
+            f"noise margin mean {m['height_uncertainty_um_mean']:.0f} um / "
             f"p95 {m['height_uncertainty_um_p95']:.0f} um"
         )
-        if m.get("actual_rmse_mm") is not None:  # predicted vs actual reconstruction error
-            parts.append(
-                f"recon RMSE {m['actual_rmse_mm'] * 1000:.0f} um "
-                f"(predicted {m['predicted_rmse_mm'] * 1000:.0f} um)"
-            )
         success(log, "; ".join(parts))
+        # The exposure swing's cost, and how much correcting it recovers.
+        if m.get("rmse_raw_mm") is not None and m.get("rmse_corrected_mm") is not None:
+            raw_um = m["rmse_raw_mm"] * 1000
+            cor_um = m["rmse_corrected_mm"] * 1000
+            if raw_um - cor_um > 1.0:
+                success(log, f"  recon RMSE {raw_um:.0f} um -> {cor_um:.0f} um after exposure correction")
+            else:
+                success(log, f"  recon RMSE {cor_um:.0f} um (no exposure swing to correct)")
 
     # -- capture (async Blender subprocess) -----------------------------------
 
@@ -585,12 +593,16 @@ class MainWindow(QMainWindow):
         return {"surface": surface, "metrics": result.metrics}
 
     def _cmd_estimate_noise(self, args: dict):
-        """Estimate noise + error margin. `injected_sigma_dn` overrides the
-        sidebar's injected level (simulation only; ignored for a real capture)."""
+        """Analyze reconstruction error (noise + exposure swing). `injected_sigma_dn`
+        and `gain_swing_pct` override the sidebar's injected levels (simulation
+        only; ignored for a real capture)."""
         surface = str(args.get("surface") or self.sidebar.selected_surface())
         injected = args.get("injected_sigma_dn", self.sidebar.injected_noise_dn())
         injected = float(injected) if injected is not None else None
+        swing = float(args.get("gain_swing_pct", self.sidebar.exposure_swing_pct()))
         self.sidebar.specimen.setCurrentText(surface)
-        result = self.backend.estimate_noise(surface, injected_sigma_dn=injected)
+        result = self.backend.estimate_noise(
+            surface, injected_sigma_dn=injected, gain_swing_pct=swing
+        )
         self._display_noise(surface, result)
         return {"surface": surface, "metrics": result.metrics}

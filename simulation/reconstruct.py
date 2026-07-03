@@ -20,6 +20,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import exposure
 import surfaces
 from geometry_constants import H0_MM, THETA_DEG, W0_MM, W_PROJ_MM
 
@@ -113,17 +114,26 @@ def run(
     surface: str | None = "bump",
     modulation_threshold: float = 0.03,
     erode_px: int = 10,
+    normalize_gains: bool = True,
     verbose: bool = True,
 ) -> dict:
     """Reconstruct height from a capture stack. When `surface` names a known
     specimen, score the result against surfaces.SURFACES[surface]'s exact
     ground truth (RMSE/R^2 + ground-truth and error maps). When `surface` is
     None (a real-world capture with no ground truth), just produce the height
-    map. Returns a metrics dict and writes visualizations + metrics.txt."""
+    map. Returns a metrics dict and writes visualizations + metrics.txt.
+
+    `normalize_gains` (on by default) divides out any per-frame brightness swing
+    before the PSA, so auto-exposure drift doesn't ripple into the height map;
+    it's a no-op on a steady stack (see exposure.py). The measured swing is
+    reported either way."""
     out_dir.mkdir(parents=True, exist_ok=True)
     ground_truth_fn = surfaces.SURFACES[surface] if surface is not None else None
 
     frames = load_frames(capture_dir)
+    swing_pct = exposure.brightness_swing_pct(frames)
+    if normalize_gains:
+        frames, _gains = exposure.normalize_frame_gains(frames)
     n, h_px, w_px = frames.shape
     if verbose:
         print(f"loaded {n} frames of shape {h_px}x{w_px}")
@@ -148,6 +158,7 @@ def run(
         "valid_pixels": int(valid.sum()),
         "total_pixels": int(valid.size),
         "lambda_eq_mm": lambda_eq,
+        "brightness_swing_pct": swing_pct,
     }
 
     if ground_truth_fn is not None:

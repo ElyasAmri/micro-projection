@@ -80,6 +80,31 @@ means the FLIR backend isn't offered.
 | `MP_CAPTURE_SETTLE_MS`  | `200`   | wait per step after the pattern is shown, before grabbing (projector refresh + exposure settle) |
 | `MP_BLENDER`            | (auto)  | path to the Blender executable (simulation capture) |
 
+## Auto-exposure and the phase-shift scan
+
+The N-step phase-shifting algorithm assumes every frame in the stack is imaged
+at the *same* exposure. **Leave auto-exposure off.** If it's on, the camera
+re-meters between frames, and because the fringe pattern shifts each step the
+metered brightness swings -- so each frame picks up a different gain. That is
+*not* random noise; it's a systematic per-frame weighting that biases the
+recovered phase and prints a periodic ripple into the height map. In simulation,
+a 5% brightness swing inflates the reconstruction RMSE from a few µm to ~45 µm.
+
+Two layers of defense:
+
+1. **Lock the exposure** -- set `MP_CAM_EXPOSURE_US` so the FLIR camera runs at a
+   fixed exposure (`SpinnakerCamera` turns `ExposureAuto` off when it's set).
+   This is the real fix.
+2. **Gain normalization** (on by default) -- the reconstruction estimates any
+   residual per-frame gain from each frame's brightness and divides it out
+   before the PSA. It's a no-op on a steady stack, so it only ever helps. See
+   `simulation/exposure.py`.
+
+The **Error Analysis** panel quantifies both this and random noise: it reports
+the measured brightness swing, and (in simulation, against a known injected
+swing) the reconstruction RMSE with and without the correction -- so you can see
+the swing's cost directly.
+
 ## What still needs the real rig
 
 The reconstruction currently trusts the **nominal** rig geometry

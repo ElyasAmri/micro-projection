@@ -72,10 +72,11 @@ class Sidebar(QWidget):
         self.pipeline_button.clicked.connect(lambda: self.pipeline_requested.emit())
         layout.addWidget(self.pipeline_button)
 
-        # -- Noise: estimate imaging noise and the error margin it imposes ------
-        noise_header = QLabel("Noise")
-        noise_header.setProperty("role", "sectionHeader")
-        layout.addWidget(noise_header)
+        # -- Error analysis: noise + auto-exposure swing, and the margin they --
+        # impose on the reconstruction.
+        error_header = QLabel("Error Analysis")
+        error_header.setProperty("role", "sectionHeader")
+        layout.addWidget(error_header)
 
         noise_label = QLabel("Injected noise (DN)")
         noise_label.setObjectName("fieldLabel")
@@ -88,12 +89,29 @@ class Sidebar(QWidget):
         self.noise_level.setDecimals(1)
         self.noise_level.setValue(5.0)
         self.noise_level.setToolTip(
-            "Known noise to inject into a simulated specimen, to check the "
-            "estimator. Ignored for a real capture (its noise is measured)."
+            "Known random noise to inject into a simulated specimen, to check "
+            "the estimator. Ignored for a real capture (its noise is measured)."
         )
         layout.addWidget(self.noise_level)
 
-        self.noise_button = QPushButton("Estimate Noise")
+        swing_label = QLabel("Exposure swing (%)")
+        swing_label.setObjectName("fieldLabel")
+        layout.addWidget(swing_label)
+
+        self.swing_level = QDoubleSpinBox()
+        self.swing_level.setObjectName("swingLevel")
+        self.swing_level.setRange(0.0, 20.0)
+        self.swing_level.setSingleStep(0.5)
+        self.swing_level.setDecimals(1)
+        self.swing_level.setValue(0.0)
+        self.swing_level.setToolTip(
+            "Known per-frame brightness swing to inject (the auto-exposure "
+            "effect), to show its cost and how much correcting it recovers. "
+            "Ignored for a real capture (its swing is measured)."
+        )
+        layout.addWidget(self.swing_level)
+
+        self.noise_button = QPushButton("Analyze Errors")
         self.noise_button.setObjectName("noiseButton")
         self.noise_button.setEnabled(bool(surfaces))
         self.noise_button.clicked.connect(lambda: self.noise_requested.emit())
@@ -105,5 +123,9 @@ class Sidebar(QWidget):
         return self.specimen.currentText()
 
     def injected_noise_dn(self) -> float:
-        """The noise level (in 8-bit DN) to inject in a simulated run."""
+        """The random noise level (in 8-bit DN) to inject in a simulated run."""
         return self.noise_level.value()
+
+    def exposure_swing_pct(self) -> float:
+        """The per-frame brightness swing (percent) to inject in a simulated run."""
+        return self.swing_level.value()

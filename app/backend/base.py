@@ -181,29 +181,36 @@ class Backend(ABC):
         self,
         surface: str,
         injected_sigma_dn: float | None = None,
+        gain_swing_pct: float = 0.0,
         n_periods: float | None = None,
     ) -> NoiseEstimateResult:
-        """Estimate imaging noise and turn it into a reconstruction error margin.
+        """Analyze the error a capture stack imposes on the reconstruction:
+        random noise and auto-exposure brightness swing.
 
-        For a known specimen with `injected_sigma_dn` set, this is the controlled
-        experiment: synthesize a stack with that *known* noise, estimate it back,
-        and (via a reconstruction of the same stack) check the predicted error
-        margin against the actual reconstruction error. Otherwise it estimates
-        the noise in the specimen's existing capture stack (a real target has no
-        injected level and no ground-truth reconstruction to compare against)."""
+        For a known specimen, this is the controlled experiment: synthesize a
+        stack with a *known* noise level and/or brightness swing, estimate them
+        back, and check the predicted noise margin against the actual
+        reconstruction error -- reported both without and with exposure
+        correction, so the cost of the swing (and how much correcting it
+        recovers) is explicit. For a real target it measures the noise and swing
+        already in the captured stack (no injected truth, no ground-truth
+        reconstruction to compare against)."""
         n = self.n_periods if n_periods is None else n_periods
         sim_noise = self._load_sim_noise()
         known = self._has_ground_truth(surface)
         out_dir = out_root() / "app" / surface
 
         injected = None
-        if injected_sigma_dn and known:  # controlled experiment: known noise
+        controlled = known and (injected_sigma_dn or gain_swing_pct)
+        if controlled:  # synthesize a stack with the requested imperfections
             stack_dir = out_dir / "noise_stack"
             sim_noise.synth_noisy_stack(
-                stack_dir, surface, n_periods=n, n_steps=8, sigma=injected_sigma_dn / 255.0
+                stack_dir, surface, n_periods=n, n_steps=8,
+                sigma=(injected_sigma_dn or 0.0) / 255.0,
+                gain_swing=(gain_swing_pct or 0.0) / 100.0,
             )
-            injected = injected_sigma_dn / 255.0
-        else:  # estimate the noise already in a captured stack
+            injected = injected_sigma_dn / 255.0 if injected_sigma_dn else None
+        else:  # estimate what's already in a captured stack
             stack_dir = self.capture_dir(surface)
             if not stack_dir.is_dir() or not any(stack_dir.glob("frame_*.png")):
                 raise FileNotFoundError(f"no capture stack for '{surface}' at {stack_dir}")
@@ -212,13 +219,18 @@ class Backend(ABC):
             stack_dir, out_dir, n_periods=n,
             surface=(surface if known else None), injected_sigma=injected, verbose=False,
         )
-        # Cross-check: the actual reconstruction error on this stack, so the
-        # predicted noise margin can be held against a real number.
+        # Cross-check against real reconstruction error, without vs with the
+        # exposure-swing correction, so the swing's cost is a concrete number.
         if known:
-            rec = self._load_sim_reconstruct().run(
-                stack_dir, out_dir / "noise_recon", n_periods=n, surface=surface, verbose=False
-            )
-            metrics["actual_rmse_mm"] = rec.get("rmse")
+            rec = self._load_sim_reconstruct()
+            rec_dir = out_dir / "noise_recon"
+            raw = rec.run(stack_dir, rec_dir, n_periods=n, surface=surface,
+                          normalize_gains=False, verbose=False)
+            corrected = rec.run(stack_dir, rec_dir, n_periods=n, surface=surface,
+                                normalize_gains=True, verbose=False)
+            metrics["rmse_raw_mm"] = raw.get("rmse")
+            metrics["rmse_corrected_mm"] = corrected.get("rmse")
+            metrics["actual_rmse_mm"] = corrected.get("rmse")  # the shipped pipeline corrects
 
         return NoiseEstimateResult(
             surface=surface,

@@ -44,6 +44,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import exposure
 import reconstruct
 import surfaces
 from geometry_constants import THETA_DEG
@@ -105,17 +106,18 @@ def synth_noisy_stack(
     n_steps: int = 8,
     sigma: float = 5.0 / 255.0,
     exposure: float = 1.0,
+    gain_swing: float = 0.0,
     shape: tuple[int, int] = (512, 640),
     seed: int = 0,
 ) -> dict:
     """Write an N-step phase-shift stack of `surface` with a KNOWN additive
-    Gaussian noise `sigma` (normalized) -- the "project frames with a certain
-    noise level" step. The clean fringe is the exact forward model of
+    Gaussian noise `sigma` (normalized) and, optionally, a KNOWN per-frame
+    brightness swing `gain_swing` (fractional std of the per-frame gain -- the
+    auto-exposure effect). The clean fringe is the exact forward model of
     reconstruct.py (carrier phase + the surface's height-to-phase term), so the
     same stack round-trips through reconstruct.run() back to the surface, and
-    the injected noise is the only error. `exposure` scales the DC + modulation
-    (a proxy for under/over-exposure); values that push the fringe past 1.0
-    clip, so over-exposure shows up as saturated pixels."""
+    the injected imperfections are the only errors. `exposure` scales the DC +
+    modulation together (values past 1.0 clip -> saturated pixels)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
 
@@ -125,14 +127,25 @@ def synth_noisy_stack(
     carrier = reconstruct.carrier_phase(world_x, n_periods)
     phi = carrier + height * 2.0 * np.pi / lambda_eq
 
+    # Per-frame gains: auto-exposure chasing the shifting fringe. Normalized to
+    # zero-mean, unit-std then scaled, so the injected swing is *exactly*
+    # `gain_swing` (std of the mean-1 gains) regardless of the seed's draw.
+    if gain_swing > 0.0 and n_steps > 1:
+        s = rng.standard_normal(n_steps)
+        s = (s - s.mean()) / s.std()
+        g = 1.0 + gain_swing * s
+    else:
+        g = np.ones(n_steps)
+
     a = 0.5 * exposure
     b = 0.45 * exposure
     for k in range(n_steps):
         delta = 2.0 * np.pi * k / n_steps
-        clean = a + b * np.cos(phi + delta)
+        clean = g[k] * (a + b * np.cos(phi + delta))
         noisy = np.clip(clean + rng.normal(0.0, sigma, shape), 0.0, 1.0)
         cv2.imwrite(str(out_dir / f"frame_{k:02d}.png"), (noisy * 255.0).astype(np.uint8))
-    return {"true_sigma": sigma, "modulation": b, "exposure": exposure, "shape": shape}
+    return {"true_sigma": sigma, "modulation": b, "exposure": exposure,
+            "gain_swing": gain_swing, "gains": g.tolist(), "shape": shape}
 
 
 def run(
@@ -150,8 +163,14 @@ def run(
     against it. Writes a height-uncertainty map (um) and a per-pixel noise map
     (DN) to out_dir; returns a metrics dict."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    frames = reconstruct.load_frames(capture_dir)
-    n, h_px, w_px = frames.shape
+    raw = reconstruct.load_frames(capture_dir)
+    n, h_px, w_px = raw.shape
+
+    # A per-frame brightness swing is systematic, not noise -- divide it out
+    # before estimating the noise, or it inflates the residual. The swing itself
+    # is measured on the raw stack and reported separately.
+    swing_pct = exposure.brightness_swing_pct(raw)
+    frames, _gains = exposure.normalize_frame_gains(raw)
 
     sigma_map = fit_residual_sigma(frames)
     phase, modulation = reconstruct.extract_phase(frames)
@@ -159,9 +178,10 @@ def run(
     valid = modulation > modulation_threshold
     if erode_px > 0:
         valid = cv2.erode(valid.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=erode_px).astype(bool)
-    # Clipped samples aren't Gaussian noise and corrupt the residual fit.
-    saturated = np.any(frames >= 254.5 / 255.0, axis=0)
-    black = np.any(frames <= 0.5 / 255.0, axis=0)
+    # Clipped samples aren't Gaussian noise and corrupt the residual fit
+    # (detected on the raw stack, where the actual clipping happened).
+    saturated = np.any(raw >= 254.5 / 255.0, axis=0)
+    black = np.any(raw <= 0.5 / 255.0, axis=0)
     clipped = saturated | black
     est_mask = valid & ~clipped
 
@@ -188,6 +208,7 @@ def run(
         "total_pixels": int(valid.size),
         "sigma_est_dn": sigma_norm * 255.0,
         "sigma_spatial_dn": sigma_spatial * 255.0,
+        "brightness_swing_pct": swing_pct,
         "lambda_eq_mm": lambda_eq,
         "height_uncertainty_um_mean": mean_um,
         "height_uncertainty_um_median": median_um,
