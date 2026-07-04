@@ -36,6 +36,10 @@ def parse_args():
                         help="surface mesh grid density; raise it for fine roughness (surfaces.rough)")
     parser.add_argument("--z-offset", type=float, default=0.0,
                         help="raise the whole surface by this many mm (a simulated z-stage, for calibration)")
+    parser.add_argument("--target-dots", action="store_true",
+                        help="render a single dot-grid target frame (for lateral pixel->world calibration) instead of a fringe stack")
+    parser.add_argument("--dot-spacing", type=float, default=8.0, help="dot grid spacing (mm)")
+    parser.add_argument("--dot-radius", type=float, default=1.2, help="dot radius (mm)")
     return parser.parse_args(argv)
 
 
@@ -43,6 +47,14 @@ def main() -> None:
     args = parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.target_dots:
+        rig.clear_scene()
+        cam = rig.add_telecentric_camera()
+        rig.add_target_plane(spacing_mm=args.dot_spacing, radius_mm=args.dot_radius)
+        rig.render(bpy.context.scene, cam, rig.CAM_PIXELS, out_dir / "target.png", args.samples)
+        print(f"[capture_pipeline] target (dot spacing {args.dot_spacing}mm) -> {out_dir / 'target.png'}")
+        return
 
     rig.clear_scene()
     projector = rig.add_projector()

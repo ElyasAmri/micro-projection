@@ -256,6 +256,67 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     return surface, phase_fraction
 
 
+def add_target_plane(spacing_mm: float = 8.0, radius_mm: float = 1.2, size: float = SURFACE_SIZE_M):
+    """A flat plane at z=0 with an emissive dot grid: dark disks of radius
+    `radius_mm` centered on a `spacing_mm` world grid, i.e.\\ dots at exactly
+    (i*spacing, j*spacing) mm. Imaged by the telecentric camera this gives known
+    pixel<->world correspondences for the lateral calibration
+    (calibration.calibrate_lateral). Driven by the shading point's object
+    position (= world here, the plane is at the origin), so the dot centers are
+    exact known world coordinates with no UV/orientation ambiguity. Emissive, so
+    it needs no scene lighting."""
+    bpy.ops.mesh.primitive_plane_add(size=size, location=(0.0, 0.0, 0.0))
+    plane = bpy.context.active_object
+    plane.name = "TargetPlane"
+
+    mat = bpy.data.materials.new("TargetMaterial")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    s_m, r_m = spacing_mm * MM, radius_mm * MM
+
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(coord.outputs["Object"], sep.inputs["Vector"])
+
+    def axis_offset(comp):
+        # signed distance to the nearest grid line: off = X - round(X/s)*s
+        div = nt.nodes.new("ShaderNodeMath"); div.operation = "DIVIDE"; div.inputs[1].default_value = s_m
+        nt.links.new(sep.outputs[comp], div.inputs[0])
+        rnd = nt.nodes.new("ShaderNodeMath"); rnd.operation = "ROUND"
+        nt.links.new(div.outputs[0], rnd.inputs[0])
+        mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.inputs[1].default_value = s_m
+        nt.links.new(rnd.outputs[0], mul.inputs[0])
+        off = nt.nodes.new("ShaderNodeMath"); off.operation = "SUBTRACT"
+        nt.links.new(sep.outputs[comp], off.inputs[0])
+        nt.links.new(mul.outputs[0], off.inputs[1])
+        return off
+
+    offx, offy = axis_offset("X"), axis_offset("Y")
+    sx = nt.nodes.new("ShaderNodeMath"); sx.operation = "MULTIPLY"
+    nt.links.new(offx.outputs[0], sx.inputs[0]); nt.links.new(offx.outputs[0], sx.inputs[1])
+    sy = nt.nodes.new("ShaderNodeMath"); sy.operation = "MULTIPLY"
+    nt.links.new(offy.outputs[0], sy.inputs[0]); nt.links.new(offy.outputs[0], sy.inputs[1])
+    ss = nt.nodes.new("ShaderNodeMath"); ss.operation = "ADD"
+    nt.links.new(sx.outputs[0], ss.inputs[0]); nt.links.new(sy.outputs[0], ss.inputs[1])
+    dist = nt.nodes.new("ShaderNodeMath"); dist.operation = "SQRT"
+    nt.links.new(ss.outputs[0], dist.inputs[0])
+    # white (1) outside the dot radius, dark (0) inside
+    white = nt.nodes.new("ShaderNodeMath"); white.operation = "GREATER_THAN"; white.inputs[1].default_value = r_m
+    nt.links.new(dist.outputs[0], white.inputs[0])
+
+    rgb = nt.nodes.new("ShaderNodeCombineXYZ")
+    for c in ("X", "Y", "Z"):
+        nt.links.new(white.outputs[0], rgb.inputs[c])
+    emission = nt.nodes.new("ShaderNodeEmission")
+    emission.inputs["Strength"].default_value = 1.0
+    nt.links.new(rgb.outputs["Vector"], emission.inputs["Color"])
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(emission.outputs["Emission"], out.inputs["Surface"])
+    plane.data.materials.append(mat)
+    return plane
+
+
 def add_telecentric_camera():
     cam_data = bpy.data.cameras.new("TelecentricLens")
     cam_data.type = "ORTHO"

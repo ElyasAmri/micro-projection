@@ -48,33 +48,56 @@ from geometry_constants import THETA_DEG
 
 
 class Calibration:
-    """A measured per-pixel phase-to-height map: z = (psi - c0) / k, valid only
-    where every calibration plane was well modulated. `n_periods` is the rung the
-    calibration was measured at (the finest, which sets the height)."""
+    """A measured geometry: the per-pixel phase-to-height map z = (psi - c0) / k
+    (vertical), and optionally a pixel->world affine (lateral). `n_periods` is the
+    rung the vertical calibration was measured at (the finest, which sets height).
+
+    `lateral` is a 2x3 affine [x; y] = A [col; row; 1] mapping camera pixel to
+    world (x, y) mm on the reference plane, or None to fall back to the nominal
+    analytic map (reconstruct.pixel_to_world)."""
 
     def __init__(self, c0: np.ndarray, k: np.ndarray, valid: np.ndarray,
-                 n_periods: float, z_values: np.ndarray, fit_rms_um: float):
+                 n_periods: float, z_values: np.ndarray, fit_rms_um: float,
+                 lateral: np.ndarray | None = None, lateral_rms_um: float = float("nan")):
         self.c0 = c0
         self.k = k
         self.valid = valid
         self.n_periods = float(n_periods)
         self.z_values = np.asarray(z_values)
         self.fit_rms_um = float(fit_rms_um)
+        self.lateral = None if lateral is None else np.asarray(lateral, dtype=np.float64)
+        self.lateral_rms_um = float(lateral_rms_um)
 
     def save(self, path: Path) -> None:
-        np.savez(path, c0=self.c0, k=self.k, valid=self.valid,
-                 n_periods=self.n_periods, z_values=self.z_values, fit_rms_um=self.fit_rms_um)
+        np.savez(path, c0=self.c0, k=self.k, valid=self.valid, n_periods=self.n_periods,
+                 z_values=self.z_values, fit_rms_um=self.fit_rms_um,
+                 has_lateral=(self.lateral is not None),
+                 lateral=(self.lateral if self.lateral is not None else np.zeros((2, 3))),
+                 lateral_rms_um=self.lateral_rms_um)
 
     @classmethod
     def load(cls, path: Path) -> "Calibration":
         d = np.load(path)
-        return cls(d["c0"], d["k"], d["valid"], float(d["n_periods"]),
-                   d["z_values"], float(d["fit_rms_um"]))
+        lateral = d["lateral"] if bool(d["has_lateral"]) else None
+        return cls(d["c0"], d["k"], d["valid"], float(d["n_periods"]), d["z_values"],
+                   float(d["fit_rms_um"]), lateral, float(d["lateral_rms_um"]))
 
     def height_from_unwrapped_psi(self, psi_fine_unwrapped: np.ndarray) -> np.ndarray:
         """Calibrated height (mm) from the ladder-unwrapped fine-rung phase."""
         k = np.where(np.abs(self.k) > 1e-9, self.k, np.nan)
         return (psi_fine_unwrapped - self.c0) / k
+
+    def world_grid(self, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+        """Per-pixel world (x, y) mm: the calibrated affine if a lateral map was
+        measured, else the nominal analytic map (reconstruct.pixel_to_world)."""
+        if self.lateral is None:
+            return reconstruct.pixel_to_world(shape, THETA_DEG)
+        h, w = shape
+        cols, rows = np.meshgrid(np.arange(w), np.arange(h))
+        a = self.lateral
+        world_x = a[0, 0] * cols + a[0, 1] * rows + a[0, 2]
+        world_y = a[1, 0] * cols + a[1, 1] * rows + a[1, 2]
+        return world_x, world_y
 
 
 def calibrate(
@@ -140,6 +163,55 @@ def calibrate(
     return Calibration(c0, k, valid, n_periods, z, fit_rms_um)
 
 
+def detect_dots(image: np.ndarray, min_area: int = 100, max_area: int = 6000) -> np.ndarray:
+    """Centroids (col, row) of the dark dots in a rendered dot-grid target
+    (rig.add_target_plane). Threshold at the mid-level, take dot-sized connected
+    components, return their centroids -- sub-pixel enough that the affine fit
+    averages out the residual. `image` is 8-bit grayscale."""
+    import cv2
+    thresh = (int(image.min()) + int(image.max())) / 2.0
+    dark = (image < thresh).astype(np.uint8)
+    n, _labels, stats, centroids = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    keep = [i for i in range(1, n) if min_area < stats[i, cv2.CC_STAT_AREA] < max_area]
+    return centroids[keep]  # (N, 2) as (x=col, y=row)
+
+
+def calibrate_lateral(
+    centroids_px: np.ndarray, spacing_mm: float, shape: tuple[int, int]
+) -> tuple[np.ndarray, float]:
+    """Fit the pixel->world affine from detected dot centroids.
+
+    The dots sit on a known `spacing_mm` world grid (rig.add_target_plane, centers
+    at (i*s, j*s) mm). Map each centroid through the nominal analytic map to an
+    approximate world position and snap it to the nearest grid node -- its exact
+    known world coordinate (robust: the nominal error, ~0.5mm, is far under half a
+    spacing). Then least-squares fit [x; y] = A [col; row; 1]. Returns (A 2x3,
+    fit RMS in um)."""
+    world_x_nom, world_y_nom = reconstruct.pixel_to_world(shape, THETA_DEG)
+    cols, rows = centroids_px[:, 0], centroids_px[:, 1]
+    ci = np.clip(np.round(cols).astype(int), 0, shape[1] - 1)
+    ri = np.clip(np.round(rows).astype(int), 0, shape[0] - 1)
+    wx_true = np.round(world_x_nom[ri, ci] / spacing_mm) * spacing_mm
+    wy_true = np.round(world_y_nom[ri, ci] / spacing_mm) * spacing_mm
+
+    m = np.column_stack([cols, rows, np.ones_like(cols)])
+    ax, *_ = np.linalg.lstsq(m, wx_true, rcond=None)
+    ay, *_ = np.linalg.lstsq(m, wy_true, rcond=None)
+    a = np.vstack([ax, ay])  # 2x3
+    resid_um = float(np.sqrt(np.mean((m @ ax - wx_true) ** 2 + (m @ ay - wy_true) ** 2)) * 1000.0)
+    return a, resid_um
+
+
+def add_lateral(calib: Calibration, target_image: np.ndarray, spacing_mm: float) -> Calibration:
+    """Measure the lateral pixel->world map from a dot-grid target frame and
+    attach it to `calib` (in place); returns it."""
+    centroids = detect_dots(target_image)
+    if len(centroids) < 3:
+        raise ValueError(f"only {len(centroids)} dots detected; need >= 3 for an affine fit")
+    calib.lateral, calib.lateral_rms_um = calibrate_lateral(centroids, spacing_mm, target_image.shape)
+    return calib
+
+
 def reconstruct_calibrated(
     ladder_capture_dirs: list[Path],
     out_dir: Path,
@@ -149,13 +221,19 @@ def reconstruct_calibrated(
     modulation_threshold: float = 0.03,
     erode_px: int = 10,
     normalize_gains: bool = True,
+    parallax: bool = True,
     verbose: bool = True,
 ) -> dict:
     """Reconstruct a surface from its coarse->fine ladder, then convert the
     unwrapped fine-rung phase to height with `calib` instead of the analytic
     lambda_eq/carrier. The ladder still supplies the (robust, integer) fringe
-    orders; calibration only corrects the final phase-to-height map. Scored and
-    written like reconstruct.run_multifreq."""
+    orders; calibration only corrects the final phase-to-height map.
+
+    Lateral placement uses the calibrated pixel->world map (calib.world_grid);
+    with `parallax`, each height is then shifted by h*tan(theta) along x -- the
+    tilted telecentric camera images an elevated point offset in x, and without
+    this the height lands at its z=0 position (the ~0.5mm mis-registration of
+    report/math.tex). Scored and written like reconstruct.run_multifreq."""
     out_dir.mkdir(parents=True, exist_ok=True)
     if n_periods_ladder is None:
         from geometry_constants import N_PERIODS_LADDER
@@ -176,8 +254,12 @@ def reconstruct_calibrated(
     height = calib.height_from_unwrapped_psi(psi_fine_unwrapped)
 
     valid = valid_nominal & calib.valid & np.isfinite(height)
-    world_x, world_y = reconstruct.pixel_to_world(height.shape, THETA_DEG)
     height = np.nan_to_num(height, nan=0.0)
+    # Placement (and thus ground-truth scoring) uses the calibrated world map, so
+    # a corrected lateral registration actually shows up in the score.
+    world_x, world_y = calib.world_grid(height.shape)
+    if parallax:  # tilted camera: an elevated point images shifted by h*tan(theta) in x
+        world_x = world_x + height * np.tan(np.radians(THETA_DEG))
 
     metrics = {
         "surface": surface,
@@ -187,6 +269,9 @@ def reconstruct_calibrated(
         "total_pixels": int(valid.size),
         "lambda_eq_mm": lambda_fine,
         "calib_fit_rms_um": calib.fit_rms_um,
+        "lateral_calibrated": calib.lateral is not None,
+        "lateral_fit_rms_um": calib.lateral_rms_um,
+        "parallax_corrected": parallax,
     }
     metrics = reconstruct._write_and_score(height, valid, world_x, world_y, out_dir, surface, metrics, verbose)
     if verbose:

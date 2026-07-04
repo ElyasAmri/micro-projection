@@ -158,11 +158,17 @@ python simulation/calibration.py --plane-dirs out/cal/z-0.5 out/cal/z0 out/cal/z
     --z-values -0.5 0.0 0.5 --n-periods 80 --out out/cal/calib.npz
 ```
 
-Validated against a Blender camera render (known true geometry): the fit
-recovers the mean sensitivity exactly and its real 2.3× across-field variation,
-cutting the `rough` height RMSE from **134 µm → 24 µm** (R² 0.85 → 0.995). This
-is the **vertical** half — it fixes the height scale / off-center bias but not
-the ~0.5 mm **lateral** mis-registration (that needs a pixel→world calibration
-against a known target, the next step). See `report/math.tex` §"Geometry
-calibration". On real hardware this replaces the nominal constants; capturing and
-reconstruction work today, calibration makes the height map accurate.
+A **lateral** pixel→world map is calibrated separately from a dot-grid target
+(`capture_pipeline --target-dots`, dots at known world positions): detect the
+centroids, fit an affine. That fit *confirmed the nominal map is already correct*
+(to ~0.05 mm) — so the ~0.5 mm offset isn't a mapping error, it's **parallax**
+(the tilted camera images a point at height h shifted by `h·tanθ` in x). Adding
+that analytic correction (`reconstruct_calibrated(parallax=True)`) closes it.
+
+Validated against a Blender camera render (known true geometry), the three
+corrections compound — `rough` height RMSE **134 → 24 → 8.4 µm** (nominal →
+vertical → vertical+lateral+parallax, R² 0.85 → 0.995 → 0.9994), roughness-map
+registration 0.73 → 0.99. The only measured inputs are a z-plane sweep and one
+dot-grid frame — the exact procedure a real rig runs. See `report/math.tex`
+§"Geometry calibration". On hardware these replace the nominal constants;
+capturing and reconstruction work today, calibration makes the map accurate.

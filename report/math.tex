@@ -723,12 +723,28 @@ calibration removes. The carrier residual $c_0$ is small ($\approx9$\,\textmu m
 RMS as a height) --- the analytic carrier is good; it is the \emph{scale} that
 varies.
 
-This is the \emph{vertical} half. It does \emph{not} fix the lateral
-mis-registration of Section~\ref{sec:roughness-camera}: the roughness-map
-correlation moves only $0.73\to0.74$ (the $\sim\!0.5$\,mm offset persists),
-because Eq.~\ref{eq:calib} corrects height per pixel but does not re-map pixels to
-world $(x,y)$. Closing that needs a lateral calibration --- a known target
-(checkerboard/dots) fixing pixel$\,\to\,(x,y)$ --- which the same z-plane rig can
-carry, and is the next step.
+That is the \emph{vertical} half; it does not touch the lateral
+mis-registration of Section~\ref{sec:roughness-camera} (roughness correlation
+$0.73\to0.74$). A dot-grid target (\texttt{rig.add\_target\_plane}, dark disks at
+known world $(is,js)$) imaged by the same camera calibrates the
+pixel$\,\to\,$world map: detect the centroids, snap each through the nominal map
+to its grid node (its exact world coordinate), and least-squares fit an affine
+$[x;y]=A\,[\text{col};\text{row};1]$. The fit is tight ($2.8$\,\textmu m over the
+grid) --- and it recovers the \emph{nominal} map to within $\sim\!0.05$\,mm. So
+the pixel$\,\to\,$world map is not the culprit: the $\sim\!0.5$\,mm offset is
+\emph{parallax}. The tilted telecentric camera images a point at height $h$
+shifted by $h\tan\theta$ along $x$ (Section~\ref{sec:height-from-phase}) while the
+reconstruction places each height at its $z=0$ position; the mean form height
+($\sim\!0.6$\,mm) gives a mean shift $\sim\!0.6\tan\theta\approx0.5$\,mm, matching
+the observation. Correcting it analytically with the reconstructed height, $x
+\mapsto x + h\tan\theta$, drives the roughness-map correlation to $0.986$ (best
+scale $1.00\,h\tan\theta$; the wrong sign gives $0.34$).
+
+The three corrections compound. On the \texttt{rough} Blender captures the height
+RMSE falls $134 \to 24 \to \mathbf{8.4}$\,\textmu m (nominal $\to$ vertical $\to$
+vertical\,+\,lateral\,+\,parallax), $R^2\,0.85\to0.995\to0.9994$. The only
+measured inputs are a small z-plane sweep and one dot-grid frame --- the exact
+procedure a real rig runs, validated here because Blender's true geometry is
+known. \texttt{simulation/calibration.py} carries all three.
 
 \end{document}
