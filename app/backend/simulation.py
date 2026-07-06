@@ -111,6 +111,40 @@ class SimulationBackend(Backend):
             argv += ["--subdivisions", str(subdivisions)]
         return CaptureSpec(argv=argv, cwd=repo_root(), capture_dir=capture_dir, n_steps=n_steps)
 
+    # -- rig preview (annotated Blender overview of the scene geometry) ------
+
+    def rig_preview_path(self) -> Path:
+        """Where the annotated rig overview render lands (and is loaded from)."""
+        return out_root() / "rig_model" / "overview_annotated.png"
+
+    def rig_preview_command(
+        self,
+        samples: int = 32,
+        azimuth: float | None = None,
+        elevation: float | None = None,
+        distance: float | None = None,
+    ) -> CaptureSpec:
+        """Describe how to render the rig overview (simulation/rig_preview.py)
+        with Blender: one annotated frame showing the projector, the camera,
+        and the surface. `azimuth`/`elevation` (degrees) and `distance` (m)
+        orbit the viewpoint around the scene; left None, the script's default
+        framing is used. `--python-exit-code` makes a script failure a nonzero
+        exit instead of Blender's default success."""
+        script = sim_dir() / "rig_preview.py"
+        if not script.is_file():
+            raise FileNotFoundError(f"rig_preview.py not found at {script} (set MP_SIMULATION_DIR)")
+        out = self.rig_preview_path()
+        argv = [
+            self.blender_path(), "-b", "--python-exit-code", "1", "-P", str(script), "--",
+            "--out", str(out),
+            "--samples", str(samples),
+        ]
+        for flag, value in (("--azimuth", azimuth), ("--elevation", elevation),
+                            ("--distance", distance)):
+            if value is not None:
+                argv += [flag, f"{float(value):g}"]
+        return CaptureSpec(argv=argv, cwd=repo_root(), capture_dir=out.parent, n_steps=1)
+
     def blender_path(self) -> str:
         """Locate the Blender executable (env MP_BLENDER, then PATH, then the
         macOS app bundle)."""

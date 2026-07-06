@@ -7,6 +7,7 @@ and a Reset Layout action restores the default arrangement."""
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
 from PySide6.QtGui import QImage, QKeySequence, QShortcut
@@ -24,9 +25,10 @@ from PySide6.QtWidgets import (
 from logbus import get_logger, success
 from version import __version__
 from backend import Backend, SimulationBackend
-from ui.canvas import Canvas
+from ui.canvas import Canvas, OrbitCanvas
 from ui.console import Console
 from ui.imaging import gray_to_qimage
+from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
 
 log = get_logger("ui")
@@ -39,13 +41,14 @@ VIEW_PANES = [
     ("Reconstructed", "reconstructedCanvas", "reconstructedDock"),
     ("Noise", "noiseCanvas", "noiseDock"),
     ("Roughness", "roughnessCanvas", "roughnessDock"),
+    ("Rig", "rigCanvas", "rigDock"),
 ]
 
 # Bump when the pane set / dock objectNames change (or the default sizing does)
 # so a saved layout from an older shape is ignored instead of restored into a
 # mismatched tree. v2: control width is sized by naming both sides of the split.
-# v3: added the Noise view. v4: added the Roughness view.
-LAYOUT_VERSION = 4
+# v3: added the Noise view. v4: added the Roughness view. v5: added the Rig view.
+LAYOUT_VERSION = 5
 
 
 class _DockTitleTab(QWidget):
@@ -122,6 +125,30 @@ class MainWindow(QMainWindow):
         self._ladder_n_steps = 8
         self._ladder_kwargs: dict = {}
 
+        # The rig-overview render is its own Blender run (independent of the
+        # capture runner, so it never gates or is gated by a capture).
+        self._rig_runner = ProcessRunner(self)
+        self._rig_runner.line.connect(self._on_rig_line)
+        self._rig_runner.finished.connect(self._on_rig_finished)
+        self._rig_runner.failed.connect(self._on_rig_failed)
+        self._rig_tail: deque[str] = deque(maxlen=25)
+        # Orbit state for the Rig view (degrees / meters; matches the script's
+        # default framing). Dragging updates it, then the debounce timer fires
+        # one fast re-render; input landing mid-render sets the pending flag so
+        # exactly one more render (with the latest state) follows.
+        self._rig_view = {"azimuth": -49.2, "elevation": 22.9, "distance": 0.631}
+        # For the canvas HUD: the view of the image on screen, and of the
+        # render in flight (becomes displayed when it lands). The startup
+        # image's true view is unknown (older session) -- assume the default.
+        self._rig_view_displayed = dict(self._rig_view)
+        self._rig_view_inflight: dict | None = None
+        self._rig_render_pending = False
+        self._rig_orbit_timer = QTimer(self)
+        self._rig_orbit_timer.setSingleShot(True)
+        self._rig_orbit_timer.setInterval(200)
+        self._rig_orbit_timer.timeout.connect(self._request_rig_render)
+        self._load_rig_preview()  # show the last render, if one exists
+
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
 
         # Dock sizing needs real window geometry, which only exists once shown,
@@ -166,6 +193,7 @@ class MainWindow(QMainWindow):
         self.sidebar.pipeline_requested.connect(self._on_pipeline)
         self.sidebar.multifreq_requested.connect(self._on_pipeline_multifreq)
         self.sidebar.noise_requested.connect(self._on_estimate_noise)
+        self.sidebar.rig_requested.connect(self._on_render_rig)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -173,7 +201,7 @@ class MainWindow(QMainWindow):
         # remaining views onto the first -- so they share the top sub-area and the
         # console keeps the bottom. Splitting after tabbing merges into the tabs.
         first_label, first_name, first_dockname = VIEW_PANES[0]
-        first_canvas = Canvas(first_name)
+        first_canvas = self._make_canvas(first_name)
         self.canvases[first_name] = first_canvas
         first_dock = self._dock(first_label, first_dockname, first_canvas, Qt.RightDockWidgetArea)
         self.view_docks[first_name] = first_dock
@@ -183,7 +211,7 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(first_dock, console, Qt.Vertical)
 
         for label, name, dock_name in VIEW_PANES[1:]:
-            canvas = Canvas(name)
+            canvas = self._make_canvas(name)
             self.canvases[name] = canvas
             dock = self._dock(label, dock_name, canvas)
             self.view_docks[name] = dock
@@ -192,6 +220,17 @@ class MainWindow(QMainWindow):
         # Title bars are managed by _sync_title_bars: a tab-merged dock gets an
         # empty one (the shared tab bar labels it); a standalone dock gets a
         # single-tab header -- so every pane always reads as a tab.
+
+    def _make_canvas(self, name: str) -> Canvas:
+        """One view canvas; the Rig view gets the orbitable variant, wired to
+        the debounced re-render."""
+        if name != "rigCanvas":
+            return Canvas(name)
+        canvas = OrbitCanvas(name)
+        canvas.orbited.connect(self._on_rig_orbit)
+        canvas.zoomed.connect(self._on_rig_zoom)
+        canvas.released.connect(self._request_rig_render)
+        return canvas
 
     # -- layout menu + persistence --------------------------------------------
 
@@ -344,6 +383,142 @@ class MainWindow(QMainWindow):
         self.backend.project(fringe)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
         success(log, f"projected {self.backend.n_periods:g}-period fringe")
+
+    # -- rig overview (annotated Blender render of the scene geometry) --------
+
+    def _rig_preview_path(self) -> Path | None:
+        getter = getattr(self.backend, "rig_preview_path", None)
+        return Path(getter()) if callable(getter) else None
+
+    def _load_rig_preview(self) -> bool:
+        """Show the last rig-overview render in the Rig pane, if one exists."""
+        path = self._rig_preview_path()
+        if path is None or not path.is_file():
+            return False
+        self.canvases["rigCanvas"].set_image(QImage(str(path)))
+        return True
+
+    def _on_render_rig(self, **kwargs) -> bool:
+        """Render the annotated rig overview with Blender (asynchronous), then
+        show it in the Rig pane. Available on backends that model the rig in
+        Blender (simulation); on hardware the last render, if any, still shows.
+        Renders at the pane's current orbit state; explicit view kwargs
+        (azimuth / elevation / distance) win and update that state. Returns
+        whether a render was actually started (failures are logged, not
+        raised -- this doubles as a Qt slot)."""
+        command = getattr(self.backend, "rig_preview_command", None)
+        if not callable(command):
+            log.warning(f"rig preview not available on the {self.backend.kind_label} backend")
+            return False
+        if self._rig_runner.is_running():
+            log.warning("a rig render is already running")
+            return False
+        for key in ("azimuth", "elevation", "distance"):
+            if key in kwargs:
+                self._rig_view[key] = float(kwargs[key])
+            kwargs[key] = self._rig_view[key]
+        try:
+            spec = command(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
+            log.warning(f"cannot render rig view: {exc}")
+            return False
+        self._rig_tail.clear()
+        log.info("rig view: rendering the annotated overview...")
+        self._rig_runner.start(spec.argv, str(spec.cwd))
+        self._rig_view_inflight = {k: self._rig_view[k]
+                                   for k in ("azimuth", "elevation", "distance")}
+        self._push_rig_hint()
+        return True
+
+    # Orbit re-renders trade quality for latency; the sidebar button still
+    # renders at the backend's default samples.
+    ORBIT_SAMPLES = 16
+
+    def _on_rig_orbit(self, d_azimuth: float, d_elevation: float) -> None:
+        view = self._rig_view
+        view["azimuth"] = (view["azimuth"] + d_azimuth) % 360.0
+        # Clamped short of the pole, where the camera's roll flips around.
+        view["elevation"] = min(85.0, max(5.0, view["elevation"] + d_elevation))
+        self._on_rig_view_changed()
+
+    def _on_rig_zoom(self, factor: float) -> None:
+        view = self._rig_view
+        view["distance"] = min(1.4, max(0.35, view["distance"] * factor))
+        self._on_rig_view_changed()
+
+    def _on_rig_view_changed(self) -> None:
+        view = self._rig_view
+        if not self._capture_runner.is_running():
+            self._status_left.setText(
+                f"Rig view: az {view['azimuth']:.0f}°  el {view['elevation']:.0f}°  "
+                f"dist {view['distance']:.2f} m"
+            )
+        self._push_rig_hint()
+        canvas = self.canvases.get("rigCanvas")
+        if isinstance(canvas, OrbitCanvas) and canvas.is_orbiting():
+            return  # mid-drag: the gizmo tracks; the render fires on release
+        self._rig_orbit_timer.start()  # wheel zoom etc.: fire once input settles
+
+    def _push_rig_hint(self) -> None:
+        """Keep the Rig canvas HUD current: it shows the queued rotation (the
+        gap between the drag target and the on-screen render) the moment the
+        mouse moves, hiding the render latency."""
+        canvas = self.canvases.get("rigCanvas")
+        if isinstance(canvas, OrbitCanvas):
+            canvas.set_view_hint(self._rig_view, self._rig_view_displayed,
+                                 self._rig_runner.is_running())
+
+    def _request_rig_render(self) -> None:
+        """Orbit re-render (on drag release / settled wheel zoom): fast
+        samples; a no-op interaction (plain click, drag back to the start)
+        renders nothing, and input landing mid-render coalesces into exactly
+        one follow-up render at the latest state."""
+        target, shown = self._rig_view, self._rig_view_displayed
+        if (abs(OrbitCanvas._az_delta(target["azimuth"], shown["azimuth"])) < 0.5
+                and abs(target["elevation"] - shown["elevation"]) < 0.5
+                and abs(target["distance"] - shown["distance"]) < 0.005):
+            self._push_rig_hint()  # clears a stale "waiting" readout
+            return
+        if self._rig_runner.is_running():
+            self._rig_render_pending = True
+            return
+        self._on_render_rig(samples=self.ORBIT_SAMPLES)
+
+    def _on_rig_line(self, line: str) -> None:
+        self._rig_tail.append(line)
+        # Progress lines are tagged "[rig_preview] ..."; surface just those.
+        if line.startswith("[rig_preview]"):
+            log.info(line.split("]", 1)[-1].strip())
+
+    def _on_rig_finished(self, exit_code: int) -> None:
+        if exit_code != 0:
+            self._rig_render_pending = False  # don't chain renders after a failure
+            self._rig_view_inflight = None
+            self._push_rig_hint()
+            log.error(f"rig render failed (exit {exit_code})")
+            for tail in list(self._rig_tail)[-6:]:
+                log.error(tail)
+            return
+        if self._load_rig_preview():
+            if self._rig_view_inflight is not None:
+                self._rig_view_displayed = self._rig_view_inflight
+                self._rig_view_inflight = None
+            self._show_tab("rigCanvas")
+            success(log, "rig view rendered")
+        else:
+            log.error("rig render finished but produced no image")
+        if self._rig_render_pending:  # orbit input arrived mid-render
+            self._rig_render_pending = False
+            self._request_rig_render()  # re-checks: the drag may have come back
+        elif not self._capture_runner.is_running():
+            self._status_left.setText("Ready")
+        self._push_rig_hint()
+
+    def _on_rig_failed(self, message: str) -> None:
+        self._rig_render_pending = False
+        self._rig_view_inflight = None
+        self._push_rig_hint()
+        log.error(f"rig render failed: {message}")
 
     def _display_reconstruction(self, surface: str, result) -> None:
         self.canvases["reconstructedCanvas"].set_image(QImage(str(result.height_png)))
@@ -655,6 +830,7 @@ class MainWindow(QMainWindow):
             "reconstruct_multifreq": self._cmd_reconstruct_multifreq,
             "measure_roughness": self._cmd_measure_roughness,
             "estimate_noise": self._cmd_estimate_noise,
+            "render_rig": self._cmd_render_rig,
         }
 
     def _cmd_log(self, args: dict):
@@ -771,6 +947,18 @@ class MainWindow(QMainWindow):
         )
         self._display_roughness(surface, result)
         return {"surface": surface, "metrics": result.metrics}
+
+    def _cmd_render_rig(self, args: dict):
+        """Start the annotated rig-overview render (asynchronous); the Rig pane
+        updates when it finishes. `samples` overrides the render quality;
+        `azimuth`/`elevation` (degrees) and `distance` (m) orbit the viewpoint
+        (and become the pane's current orbit state)."""
+        kwargs = {k: float(args[k]) for k in ("azimuth", "elevation", "distance") if k in args}
+        if "samples" in args:
+            kwargs["samples"] = int(args["samples"])
+        if not self._on_render_rig(**kwargs):
+            raise ValueError("rig render not started (see console)")
+        return {"rig_render": "started", "view": dict(self._rig_view)}
 
     def _cmd_estimate_noise(self, args: dict):
         """Analyze reconstruction error (noise + exposure swing). `injected_sigma_dn`

@@ -1,9 +1,13 @@
 # Micro-Projection Control
 
 Desktop control application for the fringe-projection profilometry rig, rebuilt
-from scratch (PySide6). The shell is a tabbed **canvas** (Projected Image /
-Captured Surface / Reconstructed Surface) with a **sidebar** docked on the left
-and a **console** docked along the bottom.
+from scratch (PySide6). The shell is a tabbed **canvas** (Projected / Captured /
+Reconstructed / Noise / Roughness / Rig) with a **sidebar** docked on the left
+and a **console** docked along the bottom. The Rig tab shows an annotated
+Blender overview of the scene geometry (`simulation/rig_preview.py`), rendered
+on demand via the sidebar's "Render Rig View"; drag on it to orbit the
+viewpoint (a centered gizmo tracks the drag, the re-render fires on release)
+and scroll to zoom.
 
 Until the real hardware is available, the app drives the sibling `simulation/`
 as a virtual rig (a `SimulationBackend` behind the UI): project a fringe,

@@ -64,6 +64,39 @@ def test_backend_generate_fringe_uses_its_n_periods():
     assert img.shape == (64, 128)
 
 
+# -- rig preview (simulation only) --------------------------------------------
+
+def test_rig_preview_command_describes_a_blender_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("MP_BLENDER", "/stub/blender")
+    monkeypatch.setenv("MP_OUT_DIR", str(tmp_path))
+    backend = SimulationBackend()
+    spec = backend.rig_preview_command(samples=16)
+    assert spec.argv[0] == "/stub/blender"
+    assert any(arg.endswith("rig_preview.py") for arg in spec.argv)
+    # A script failure must fail the run: Blender's default exit code is 0
+    # even when -P raises, so the argv has to opt into propagation.
+    assert "--python-exit-code" in spec.argv
+    assert spec.argv[spec.argv.index("--samples") + 1] == "16"
+    out = backend.rig_preview_path()
+    assert out == tmp_path / "rig_model" / "overview_annotated.png"
+    assert spec.argv[spec.argv.index("--out") + 1] == str(out)
+    # No view args -> the script's default framing (no orbit flags at all).
+    assert "--azimuth" not in spec.argv
+
+
+def test_rig_preview_command_orbits_the_viewpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("MP_BLENDER", "/stub/blender")
+    monkeypatch.setenv("MP_OUT_DIR", str(tmp_path))
+    spec = SimulationBackend().rig_preview_command(azimuth=30.0, elevation=55.5, distance=0.8)
+    assert spec.argv[spec.argv.index("--azimuth") + 1] == "30"
+    assert spec.argv[spec.argv.index("--elevation") + 1] == "55.5"
+    assert spec.argv[spec.argv.index("--distance") + 1] == "0.8"
+
+
+def test_rig_preview_is_simulation_only():
+    assert not hasattr(create_backend("hardware"), "rig_preview_command")
+
+
 # -- synthetic camera --------------------------------------------------------
 
 def test_open_camera_dummy():

@@ -26,6 +26,7 @@ class Sidebar(QWidget):
     pipeline_requested = Signal()  # full project -> capture -> reconstruct
     multifreq_requested = Signal() # coarse->fine ladder capture + unwrapping
     noise_requested = Signal()     # estimate imaging noise + its error margin
+    rig_requested = Signal()       # render the annotated rig overview (Rig tab)
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -84,6 +85,18 @@ class Sidebar(QWidget):
         )
         self.multifreq_button.clicked.connect(lambda: self.multifreq_requested.emit())
         layout.addWidget(self.multifreq_button)
+
+        self.rig_button = QPushButton("Render Rig View")
+        self.rig_button.setObjectName("rigButton")
+        self.rig_button.setToolTip(
+            "Render an annotated Blender overview of the rig geometry -- the "
+            "projector, the tilted telecentric camera, and the fringe-lit "
+            "surface -- into the Rig tab. Drag on the Rig view to orbit it "
+            "(the gizmo tracks the drag; the render fires on release), "
+            "scroll to zoom."
+        )
+        self.rig_button.clicked.connect(lambda: self.rig_requested.emit())
+        layout.addWidget(self.rig_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.
