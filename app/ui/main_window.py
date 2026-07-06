@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         # default framing). Dragging updates it, then the debounce timer fires
         # one fast re-render; input landing mid-render sets the pending flag so
         # exactly one more render (with the latest state) follows.
-        self._rig_view = {"azimuth": -49.2, "elevation": 22.9, "distance": 0.631}
+        self._rig_view = {"azimuth": 49.2, "elevation": 14.0, "distance": 1.55}
         # For the canvas HUD: the view of the image on screen, and of the
         # render in flight (becomes displayed when it lands). The startup
         # image's true view is unknown (older session) -- assume the default.

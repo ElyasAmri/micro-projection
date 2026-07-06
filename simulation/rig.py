@@ -102,7 +102,8 @@ def _mask_node(nt, value_socket):
 
 
 def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm,
-                subdivisions: int = SURFACE_GRID_SUBDIVISIONS, z_offset_mm: float = 0.0):
+                subdivisions: int = SURFACE_GRID_SUBDIVISIONS, z_offset_mm: float = 0.0,
+                size_m: float = SURFACE_SIZE_M):
     """Add the surface, with the projected fringe pattern computed live in
     its material. Returns (surface_object, phase_fraction_node) -- update
     phase_fraction_node.outputs[0].default_value (a fraction of one cycle,
@@ -124,14 +125,18 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     `z_offset_mm` raises the whole surface by a constant height -- a simulated
     z-stage. Rendering a flat plane at a few known offsets is the input to the
     phase-to-height calibration (simulation/calibration.py).
+
+    `size_m` is the plane's extent. Captures keep the default generous margin;
+    the rig preview passes the physical Z-stage platform size instead, so the
+    (black, unlit) plane doesn't swallow the stage model beneath it.
     """
     if height_fn is None:
-        bpy.ops.mesh.primitive_plane_add(size=SURFACE_SIZE_M, location=(0.0, 0.0, 0.0))
+        bpy.ops.mesh.primitive_plane_add(size=size_m, location=(0.0, 0.0, 0.0))
     else:
         bpy.ops.mesh.primitive_grid_add(
             x_subdivisions=subdivisions,
             y_subdivisions=subdivisions,
-            size=SURFACE_SIZE_M,
+            size=size_m,
             location=(0.0, 0.0, 0.0),
         )
     surface = bpy.context.active_object

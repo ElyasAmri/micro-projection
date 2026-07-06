@@ -89,11 +89,13 @@ class Sidebar(QWidget):
         self.rig_button = QPushButton("Render Rig View")
         self.rig_button.setObjectName("rigButton")
         self.rig_button.setToolTip(
-            "Render an annotated Blender overview of the rig geometry -- the "
-            "projector, the tilted telecentric camera, and the fringe-lit "
-            "surface -- into the Rig tab. Drag on the Rig view to orbit it "
-            "(the gizmo tracks the drag; the render fires on release), "
-            "scroll to zoom."
+            "Render an annotated Blender overview of the rig -- the PRO4500 "
+            "projector, the tilted FLIR + GoldTL telecentric camera in its "
+            "mounting clamp, and the fringe-lit specimen on its 125 mm "
+            "Z-stage, mounted on the vertical breadboard bench, all modeled "
+            "to vendor dimensions -- into the Rig tab. "
+            "Drag on the Rig view to orbit it (the gizmo tracks the drag; "
+            "the render fires on release), scroll to zoom."
         )
         self.rig_button.clicked.connect(lambda: self.rig_requested.emit())
         layout.addWidget(self.rig_button)
