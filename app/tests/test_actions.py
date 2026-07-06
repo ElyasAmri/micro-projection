@@ -2,7 +2,14 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 from shiboken6 import delete
 
 from maestro import actions
@@ -97,6 +104,27 @@ def test_screenshot_returns_png_base64(window):
     )
     assert result["format"] == "png"
     assert isinstance(result["base64"], str) and result["base64"]
+
+
+def test_no_selector_prefers_visible_main_window(qapp):
+    """topLevelWidgets() also contains hidden popups (e.g. a QMenu that has
+    never been opened); the no-selector actions (read, screenshot) must land
+    on the real, visible main window, not whichever enumerates first."""
+    popup = QWidget()
+    popup.setObjectName("hidden_popup")  # never shown, like a closed QMenu
+    main = QMainWindow()
+    main.setObjectName("mainwin")
+    main.show()
+    try:
+        wins = actions._windows(None)
+        assert wins.index(main) < wins.index(popup)
+        result = actions.dispatch({"action": "read"}, {})
+        assert result["matched"] == "mainwin"
+    finally:
+        main.close()
+        delete(popup)
+        delete(main)
+        qapp.processEvents()
 
 
 def test_invoke_calls_registered_command(window):

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QLineEdit,
+    QMainWindow,
     QPlainTextEdit,
     QSpinBox,
     QDoubleSpinBox,
@@ -33,10 +34,17 @@ Command = Callable[[dict], Any]
 
 
 def _windows(label: str | None) -> list[QWidget]:
-    """Top-level windows, optionally filtered to the one named `label`."""
+    """Top-level windows, optionally filtered to the one named `label`.
+
+    Ranked, not raw enumeration order: topLevelWidgets() also contains hidden
+    popups (a closed QMenu, tooltips), so the no-selector actions (screenshot,
+    read) would otherwise land on whichever happens to enumerate first. Visible
+    windows sort ahead of hidden ones, main windows ahead of the rest.
+    """
     tops = [w for w in QApplication.topLevelWidgets() if w.isWindow()]
     if label:
         tops = [w for w in tops if _window_label(w) == label]
+    tops.sort(key=lambda w: (not w.isVisible(), not isinstance(w, QMainWindow)))
     return tops
 
 
