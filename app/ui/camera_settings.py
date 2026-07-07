@@ -1,10 +1,10 @@
 """The Camera Settings panel: edit the `CameraSettings` the next capture uses.
 
-A modeless dialog (so it can stay open through the tweak-capture-look loop)
-over the shared settings record in `hardware.camera_config`. Apply pushes the
-form into that record and persists it via QSettings, so the rig comes back up
-with the same camera state; Restore Defaults refills the form (including the
-MP_CAM_EXPOSURE_US seed) without applying.
+A modal dialog over the shared settings record in `hardware.camera_config`.
+OK pushes the form into that record and persists it via QSettings, so the rig
+comes back up with the same camera state; Cancel discards the edits; Restore
+Defaults refills the form (including the MP_CAM_EXPOSURE_US seed) without
+applying.
 
 The settings take effect at the start of the next capture -- the camera is
 opened, configured, and closed per capture run -- so nothing here talks to the
@@ -71,14 +71,14 @@ def apply_camera_settings(s: CameraSettings) -> None:
 
 
 class CameraSettingsDialog(QDialog):
-    """Form over `CameraSettings`. Apply keeps the dialog open; values land on
-    the device when the next capture opens the camera."""
+    """Modal form over `CameraSettings`. OK applies + persists + closes;
+    values land on the device when the next capture opens the camera."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("cameraSettingsDialog")
         self.setWindowTitle("Camera Settings")
-        self.setModal(False)
+        self.setModal(True)
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
@@ -189,13 +189,14 @@ class CameraSettingsDialog(QDialog):
         defaults_button.clicked.connect(lambda: self.load_settings(default_camera_settings()))
         buttons.addWidget(defaults_button)
         buttons.addStretch(1)
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(self.close)
-        buttons.addWidget(close_button)
-        apply_button = QPushButton("Apply")
-        apply_button.setProperty("variant", "primary")
-        apply_button.clicked.connect(self._on_apply)
-        buttons.addWidget(apply_button)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(cancel_button)
+        ok_button = QPushButton("OK")
+        ok_button.setProperty("variant", "primary")
+        ok_button.setDefault(True)
+        ok_button.clicked.connect(self._on_apply)
+        buttons.addWidget(ok_button)
         layout.addLayout(buttons)
 
         self.load_settings(saved_camera_settings())
@@ -228,9 +229,11 @@ class CameraSettingsDialog(QDialog):
         )
 
     def _on_apply(self) -> None:
+        """OK: apply + persist the form, then close."""
         s = self.current_settings()
         apply_camera_settings(s)
         exposure = "auto" if s.exposure_auto else f"{s.exposure_us:.0f} µs"
         gain = "auto" if s.gain_auto else f"{s.gain_db:.1f} dB"
         success(log, f"camera settings applied (next capture): exposure {exposure}, "
                      f"gain {gain}, gamma {'on' if s.gamma_enabled else 'off'}")
+        self.accept()

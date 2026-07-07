@@ -44,15 +44,15 @@ is involved — see `app/hardware/projector.py`.
 macOS note: this is the same "extend, then fullscreen a window on it" approach
 the Windows rig used — QScreen exposes the external display identically.
 
-### The Patterns pane
+### The pattern library
 
-Beyond the measurement fringe, the **Patterns** pane (left column, below
-Control) projects rig-work patterns through the same path: fringes at either
-orientation, checkerboard (focus), grid and crosshair (alignment), solid
-white/gray/black and a horizontal ramp (brightness, black level, linearity),
-plus any image file via *Add Image…* (grayscale, letterboxed to the projector's
-aspect). Generators live in `app/backend/patterns.py`; the maestro command
-`project_pattern` drives the same library.
+Beyond the measurement fringe, the sidebar's **Project Pattern…** button opens
+a modal library of rig-work patterns, projected through the same path: fringes
+at either orientation, checkerboard (focus), grid and crosshair (alignment),
+solid white/gray/black and a horizontal ramp (brightness, black level,
+linearity), plus any image file via *Add Image…* (grayscale, letterboxed to
+the projector's aspect). Generators live in `app/backend/patterns.py`; the
+maestro command `project_pattern` drives the same library.
 
 ## The camera
 

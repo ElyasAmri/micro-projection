@@ -1,5 +1,5 @@
-"""The pattern library and its pane: generators produce the projector-shaped
-frames they claim, the file loader letterboxes correctly, and the pane's
+"""The pattern library and its dialog: generators produce the projector-shaped
+frames they claim, the file loader letterboxes correctly, and the dialog's
 selection drives which knobs apply and what gets projected.
 """
 from __future__ import annotations
@@ -86,23 +86,23 @@ def test_unknown_pattern_raises():
         patterns.generate("plaid")
 
 
-# -- the pane ---------------------------------------------------------------------
+# -- the dialog -------------------------------------------------------------------
 
 
-def test_pane_lists_builtins_and_defaults_to_first(qapp):
-    from ui.patterns import PatternsPane
+def test_dialog_lists_builtins_and_defaults_to_first(qapp):
+    from ui.patterns import PatternsDialog
 
-    pane = PatternsPane()
+    pane = PatternsDialog()
     assert pane.pattern_list.count() == len(patterns.PATTERNS)
     key, params = pane.selected_pattern()
     assert key == patterns.PATTERNS[0].key
     assert params == {"n_periods": 8.0}  # fringe_v uses only the period knob
 
 
-def test_pane_knobs_follow_selection(qapp):
-    from ui.patterns import PatternsPane
+def test_dialog_knobs_follow_selection(qapp):
+    from ui.patterns import PatternsDialog
 
-    pane = PatternsPane()
+    pane = PatternsDialog()
     keys = [p.key for p in patterns.PATTERNS]
     pane.pattern_list.setCurrentRow(keys.index("checkerboard"))
     assert not pane.n_periods.isEnabled() and pane.pitch_px.isEnabled()
@@ -113,10 +113,10 @@ def test_pane_knobs_follow_selection(qapp):
     assert pane.selected_pattern() == ("solid_white", {})
 
 
-def test_pane_add_image_selects_it(qapp, tmp_path):
-    from ui.patterns import PatternsPane
+def test_dialog_add_image_selects_it(qapp, tmp_path):
+    from ui.patterns import PatternsDialog
 
-    pane = PatternsPane()
+    pane = PatternsDialog()
     pane.add_image(str(tmp_path / "target.png"))
     key, params = pane.selected_pattern()
     assert key == patterns.IMAGE_KEY
@@ -124,10 +124,10 @@ def test_pane_add_image_selects_it(qapp, tmp_path):
     assert pane.selected_label() == "target.png"
 
 
-def test_pane_project_button_emits(qapp):
-    from ui.patterns import PatternsPane
+def test_dialog_project_button_emits(qapp):
+    from ui.patterns import PatternsDialog
 
-    pane = PatternsPane()
+    pane = PatternsDialog()
     fired = []
     pane.project_requested.connect(lambda: fired.append(True))
     pane.project_button.click()

@@ -73,11 +73,12 @@ def build_stylesheet() -> str:
         letter-spacing: 1px;
     }}
 
-    /* -- Sidebar + Patterns pane (the left column) ------------------------ */
-    QWidget#sidebar, QWidget#patternsPane {{
+    /* -- Sidebar -------------------------------------------------------- */
+    QWidget#sidebar {{
         background: {c['surface']};
         border-right: 1px solid {c['border']};
     }}
+    /* -- Patterns dialog -------------------------------------------------- */
     QListWidget#patternList {{
         background: {c['viewport']};
         border: 1px solid {c['border']};

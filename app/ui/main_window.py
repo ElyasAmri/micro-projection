@@ -36,7 +36,7 @@ from ui.camera_settings import (
 from ui.canvas import Canvas, OrbitCanvas
 from ui.console import Console
 from ui.imaging import gray_to_qimage
-from ui.patterns import PatternsPane
+from ui.patterns import PatternsDialog
 from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
 
@@ -57,8 +57,8 @@ VIEW_PANES = [
 # so a saved layout from an older shape is ignored instead of restored into a
 # mismatched tree. v2: control width is sized by naming both sides of the split.
 # v3: added the Noise view. v4: added the Roughness view. v5: added the Rig view.
-# v6: added the Patterns pane (left column, below Control).
-LAYOUT_VERSION = 6
+# v6: added the Patterns pane. v7: Patterns became a modal dialog (pane removed).
+LAYOUT_VERSION = 7
 
 
 class _DockTitleTab(QWidget):
@@ -160,10 +160,12 @@ class MainWindow(QMainWindow):
         self._load_rig_preview()  # show the last render, if one exists
 
         # Camera settings: bring last session's saved configuration live so a
-        # capture honors it without the panel ever being opened. The dialog
-        # itself is built lazily, on first request.
+        # capture honors it without the panel ever being opened. Both modal
+        # dialogs are built lazily, on first request (the patterns dialog keeps
+        # its state -- added images, selection -- across opens).
         set_camera_settings(saved_camera_settings())
         self._camera_dialog: CameraSettingsDialog | None = None
+        self._patterns_dialog: PatternsDialog | None = None
 
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
 
@@ -211,13 +213,8 @@ class MainWindow(QMainWindow):
         self.sidebar.noise_requested.connect(self._on_estimate_noise)
         self.sidebar.rig_requested.connect(self._on_render_rig)
         self.sidebar.camera_settings_requested.connect(self._on_camera_settings)
-        control_dock = self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
-
-        # The pattern library shares the left column, below Control.
-        self.patterns = PatternsPane(self)
-        self.patterns.project_requested.connect(self._on_project_pattern)
-        patterns_dock = self._dock("Patterns", "patternsDock", self.patterns)
-        self.splitDockWidget(control_dock, patterns_dock, Qt.Vertical)
+        self.sidebar.patterns_requested.connect(self._on_patterns)
+        self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
         # (a clean vertical splitter while the view is un-tabbed), THEN tab the
@@ -386,13 +383,6 @@ class MainWindow(QMainWindow):
         self.resizeDocks([control, right], [260, max(320, self.width() - 260)], Qt.Horizontal)
         console_h = max(160, self.height() // 4)
         self.resizeDocks([self.docks["consoleDock"]], [console_h], Qt.Vertical)
-        # Left column: Control keeps the room its fixed controls need; the
-        # pattern list gets the rest.
-        self.resizeDocks(
-            [control, self.docks["patternsDock"]],
-            [max(420, int(self.height() * 0.6)), max(240, int(self.height() * 0.4))],
-            Qt.Vertical,
-        )
 
     # -- behavior -------------------------------------------------------------
 
@@ -408,12 +398,19 @@ class MainWindow(QMainWindow):
         self._project(self.sidebar.selected_surface())
 
     def _on_camera_settings(self) -> None:
-        """Open (or raise) the camera settings panel."""
+        """Open the camera settings dialog (modal)."""
         if self._camera_dialog is None:
             self._camera_dialog = CameraSettingsDialog(self)
+        else:  # discard any edits left behind by a previous Cancel
+            self._camera_dialog.load_settings(get_camera_settings())
         self._camera_dialog.show()
-        self._camera_dialog.raise_()
-        self._camera_dialog.activateWindow()
+
+    def _on_patterns(self) -> None:
+        """Open the pattern library dialog (modal)."""
+        if self._patterns_dialog is None:
+            self._patterns_dialog = PatternsDialog(self)
+            self._patterns_dialog.project_requested.connect(self._on_project_pattern)
+        self._patterns_dialog.show()
 
     def _project(self, surface: str) -> None:
         fringe = self.backend.generate_fringe()
@@ -423,9 +420,11 @@ class MainWindow(QMainWindow):
         success(log, f"projected {self.backend.n_periods:g}-period fringe")
 
     def _on_project_pattern(self) -> None:
-        """Project the pattern selected in the Patterns pane -- same path as
-        the measurement fringe (canvas preview + physical projector)."""
-        key, params = self.patterns.selected_pattern()
+        """Project the pattern selected in the Patterns dialog -- same path as
+        the measurement fringe (canvas preview + physical projector). The
+        dialog stays open: alignment steps through several patterns, and the
+        physical projector shows each one even while the modal holds the shell."""
+        key, params = self._patterns_dialog.selected_pattern()
         if key is None:
             log.warning("no pattern selected")
             return
@@ -437,7 +436,7 @@ class MainWindow(QMainWindow):
         self.canvases["projectedCanvas"].set_image(gray_to_qimage(image))
         self.backend.project(image)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
-        success(log, f"projected pattern: {self.patterns.selected_label()}")
+        success(log, f"projected pattern: {self._patterns_dialog.selected_label()}")
 
     # -- rig overview (annotated Blender render of the scene geometry) --------
 

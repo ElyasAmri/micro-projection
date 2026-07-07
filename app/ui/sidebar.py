@@ -27,7 +27,8 @@ class Sidebar(QWidget):
     multifreq_requested = Signal() # coarse->fine ladder capture + unwrapping
     noise_requested = Signal()     # estimate imaging noise + its error margin
     rig_requested = Signal()       # render the annotated rig overview (Rig tab)
-    camera_settings_requested = Signal()  # open the camera settings panel
+    camera_settings_requested = Signal()  # open the camera settings dialog
+    patterns_requested = Signal()  # open the pattern library dialog
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -61,6 +62,16 @@ class Sidebar(QWidget):
         self.project_button.setObjectName("projectButton")
         self.project_button.clicked.connect(lambda: self.project_requested.emit())
         layout.addWidget(self.project_button)
+
+        self.patterns_button = QPushButton("Project Pattern...")
+        self.patterns_button.setObjectName("patternsButton")
+        self.patterns_button.setToolTip(
+            "Open the pattern library: alignment/focus/linearity patterns "
+            "(grid, checkerboard, solids, ramp, ...) or any image file, "
+            "projected through the same path as the fringe."
+        )
+        self.patterns_button.clicked.connect(lambda: self.patterns_requested.emit())
+        layout.addWidget(self.patterns_button)
 
         self.capture_button = QPushButton("Capture")
         self.capture_button.setObjectName("captureButton")

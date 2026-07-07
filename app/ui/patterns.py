@@ -1,11 +1,16 @@
-"""The Patterns pane: pick a pattern (built-in or an image file) and project it.
+"""The Patterns dialog: pick a pattern (built-in or an image file), project it.
 
-A dockable picker over `backend.patterns` -- the list holds the built-in
-registry plus any images added via "Add Image..."; the knob fields (periods,
-pitch) enable per selection, mirroring which parameters the pattern actually
-uses. Like the sidebar, it only emits intent (`project_requested`); the main
-window generates the pattern and pushes it down the same path as the
-measurement fringe.
+A modal picker over `backend.patterns`, opened from the sidebar's "Project
+Pattern..." button -- the list holds the built-in registry plus any images
+added via "Add Image..."; the knob fields (periods, pitch) enable per
+selection, mirroring which parameters the pattern actually uses. Project keeps
+the dialog open (alignment usually steps through several patterns -- the
+physical projector shows each one even while the modal holds the shell), and
+the dialog keeps its state (added images, selection) across opens.
+
+Like the sidebar, it only emits intent (`project_requested`); the main window
+generates the pattern and pushes it down the same path as the measurement
+fringe.
 """
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
@@ -31,14 +37,18 @@ _KEY_ROLE = Qt.UserRole          # the registry key ('fringe_v', ..., 'image')
 _PATH_ROLE = Qt.UserRole + 1     # the file path, for 'image' items only
 
 
-class PatternsPane(QWidget):
-    """Dockable pattern picker. Double-click or the Project button projects."""
+class PatternsDialog(QDialog):
+    """Modal pattern picker. Double-click or the Project button projects the
+    selection (and keeps the dialog open); Close dismisses it."""
 
     project_requested = Signal()  # project the selected pattern
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setObjectName("patternsPane")
+        self.setObjectName("patternsDialog")
+        self.setWindowTitle("Patterns")
+        self.setModal(True)
+        self.setMinimumSize(340, 480)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
@@ -94,9 +104,14 @@ class PatternsPane(QWidget):
         )
         self.add_image_button.clicked.connect(self._on_add_image)
         buttons.addWidget(self.add_image_button)
-        self.project_button = QPushButton("Project Pattern")
+        buttons.addStretch(1)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.reject)
+        buttons.addWidget(close_button)
+        self.project_button = QPushButton("Project")
         self.project_button.setObjectName("projectPatternButton")
         self.project_button.setProperty("variant", "primary")
+        self.project_button.setDefault(True)
         self.project_button.clicked.connect(lambda: self.project_requested.emit())
         buttons.addWidget(self.project_button)
         layout.addLayout(buttons)
