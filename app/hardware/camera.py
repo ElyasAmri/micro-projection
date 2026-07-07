@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from hardware.camera_config import CameraSettings, get_camera_settings
 from logbus import get_logger
 
 log = get_logger("camera")
@@ -65,9 +66,10 @@ class Camera(ABC):
 
 
 class SpinnakerCamera(Camera):
-    """A FLIR/Teledyne camera via PySpin. Grabs Mono8 frames; exposure is fixed
-    when MP_CAM_EXPOSURE_US is set (recommended for phase-shifting, so every
-    step is imaged at identical brightness) and auto otherwise.
+    """A FLIR/Teledyne camera via PySpin. Grabs Mono8 frames, configured from
+    the shared `CameraSettings` (the Camera Settings panel; the pre-panel
+    MP_CAM_EXPOSURE_US still seeds a fixed exposure -- recommended for
+    phase-shifting, so every step is imaged at identical brightness).
 
     `grab()` returns the newest frame: the stream is set to NewestOnly buffer
     handling, so after the projector changes pattern and we let it settle, the
@@ -113,15 +115,50 @@ class SpinnakerCamera(Camera):
         except PySpin.SpinnakerException:
             pass
 
-        exposure_us = os.environ.get("MP_CAM_EXPOSURE_US")
-        if exposure_us:
+        self._apply_settings(cam, get_camera_settings())
+
+    def _apply_settings(self, cam, s: CameraSettings) -> None:
+        """Push the shared `CameraSettings` to the device, clamping each value
+        to the camera's own limits. Exposure failures abort the open (a scan at
+        an unknown exposure is worthless); the rest are best-effort per feature,
+        so one unsupported node doesn't take down the capture."""
+        if s.exposure_auto:
+            cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Continuous)
+        else:
             cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Off)
-            value = max(cam.ExposureTime.GetMin(),
-                        min(float(exposure_us), cam.ExposureTime.GetMax()))
+            cam.ExposureMode.SetValue(PySpin.ExposureMode_Timed)
+            value = self._clamp(cam.ExposureTime, s.exposure_us)
             cam.ExposureTime.SetValue(value)
             log.info(f"exposure fixed at {value:.0f} us")
-        else:
-            cam.ExposureAuto.SetValue(PySpin.ExposureAuto_Continuous)
+
+        try:
+            if s.gain_auto:
+                cam.GainAuto.SetValue(PySpin.GainAuto_Continuous)
+            else:
+                cam.GainAuto.SetValue(PySpin.GainAuto_Off)
+                value = self._clamp(cam.Gain, s.gain_db)
+                cam.Gain.SetValue(value)
+                log.info(f"gain fixed at {value:.1f} dB")
+        except PySpin.SpinnakerException as exc:
+            log.warning(f"could not set gain: {exc}")
+
+        try:
+            cam.GammaEnable.SetValue(bool(s.gamma_enabled))
+            if s.gamma_enabled:
+                cam.Gamma.SetValue(self._clamp(cam.Gamma, s.gamma))
+        except PySpin.SpinnakerException as exc:
+            log.warning(f"could not set gamma: {exc}")
+
+        try:
+            cam.BlackLevelSelector.SetValue(PySpin.BlackLevelSelector_All)
+            cam.BlackLevel.SetValue(self._clamp(cam.BlackLevel, s.black_level_pct))
+        except PySpin.SpinnakerException as exc:
+            log.warning(f"could not set black level: {exc}")
+
+    @staticmethod
+    def _clamp(node, value: float) -> float:
+        """`value` limited to a device node's [GetMin, GetMax] range."""
+        return max(node.GetMin(), min(float(value), node.GetMax()))
 
     def grab(self) -> np.ndarray:
         image = self._cam.GetNextImage(2000)  # ms timeout

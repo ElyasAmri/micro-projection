@@ -7,6 +7,7 @@ and a Reset Layout action restores the default arrangement."""
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
@@ -25,6 +26,12 @@ from PySide6.QtWidgets import (
 from logbus import get_logger, success
 from version import __version__
 from backend import Backend, SimulationBackend
+from hardware.camera_config import get_camera_settings, set_camera_settings
+from ui.camera_settings import (
+    CameraSettingsDialog,
+    apply_camera_settings,
+    saved_camera_settings,
+)
 from ui.canvas import Canvas, OrbitCanvas
 from ui.console import Console
 from ui.imaging import gray_to_qimage
@@ -149,6 +156,12 @@ class MainWindow(QMainWindow):
         self._rig_orbit_timer.timeout.connect(self._request_rig_render)
         self._load_rig_preview()  # show the last render, if one exists
 
+        # Camera settings: bring last session's saved configuration live so a
+        # capture honors it without the panel ever being opened. The dialog
+        # itself is built lazily, on first request.
+        set_camera_settings(saved_camera_settings())
+        self._camera_dialog: CameraSettingsDialog | None = None
+
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.console.clear)
 
         # Dock sizing needs real window geometry, which only exists once shown,
@@ -194,6 +207,7 @@ class MainWindow(QMainWindow):
         self.sidebar.multifreq_requested.connect(self._on_pipeline_multifreq)
         self.sidebar.noise_requested.connect(self._on_estimate_noise)
         self.sidebar.rig_requested.connect(self._on_render_rig)
+        self.sidebar.camera_settings_requested.connect(self._on_camera_settings)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -376,6 +390,14 @@ class MainWindow(QMainWindow):
 
     def _on_project(self) -> None:
         self._project(self.sidebar.selected_surface())
+
+    def _on_camera_settings(self) -> None:
+        """Open (or raise) the camera settings panel."""
+        if self._camera_dialog is None:
+            self._camera_dialog = CameraSettingsDialog(self)
+        self._camera_dialog.show()
+        self._camera_dialog.raise_()
+        self._camera_dialog.activateWindow()
 
     def _project(self, surface: str) -> None:
         fringe = self.backend.generate_fringe()
@@ -831,6 +853,8 @@ class MainWindow(QMainWindow):
             "measure_roughness": self._cmd_measure_roughness,
             "estimate_noise": self._cmd_estimate_noise,
             "render_rig": self._cmd_render_rig,
+            "get_camera_settings": self._cmd_get_camera_settings,
+            "set_camera_settings": self._cmd_set_camera_settings,
         }
 
     def _cmd_log(self, args: dict):
@@ -959,6 +983,27 @@ class MainWindow(QMainWindow):
         if not self._on_render_rig(**kwargs):
             raise ValueError("rig render not started (see console)")
         return {"rig_render": "started", "view": dict(self._rig_view)}
+
+    def _cmd_get_camera_settings(self, _args: dict):
+        """The camera configuration the next capture will apply."""
+        return asdict(get_camera_settings())
+
+    def _cmd_set_camera_settings(self, args: dict):
+        """Update any subset of the camera settings (exposure_auto, exposure_us,
+        gain_auto, gain_db, gamma_enabled, gamma, black_level_pct); applied at
+        the next capture and persisted, same as the panel's Apply."""
+        current = get_camera_settings()
+        valid = {f.name: f for f in fields(current)}
+        unknown = set(args) - set(valid)
+        if unknown:
+            raise ValueError(f"unknown camera settings: {sorted(unknown)}")
+        flags = {"exposure_auto", "gain_auto", "gamma_enabled"}
+        updates = {k: (bool(v) if k in flags else float(v)) for k, v in args.items()}
+        updated = replace(current, **updates)
+        apply_camera_settings(updated)
+        if self._camera_dialog is not None:  # keep an open panel in sync
+            self._camera_dialog.load_settings(updated)
+        return {"camera_settings": asdict(updated)}
 
     def _cmd_estimate_noise(self, args: dict):
         """Analyze reconstruction error (noise + exposure swing). `injected_sigma_dn`

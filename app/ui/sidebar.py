@@ -27,6 +27,7 @@ class Sidebar(QWidget):
     multifreq_requested = Signal() # coarse->fine ladder capture + unwrapping
     noise_requested = Signal()     # estimate imaging noise + its error margin
     rig_requested = Signal()       # render the annotated rig overview (Rig tab)
+    camera_settings_requested = Signal()  # open the camera settings panel
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -99,6 +100,22 @@ class Sidebar(QWidget):
         )
         self.rig_button.clicked.connect(lambda: self.rig_requested.emit())
         layout.addWidget(self.rig_button)
+
+        # -- Camera: the device configuration the next capture runs with -----
+        camera_header = QLabel("Camera")
+        camera_header.setProperty("role", "sectionHeader")
+        layout.addWidget(camera_header)
+
+        self.camera_settings_button = QPushButton("Camera Settings...")
+        self.camera_settings_button.setObjectName("cameraSettingsButton")
+        self.camera_settings_button.setToolTip(
+            "Configure the FLIR camera: exposure, gain, gamma, black level. "
+            "Settings persist across sessions and are applied when the next "
+            "capture opens the camera."
+        )
+        self.camera_settings_button.clicked.connect(
+            lambda: self.camera_settings_requested.emit())
+        layout.addWidget(self.camera_settings_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.

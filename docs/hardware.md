@@ -59,6 +59,19 @@ The synthetic camera lets the whole project → capture → reconstruct loop run
 with no hardware at all (it's what the tests use). `auto` never silently grabs a
 laptop webcam — it uses the synthetic camera unless a FLIR is present.
 
+### Camera settings
+
+The sidebar's **Camera Settings…** panel configures the FLIR camera: exposure
+(auto / fixed µs), gain (auto / fixed dB), gamma (enable + value), and black
+level. Settings are held in `app/hardware/camera_config.py`, persisted across
+sessions (QSettings), and pushed to the device — clamped to its own limits —
+every time a capture opens the camera, so the camera state is reproducible
+rather than whatever the device last held. Gamma defaults to **off**: the
+reconstruction assumes the fringe sinusoid is imaged linearly.
+
+The same settings are scriptable through maestro via `get_camera_settings` /
+`set_camera_settings` (any subset of fields).
+
 ### Installing PySpin (the FLIR SDK)
 
 PySpin ships as a platform-specific wheel from Teledyne, not PyPI. The Windows
@@ -76,7 +89,7 @@ means the FLIR backend isn't offered.
 
 | env var                 | default | meaning                                       |
 |-------------------------|---------|-----------------------------------------------|
-| `MP_CAM_EXPOSURE_US`    | (auto)  | fix the FLIR exposure in µs (recommended for phase-shifting, so every step is imaged at identical brightness) |
+| `MP_CAM_EXPOSURE_US`    | (auto)  | seed a fixed FLIR exposure in µs (recommended for phase-shifting, so every step is imaged at identical brightness); the Camera Settings panel, once applied, takes precedence |
 | `MP_CAPTURE_SETTLE_MS`  | `200`   | wait per step after the pattern is shown, before grabbing (projector refresh + exposure settle) |
 | `MP_BLENDER`            | (auto)  | path to the Blender executable (simulation capture) |
 
@@ -92,9 +105,10 @@ a 5% brightness swing inflates the reconstruction RMSE from a few µm to ~45 µm
 
 Two layers of defense:
 
-1. **Lock the exposure** -- set `MP_CAM_EXPOSURE_US` so the FLIR camera runs at a
-   fixed exposure (`SpinnakerCamera` turns `ExposureAuto` off when it's set).
-   This is the real fix.
+1. **Lock the exposure** -- untick Auto in the Camera Settings panel (or set
+   `MP_CAM_EXPOSURE_US`, which seeds the same thing) so the FLIR camera runs at
+   a fixed exposure (`SpinnakerCamera` turns `ExposureAuto` off). This is the
+   real fix.
 2. **Gain normalization** (on by default) -- the reconstruction estimates any
    residual per-frame gain from each frame's brightness and divides it out
    before the PSA. It's a no-op on a steady stack, so it only ever helps. See
