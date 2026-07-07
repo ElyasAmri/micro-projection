@@ -73,10 +73,29 @@ def build_stylesheet() -> str:
         letter-spacing: 1px;
     }}
 
-    /* -- Sidebar -------------------------------------------------------- */
-    QWidget#sidebar {{
+    /* -- Sidebar + Patterns pane (the left column) ------------------------ */
+    QWidget#sidebar, QWidget#patternsPane {{
         background: {c['surface']};
         border-right: 1px solid {c['border']};
+    }}
+    QListWidget#patternList {{
+        background: {c['viewport']};
+        border: 1px solid {c['border']};
+        border-radius: 6px;
+        color: {c['text']};
+        outline: none;
+        padding: 4px;
+    }}
+    QListWidget#patternList::item {{
+        padding: 5px 8px;
+        border-radius: 4px;
+    }}
+    QListWidget#patternList::item:selected {{
+        background: {c['accent_dim']};
+        color: {c['text']};
+    }}
+    QListWidget#patternList::item:hover:!selected {{
+        background: {c['surface_alt']};
     }}
     QLabel[role="sectionHeader"] {{
         color: {c['text_faint']};

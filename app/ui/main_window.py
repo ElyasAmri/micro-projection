@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from logbus import get_logger, success
 from version import __version__
 from backend import Backend, SimulationBackend
+from backend import patterns as pattern_lib
 from hardware.camera_config import get_camera_settings, set_camera_settings
 from ui.camera_settings import (
     CameraSettingsDialog,
@@ -35,6 +36,7 @@ from ui.camera_settings import (
 from ui.canvas import Canvas, OrbitCanvas
 from ui.console import Console
 from ui.imaging import gray_to_qimage
+from ui.patterns import PatternsPane
 from ui.process_runner import ProcessRunner
 from ui.sidebar import Sidebar
 
@@ -55,7 +57,8 @@ VIEW_PANES = [
 # so a saved layout from an older shape is ignored instead of restored into a
 # mismatched tree. v2: control width is sized by naming both sides of the split.
 # v3: added the Noise view. v4: added the Roughness view. v5: added the Rig view.
-LAYOUT_VERSION = 5
+# v6: added the Patterns pane (left column, below Control).
+LAYOUT_VERSION = 6
 
 
 class _DockTitleTab(QWidget):
@@ -208,7 +211,13 @@ class MainWindow(QMainWindow):
         self.sidebar.noise_requested.connect(self._on_estimate_noise)
         self.sidebar.rig_requested.connect(self._on_render_rig)
         self.sidebar.camera_settings_requested.connect(self._on_camera_settings)
-        self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
+        control_dock = self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
+
+        # The pattern library shares the left column, below Control.
+        self.patterns = PatternsPane(self)
+        self.patterns.project_requested.connect(self._on_project_pattern)
+        patterns_dock = self._dock("Patterns", "patternsDock", self.patterns)
+        self.splitDockWidget(control_dock, patterns_dock, Qt.Vertical)
 
         # Build the first view alone in the right area, split the console below it
         # (a clean vertical splitter while the view is un-tabbed), THEN tab the
@@ -377,6 +386,13 @@ class MainWindow(QMainWindow):
         self.resizeDocks([control, right], [260, max(320, self.width() - 260)], Qt.Horizontal)
         console_h = max(160, self.height() // 4)
         self.resizeDocks([self.docks["consoleDock"]], [console_h], Qt.Vertical)
+        # Left column: Control keeps the room its fixed controls need; the
+        # pattern list gets the rest.
+        self.resizeDocks(
+            [control, self.docks["patternsDock"]],
+            [max(420, int(self.height() * 0.6)), max(240, int(self.height() * 0.4))],
+            Qt.Vertical,
+        )
 
     # -- behavior -------------------------------------------------------------
 
@@ -405,6 +421,23 @@ class MainWindow(QMainWindow):
         self.backend.project(fringe)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
         success(log, f"projected {self.backend.n_periods:g}-period fringe")
+
+    def _on_project_pattern(self) -> None:
+        """Project the pattern selected in the Patterns pane -- same path as
+        the measurement fringe (canvas preview + physical projector)."""
+        key, params = self.patterns.selected_pattern()
+        if key is None:
+            log.warning("no pattern selected")
+            return
+        try:
+            image = pattern_lib.generate(key, **params)
+        except Exception as exc:  # noqa: BLE001 - bad file etc.; report, don't raise into Qt
+            log.error(f"pattern generation failed: {exc}")
+            return
+        self.canvases["projectedCanvas"].set_image(gray_to_qimage(image))
+        self.backend.project(image)  # push to the physical projector (no-op in sim)
+        self._show_tab("projectedCanvas")
+        success(log, f"projected pattern: {self.patterns.selected_label()}")
 
     # -- rig overview (annotated Blender render of the scene geometry) --------
 
@@ -845,6 +878,7 @@ class MainWindow(QMainWindow):
             "select_tab": self._cmd_select_tab,
             "set_status": self._cmd_set_status,
             "project": self._cmd_project,
+            "project_pattern": self._cmd_project_pattern,
             "capture": self._cmd_capture,
             "pipeline": self._cmd_pipeline,
             "run_multifreq": self._cmd_run_multifreq,
@@ -905,6 +939,25 @@ class MainWindow(QMainWindow):
         self.backend.project(fringe)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
         return {"projected": {"n_periods": n_periods, "phase": phase}}
+
+    def _cmd_project_pattern(self, args: dict):
+        """Project a library pattern: `pattern` names the registry key
+        (fringe_v, fringe_h, checkerboard, grid, crosshair, solid_white,
+        solid_gray, solid_black, ramp_h, or image + `path`); `n_periods` /
+        `pitch_px` parameterize the patterns that use them."""
+        key = str(args.get("pattern", ""))
+        kwargs: dict = {}
+        if "n_periods" in args:
+            kwargs["n_periods"] = float(args["n_periods"])
+        if "pitch_px" in args:
+            kwargs["pitch_px"] = int(args["pitch_px"])
+        if "path" in args:
+            kwargs["path"] = str(args["path"])
+        image = pattern_lib.generate(key, **kwargs)
+        self.canvases["projectedCanvas"].set_image(gray_to_qimage(image))
+        self.backend.project(image)  # push to the physical projector (no-op in sim)
+        self._show_tab("projectedCanvas")
+        return {"projected_pattern": key, **kwargs}
 
     def _cmd_capture(self, args: dict):
         """Start a single Blender capture (asynchronous): one frame of the
