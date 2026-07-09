@@ -42,32 +42,34 @@ def marker_pattern(proj_w: int, proj_h: int,
     return image
 
 
+# The look-at ring's gray level: visible on the black background yet safely
+# below find_marker's bright threshold (half the disc's 255), so the ring
+# never enters the blob analysis -- not even wrapped around the disc at
+# convergence. It is drawn wide to stay easy to spot despite the dimness.
+LOOKAT_LEVEL = 110
+
+
 def guide_pattern(proj_w: int, proj_h: int, lookat: tuple | None = None,
                   radius_px: int = MARKER_RADIUS_PX) -> np.ndarray:
-    """The projected aiming guide: a bullseye (filled disc + thin ring) at the
-    field center, and -- when the camera's look-at point is known -- a thin
-    annulus there, so both are visible on the physical surface while the mount
-    is adjusted. Ring shapes fill little of their bounding box, so find_marker
-    keeps locking onto the disc alone."""
+    """The projected aiming guide: a bright disc at the field center, and --
+    when the camera's look-at point is known -- a dim gray annulus there. Both
+    are visible on the physical surface while the mount is adjusted; only the
+    disc is bright enough for find_marker, so the ring can approach and wrap
+    around it at convergence without ever disturbing detection."""
     y, x = np.ogrid[:proj_h, :proj_w]
     cx, cy = (proj_w - 1) / 2.0, (proj_h - 1) / 2.0
     image = np.zeros((proj_h, proj_w), dtype=np.uint8)
-    r2 = (x - cx) ** 2 + (y - cy) ** 2
-    image[r2 <= float(radius_px) ** 2] = 255
-    ring_in, ring_out = 2.0 * radius_px, 2.0 * radius_px + 3.0
-    image[(r2 >= ring_in ** 2) & (r2 <= ring_out ** 2)] = 255
     if lookat is not None:
         lx, ly = lookat
-        # Skip the ring near convergence: overlapping the bullseye would merge
-        # the blobs in the camera image and break disc detection exactly when
-        # the aim is nearly done (the crosshair and readout carry it home).
-        clear_of_center = (lx - cx) ** 2 + (ly - cy) ** 2 >= (4.0 * radius_px) ** 2
-        if 0 <= lx < proj_w and 0 <= ly < proj_h and clear_of_center:
+        if 0 <= lx < proj_w and 0 <= ly < proj_h:
             d2 = (x - lx) ** 2 + (y - ly) ** 2
-            # Thin enough that its area stays well below the disc's, so the
-            # disc remains the largest blob whenever both are in view.
-            in_r, out_r = 1.2 * radius_px, 1.45 * radius_px
-            image[(d2 >= in_r ** 2) & (d2 <= out_r ** 2)] = 255
+            in_r, out_r = 1.15 * radius_px, 1.7 * radius_px
+            image[(d2 >= in_r ** 2) & (d2 <= out_r ** 2)] = LOOKAT_LEVEL
+    # The disc is drawn last so it wins where the ring overlaps it. It stays
+    # bare: a bright concentric decoration merged with it in the camera image
+    # (bloom / defocus bridging the gap) and broke the disc-shape check.
+    r2 = (x - cx) ** 2 + (y - cy) ** 2
+    image[r2 <= float(radius_px) ** 2] = 255
     return image
 
 

@@ -86,14 +86,24 @@ def test_ring_alone_is_not_the_marker():
         find_marker(frame)
 
 
-def test_guide_pattern_suppresses_ring_near_center():
-    # Near convergence the ring would overlap the bullseye, merge the blobs
-    # in the camera image, and break disc detection; it must be suppressed.
-    bare = guide_pattern(PROJ_W, PROJ_H)
+def test_guide_pattern_ring_stays_subthreshold_near_center():
+    # The dim look-at ring is drawn at any distance (the on-plane feedback
+    # must survive convergence) but must never disturb disc detection, even
+    # wrapped around the disc.
+    for shift in (30.0, 120.0):
+        pattern = guide_pattern(PROJ_W, PROJ_H,
+                                lookat=(PROJ_W / 2 + shift, PROJ_H / 2))
+        assert pattern.max() == 255
+        m = _camera_matrix(theta_deg=38.7, scale=0.6, center_shift_cam_px=(25, 12))
+        frame = _capture(pattern, m)
+        metrics = measure_from_marker(frame, GEOMETRY)
+        dx, dy = metrics["offset_cam_px"]
+        assert dx == pytest.approx(25.0, abs=1.5)
+        assert dy == pytest.approx(12.0, abs=1.5)
+    # And the ring is actually present (visible), just dim.
     near = guide_pattern(PROJ_W, PROJ_H, lookat=(PROJ_W / 2 + 30, PROJ_H / 2))
-    far = guide_pattern(PROJ_W, PROJ_H, lookat=(PROJ_W / 2 + 120, PROJ_H / 2))
-    assert np.array_equal(near, bare)
-    assert not np.array_equal(far, bare)
+    bare = guide_pattern(PROJ_W, PROJ_H)
+    assert not np.array_equal(near, bare)
 
 
 def test_guide_pattern_disc_still_wins_with_lookat_ring():
