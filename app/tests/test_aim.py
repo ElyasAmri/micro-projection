@@ -14,6 +14,7 @@ import pytest
 
 from backend.aim import (
     find_marker,
+    guide_pattern,
     load_frames,
     locate_patterns,
     marker_pattern,
@@ -72,6 +73,29 @@ def test_ambient_flooded_frame_rejected():
     frame[:, -40:] = 30  # a darker strip so the blob is not the full frame
     with pytest.raises(ValueError, match="ambient|flooding"):
         find_marker(frame)
+
+
+def test_ring_alone_is_not_the_marker():
+    # The guide's look-at ring fills little of its bounding box; when only it
+    # is in view the detector must refuse rather than report a false center.
+    y, x = np.ogrid[:CAM_H, :CAM_W]
+    d2 = (x - 200) ** 2 + (y - 180) ** 2
+    frame = np.zeros((CAM_H, CAM_W), dtype=np.uint8)
+    frame[(d2 >= 24 ** 2) & (d2 <= 29 ** 2)] = 255
+    with pytest.raises(ValueError, match="bounding box"):
+        find_marker(frame)
+
+
+def test_guide_pattern_disc_still_wins_with_lookat_ring():
+    # Both the center bullseye and the look-at ring projected: the detector
+    # must keep locking onto the disc at the field center.
+    pattern = guide_pattern(PROJ_W, PROJ_H, lookat=(80.0, 90.0))
+    m = _camera_matrix(theta_deg=38.7, scale=0.6, center_shift_cam_px=(25, 12))
+    frame = _capture(pattern, m)
+    metrics = measure_from_marker(frame, GEOMETRY)
+    dx, dy = metrics["offset_cam_px"]
+    assert dx == pytest.approx(25.0, abs=1.5)
+    assert dy == pytest.approx(12.0, abs=1.5)
 
 
 def test_marker_clipped_at_border_is_flagged():

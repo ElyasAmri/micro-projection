@@ -6,12 +6,13 @@ frame, write it as `frame_kk.png` -- producing exactly the `frame_*.png` stack
 the shared reconstruction consumes, so downstream nothing knows or cares that
 the frames came from a camera rather than a renderer.
 
-The camera is opened, read, and closed entirely on a worker thread (PySpin
-wants all its calls on one thread, and grabbing must not block the GUI). The
-projector is a GUI-thread widget, so the worker asks it to change pattern via a
-`BlockingQueuedConnection` signal -- the worker blocks until the pattern is
-actually on screen, then waits `settle_ms` for the display + exposure to settle
-before grabbing, so every frame is imaged *after* its pattern is up.
+The camera itself is owned by the persistent `hardware.camera_service` (opening
+and closing the Spinnaker SDK per capture crashes it eventually); the capture
+worker switches the service to step mode and borrows one freshly exposed frame
+per pattern. The projector is a GUI-thread widget, so the worker asks it to
+change pattern via a `BlockingQueuedConnection` signal -- the worker blocks
+until the pattern is actually on screen, then waits `settle_ms` for the display
+plus exposure to settle before grabbing.
 """
 from __future__ import annotations
 
@@ -37,11 +38,11 @@ class _CaptureWorker(QThread):
     finished_ok = Signal(int)
     show_pattern = Signal(object)  # -> projector.show_pattern (blocking, GUI thread)
 
-    def __init__(self, patterns, camera, capture_dir: Path, settle_ms: int,
-                 parent=None) -> None:
+    def __init__(self, patterns, camera_service, capture_dir: Path,
+                 settle_ms: int, parent=None) -> None:
         super().__init__(parent)
         self._patterns = patterns
-        self._camera = camera
+        self._service = camera_service
         self._dir = capture_dir
         self._settle_ms = settle_ms
 
@@ -50,16 +51,15 @@ class _CaptureWorker(QThread):
 
         n = len(self._patterns)
         try:
-            self._camera.set_sequence(n)
-            self._camera.open()
-        except Exception as exc:  # noqa: BLE001 - report device open failure
-            self.failed.emit(f"camera open failed: {exc}")
+            self._service.acquire_step(n)
+        except Exception as exc:  # noqa: BLE001 - camera never became available
+            self.failed.emit(f"camera unavailable: {exc}")
             return
         try:
             for k, pattern in enumerate(self._patterns):
                 self.show_pattern.emit(pattern)     # blocks until on screen
                 self.msleep(self._settle_ms)        # let display + exposure settle
-                frame = self._camera.grab()
+                frame = self._service.grab_step()
                 path = self._dir / f"frame_{k:02d}.png"
                 if not cv2.imwrite(str(path), frame):
                     raise RuntimeError(f"could not write {path}")
@@ -69,23 +69,22 @@ class _CaptureWorker(QThread):
             self.failed.emit(f"capture failed: {exc}")
             return
         finally:
-            try:
-                self._camera.close()
-            except Exception:  # noqa: BLE001 - best-effort release
-                pass
+            self._service.release_step()
         self.finished_ok.emit(0)
 
 
 class HardwareCapture(CaptureController):
-    """Async project-and-grab capture wired to a projector + a camera factory.
-    Presents the same interface as the simulation's `BlenderCapture`, so the UI
-    drives both identically."""
+    """Async project-and-grab capture wired to a projector + the persistent
+    camera service. Presents the same interface as the simulation's
+    `BlenderCapture`, so the UI drives both identically."""
 
-    def __init__(self, projector, camera_factory, n_periods: float,
+    def __init__(self, projector, camera_service_provider, n_periods: float,
                  out_root: Path, parent=None) -> None:
         super().__init__(parent)
         self._projector = projector
-        self._camera_factory = camera_factory
+        # Called (not dereferenced) at start(): the camera opens on first use,
+        # not at construction time.
+        self._camera_service_provider = camera_service_provider
         self._n_periods = n_periods
         self._out_root = out_root
         self._worker: _CaptureWorker | None = None
@@ -105,10 +104,7 @@ class HardwareCapture(CaptureController):
             raise RuntimeError("a capture is already running")
         if self._worker is not None:
             # The previous run has reported its result, but its thread may
-            # still be unwinding; join it before opening the camera again.
-            # Spinnaker refuses a reopen while the old session's references
-            # linger (error -1004), and overlapping sessions can crash the
-            # SDK outright.
+            # still be unwinding; join it before reusing the service.
             if not self._worker.wait(5000):
                 raise RuntimeError("the previous capture is still shutting down")
             self._worker = None
@@ -141,8 +137,8 @@ class HardwareCapture(CaptureController):
                 for k in range(n_steps)
             ]
 
-        camera = self._camera_factory(n_periods=n)
-        worker = _CaptureWorker(patterns, camera, capture_dir, settle_ms, self)
+        worker = _CaptureWorker(patterns, self._camera_service_provider(),
+                                capture_dir, settle_ms, self)
         worker.line.connect(self.line)
         worker.failed.connect(self._on_failed)
         worker.finished_ok.connect(self._on_finished)

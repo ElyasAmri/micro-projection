@@ -42,6 +42,31 @@ def marker_pattern(proj_w: int, proj_h: int,
     return image
 
 
+def guide_pattern(proj_w: int, proj_h: int, lookat: tuple | None = None,
+                  radius_px: int = MARKER_RADIUS_PX) -> np.ndarray:
+    """The projected aiming guide: a bullseye (filled disc + thin ring) at the
+    field center, and -- when the camera's look-at point is known -- a thin
+    annulus there, so both are visible on the physical surface while the mount
+    is adjusted. Ring shapes fill little of their bounding box, so find_marker
+    keeps locking onto the disc alone."""
+    y, x = np.ogrid[:proj_h, :proj_w]
+    cx, cy = (proj_w - 1) / 2.0, (proj_h - 1) / 2.0
+    image = np.zeros((proj_h, proj_w), dtype=np.uint8)
+    r2 = (x - cx) ** 2 + (y - cy) ** 2
+    image[r2 <= float(radius_px) ** 2] = 255
+    ring_in, ring_out = 2.0 * radius_px, 2.0 * radius_px + 3.0
+    image[(r2 >= ring_in ** 2) & (r2 <= ring_out ** 2)] = 255
+    if lookat is not None:
+        lx, ly = lookat
+        if 0 <= lx < proj_w and 0 <= ly < proj_h:
+            d2 = (x - lx) ** 2 + (y - ly) ** 2
+            # Thin enough that its area stays well below the disc's, so the
+            # disc remains the largest blob whenever both are in view.
+            in_r, out_r = 1.2 * radius_px, 1.45 * radius_px
+            image[(d2 >= in_r ** 2) & (d2 <= out_r ** 2)] = 255
+    return image
+
+
 def locate_patterns(proj_w: int, proj_h: int, n_steps: int = 8) -> list:
     """Single-period (absolute, wrap-free) fringe stacks, vertical then
     horizontal, for the phase-based fallback."""
@@ -85,6 +110,15 @@ def find_marker(frame: np.ndarray, bright_fraction: float = 0.5,
         raise ValueError(
             f"brightest region covers {100.0 * areas[best - 1] / frame_area:.0f}% "
             "of the frame; ambient light or auto-exposure flooding, not the marker")
+    # A filled disc fills ~pi/4 of its bounding box; the guide's rings, text,
+    # and stray edges fill far less. Reject non-disc shapes so the look-at
+    # ring is never mistaken for the center marker.
+    bbox_area = float(stats[best, cv2.CC_STAT_WIDTH] * stats[best, cv2.CC_STAT_HEIGHT])
+    fill = float(areas[best - 1]) / bbox_area if bbox_area else 0.0
+    if fill < 0.55:
+        raise ValueError(
+            f"brightest blob fills only {100.0 * fill:.0f}% of its bounding box; "
+            "not the disc marker")
     cx, cy = (float(centroids[best][0]), float(centroids[best][1]))
     x0 = int(stats[best, cv2.CC_STAT_LEFT])
     y0 = int(stats[best, cv2.CC_STAT_TOP])

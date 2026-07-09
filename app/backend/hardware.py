@@ -31,6 +31,7 @@ class HardwareBackend(Backend):
     def __init__(self, n_periods: float = 8.0) -> None:
         super().__init__(n_periods)
         self._projector = None  # hardware.projector.ProjectorController, lazy
+        self._service = None  # hardware.camera_service.CameraService, lazy
 
     # -- projection ----------------------------------------------------------
 
@@ -50,16 +51,44 @@ class HardwareBackend(Backend):
     def available_surfaces(self) -> list[str]:
         return [LIVE_TARGET]
 
+    def camera_service(self):
+        """The persistent camera service (started on first use). The camera is
+        opened once and held for the app's lifetime; captures and the live
+        view borrow frames from it (see hardware.camera_service)."""
+        if self._service is None:
+            import atexit
+
+            from hardware.camera import open_camera
+            from hardware.camera_service import CameraService
+
+            self._service = CameraService(open_camera(n_periods=self.n_periods))
+            self._service.start()
+            # Safety net: never let the interpreter exit with the service
+            # thread running (stop_service is idempotent; shutdown() calls it
+            # first in the normal path).
+            atexit.register(self._service.stop_service)
+        return self._service
+
+    def projector_size(self) -> tuple:
+        """The projector's pixel size (patterns map 1:1 at this resolution)."""
+        return self._get_projector().screen_size()
+
     def new_capture_controller(self, parent=None):
-        from hardware.camera import open_camera
         from hardware.capture import HardwareCapture
 
+        # The service is passed as a provider (the bound method), not started
+        # here: the camera should open on first actual use, once the app is
+        # up and idle -- opening it mid-construction has crashed the SDK.
         return HardwareCapture(
-            self._get_projector(), open_camera, self.n_periods, out_root(), parent
+            self._get_projector(), self.camera_service, self.n_periods,
+            out_root(), parent
         )
 
     def shutdown(self) -> None:
-        """Close the projector window (call on app exit)."""
+        """Stop the camera service and close the projector (call on app exit)."""
+        if self._service is not None:
+            self._service.stop_service()
+            self._service = None
         if self._projector is not None:
             self._projector.close()
             self._projector = None

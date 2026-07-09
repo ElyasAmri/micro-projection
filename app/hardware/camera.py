@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import gc
 import os
-import time
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -90,15 +89,15 @@ class SpinnakerCamera(Camera):
         try:
             self._open_device()
         except PySpin.SpinnakerException as exc:
-            # A stale reference (a just-closed session, or a crashed process
-            # whose driver handle has not been reaped) makes Spinnaker refuse
-            # the open with -1004. Release everything, give the driver a
-            # moment, and retry once before giving up.
-            log.warning(f"camera open failed ({exc}); retrying once")
+            # Do NOT retry: re-initializing the SDK in-process after a failed
+            # open aborts the whole process (observed live). A -1004 here
+            # means the camera is held elsewhere: another process, or a
+            # killed one whose driver handle has not been reaped yet.
             self.close()
-            gc.collect()
-            time.sleep(1.0)
-            self._open_device()
+            raise RuntimeError(
+                f"could not open the camera ({exc}); it is likely held by "
+                "another process or by a recently killed one. Close SpinView "
+                "if open, wait a minute, or replug the camera USB") from exc
         log.info(f"opened {self.name} (Mono8)")
 
     def _open_device(self) -> None:

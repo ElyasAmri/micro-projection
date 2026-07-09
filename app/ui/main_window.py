@@ -6,6 +6,7 @@ third-party dependency. Layouts persist across restarts (QMainWindow.saveState)
 and a Reset Layout action restores the default arrangement."""
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import asdict, fields, replace
 from pathlib import Path
@@ -140,15 +141,18 @@ class MainWindow(QMainWindow):
         # capture (geometry needed to evaluate its frames) and the last result.
         self._calibration_spec = None
         self._last_calibration: dict | None = None
-        # Camera-aim guide state: whether the repeat loop is on, the projector
-        # resolution of the in-flight measurement, and the last result.
+        # Camera-aim guide state: live marker tracking off the camera service's
+        # stream, with a projected bullseye + look-at ring on the plane. The
+        # timestamps throttle frame processing, projector updates, and the
+        # absolute-phase locate fallback.
         self._aim_active = False
         self._aim_proj: tuple | None = None
         self._last_aim: dict | None = None
-        self._aim_timer = QTimer(self)
-        self._aim_timer.setSingleShot(True)
-        self._aim_timer.setInterval(1500)
-        self._aim_timer.timeout.connect(self._start_aim_measure)
+        self._aim_lookat: tuple | None = None
+        self._aim_last_seen = 0.0
+        self._aim_last_process = 0.0
+        self._aim_last_project = 0.0
+        self._aim_tab_shown = False
 
         # The rig-overview render is its own Blender run (independent of the
         # capture runner, so it never gates or is gated by a capture).
@@ -838,42 +842,117 @@ class MainWindow(QMainWindow):
         self._status_left.setText(f"Camera angle: {theta:.1f} deg")
 
     def _on_aim_toggled(self, checked: bool) -> None:
-        """Start/stop the camera-aim guide loop: project a center marker,
-        measure its offset from the camera center, repeat until unchecked."""
+        """Start/stop the live aim guide: the projector shows a bullseye at the
+        field center (plus a ring at the camera's measured look-at point), and
+        the camera service's stream is tracked frame by frame -- adjust the
+        mount until the bullseye sits under the live-view crosshair."""
         if not checked:
             if self._aim_active:
                 self._aim_active = False
-                self._aim_timer.stop()
-                log.info("aim guide stopped")
+                try:
+                    self.backend.camera_service().frameReady.disconnect(
+                        self._on_live_frame)
+                except (RuntimeError, TypeError):
+                    pass
+                self._settings.sync()
+                log.info("aim guide stopped (the guide pattern stays projected)")
             return
         if self.backend.kind != "hardware":
             log.warning("the aim guide drives the physical projector and camera; "
                         "start the app with MP_BACKEND=hardware")
             self.sidebar.aim_button.setChecked(False)
             return
+        try:
+            width, height = self.backend.projector_size()
+            self._aim_proj = (width, height)
+            self.backend.project(aim.guide_pattern(width, height, self._aim_lookat))
+            service = self.backend.camera_service()
+            service.frameReady.connect(self._on_live_frame)
+        except Exception as exc:  # noqa: BLE001 - surface bad state, stay off
+            log.error(f"aim guide failed to start: {exc}")
+            self.sidebar.aim_button.setChecked(False)
+            return
         self._aim_active = True
-        log.info("aim guide started: adjust the mount until the offset reads "
-                 "near zero, then click Aim Camera again to stop")
-        self._start_aim_measure()
+        self._aim_last_seen = 0.0
+        self._aim_tab_shown = False
+        log.info("aim guide started: steer the camera until the projected "
+                 "bullseye sits under the live-view crosshair (a ring marks "
+                 "where the camera currently looks); click again to stop")
 
-    def _start_aim_measure(self) -> None:
-        """One aim measurement: a single frame of the center marker."""
+    def _on_live_frame(self, frame) -> None:
+        """One stream frame from the camera service: track the projected disc,
+        update the live view, and keep the projected look-at ring honest."""
         if not self._aim_active:
             return
-        if self._capture_runner.is_running():
-            self._aim_timer.start()  # another capture is mid-flight; retry shortly
-            return
-
-        def patterns_fn(width: int, height: int):
-            self._aim_proj = (width, height)
-            return [aim.marker_pattern(width, height)]
-
+        now = time.monotonic()
+        if now - self._aim_last_process < 0.2:
+            return  # ~5 Hz is plenty for hand adjustment
+        self._aim_last_process = now
+        marker_xy = None
         try:
-            self._start_capture(self.sidebar.selected_surface(), purpose="aim",
-                                n_steps=1, subdir="aim", patterns_fn=patterns_fn)
-        except Exception as exc:  # noqa: BLE001 - stop the loop on bad state
-            log.error(f"aim measurement failed to start: {exc}")
-            self.sidebar.aim_button.setChecked(False)
+            metrics = aim.measure_from_marker(frame)
+        except ValueError:
+            # Disc not in view (or flooded): after a quiet spell, run the
+            # absolute-phase locate to find which way to pan.
+            if (now - self._aim_last_seen > 5.0
+                    and not self._capture_runner.is_running()):
+                self._aim_last_seen = now  # one locate per quiet spell
+                log.info("marker not in view; locating by absolute phase "
+                         "(16 frames)...")
+                self._start_aim_locate()
+        else:
+            self._aim_last_seen = now
+            self._last_aim = metrics
+            dx, dy = metrics["offset_cam_px"]
+            h, w = frame.shape[:2]
+            marker_xy = (w / 2.0 + dx, h / 2.0 + dy)
+            pan_x, pan_y = metrics["pan"]
+            if metrics["distance_mm"] is not None:
+                self._status_left.setText(
+                    f"Aim: {metrics['distance_mm']:.2f} mm off "
+                    f"({abs(metrics['offset_mm'][0]):.2f} {pan_x}, "
+                    f"{abs(metrics['offset_mm'][1]):.2f} {pan_y})")
+                self._settings.setValue("calibration/aim_dx_mm", metrics["offset_mm"][0])
+                self._settings.setValue("calibration/aim_dy_mm", metrics["offset_mm"][1])
+            self._update_lookat_from_offset(dx, dy)
+        self._display_live_frame(frame, marker_xy)
+        if now - self._aim_last_project > 1.5 and self._aim_proj:
+            self._aim_last_project = now
+            width, height = self._aim_proj
+            self.backend.project(aim.guide_pattern(width, height, self._aim_lookat))
+
+    def _update_lookat_from_offset(self, dx_px: float, dy_px: float) -> None:
+        """Estimate the projector coordinate under the camera center from the
+        live offset, using the last calibration's px scales (defaults if none)."""
+        cal = self._last_calibration or {}
+        sx = float(cal.get("scale_tilt") or 1.85)
+        sy = float(cal.get("scale_perp") or 1.85)
+        axis = float(cal.get("tilt_axis_deg") or 0.0)
+        if 45.0 < axis < 135.0:
+            sx, sy = sy, sx
+        width, height = self._aim_proj or (0, 0)
+        self._aim_lookat = (width / 2.0 - dx_px / sx, height / 2.0 - dy_px / sy)
+
+    def _display_live_frame(self, frame, marker_xy) -> None:
+        """The live camera frame with the center crosshair (and the detected
+        disc, when visible) in the Captured canvas."""
+        h, w = frame.shape[:2]
+        image = QImage(frame.data, w, h, w, QImage.Format_Grayscale8).copy()
+        image = image.convertToFormat(QImage.Format_RGB32)
+        painter = QPainter(image)
+        painter.setPen(QPen(QColor(0, 200, 255), 3))
+        painter.drawLine(0, h // 2, w, h // 2)
+        painter.drawLine(w // 2, 0, w // 2, h)
+        if marker_xy is not None:
+            mx, my = marker_xy
+            painter.setPen(QPen(QColor(255, 160, 0), 3))
+            painter.drawEllipse(int(mx) - 18, int(my) - 18, 36, 36)
+            painter.drawLine(w // 2, h // 2, int(mx), int(my))
+        painter.end()
+        self.canvases["capturedCanvas"].set_image(image)
+        if not self._aim_tab_shown:
+            self._aim_tab_shown = True
+            self._show_tab("capturedCanvas")
 
     def _start_aim_locate(self) -> None:
         """The fallback measurement: absolute (single-period) phase stacks that
@@ -886,76 +965,34 @@ class MainWindow(QMainWindow):
         try:
             self._start_capture(self.sidebar.selected_surface(), purpose="aim_locate",
                                 n_steps=16, subdir="aim", patterns_fn=patterns_fn)
-        except Exception as exc:  # noqa: BLE001 - stop the loop on bad state
+        except Exception as exc:  # noqa: BLE001 - stop the guide on bad state
             log.error(f"aim locate failed to start: {exc}")
             self.sidebar.aim_button.setChecked(False)
 
-    def _finish_aim(self, capture_dir: Path, purpose: str) -> None:
-        """Evaluate a finished aim capture; fall back from the marker to the
-        absolute-phase method when the marker is not in the camera's view."""
+    def _finish_aim(self, capture_dir: Path) -> None:
+        """Evaluate a finished absolute-phase locate: report the offset, move
+        the projected look-at ring, and let live tracking resume."""
         try:
             frames = aim.load_frames(capture_dir)
-            if purpose == "aim":
-                metrics = aim.measure_from_marker(frames[0])
-            else:
-                width, height = self._aim_proj or (0, 0)
-                metrics = aim.measure_from_phase(frames, width, height)
+            width, height = self._aim_proj or (0, 0)
+            metrics = aim.measure_from_phase(frames, width, height)
         except ValueError as exc:
-            if purpose == "aim":
-                log.info(f"marker not found ({exc}); locating by absolute "
-                         "phase (16 frames)...")
-                self._start_aim_locate()
-                return
-            log.error(f"aim measurement failed: {exc}")
+            log.error(f"aim locate failed: {exc}")
             self.sidebar.aim_button.setChecked(False)
             return
         self._last_aim = metrics
         aim.write_report(capture_dir / "aim.txt", metrics)
-        self._report_aim(metrics, capture_dir)
-        if self._aim_active:
-            self._aim_timer.start()
-
-    def _report_aim(self, metrics: dict, capture_dir: Path) -> None:
+        du, dv = metrics.get("offset_proj_px", (0.0, 0.0))
         pan_x, pan_y = metrics["pan"]
-        dx_mm, dy_mm = metrics.get("offset_mm", (None, None))
-        if dx_mm is not None:
-            text = (f"aim offset {metrics['distance_mm']:.2f} mm "
-                    f"({abs(dx_mm):.2f} mm {pan_x}, {abs(dy_mm):.2f} mm {pan_y})")
-            self._settings.setValue("calibration/aim_dx_mm", dx_mm)
-            self._settings.setValue("calibration/aim_dy_mm", dy_mm)
-            self._settings.sync()
-        else:
-            du, dv = metrics.get("offset_proj_px", (0.0, 0.0))
-            text = (f"aim offset ({du:+.0f}, {dv:+.0f}) projector px; "
-                    f"pan the camera {pan_x} and {pan_y}")
+        text = (f"aim offset ({du:+.0f}, {dv:+.0f}) projector px; "
+                f"pan the camera {pan_x} and {pan_y}")
         success(log, text)
-        if metrics.get("marker_touches_border"):
-            log.warning("marker blob touches the camera frame border; the "
-                        "offset is biased until it is fully in view")
         self._status_left.setText(f"Aim: {text}")
-        if metrics["method"] == "marker":
-            self._show_aim_overlay(capture_dir, metrics)
-
-    def _show_aim_overlay(self, capture_dir: Path, metrics: dict) -> None:
-        """The marker frame with the camera center (crosshair), the detected
-        marker (circle), and the offset between them drawn in."""
-        frames = sorted(capture_dir.glob("frame_*.png"))
-        if not frames:
-            return
-        image = QImage(str(frames[0])).convertToFormat(QImage.Format_RGB32)
-        w, h = image.width(), image.height()
-        dx, dy = metrics["offset_cam_px"]
-        mx, my = w / 2.0 + dx, h / 2.0 + dy  # the marker centroid
-        painter = QPainter(image)
-        painter.setPen(QPen(QColor(0, 200, 255), 3))
-        painter.drawLine(0, h // 2, w, h // 2)
-        painter.drawLine(w // 2, 0, w // 2, h)
-        painter.setPen(QPen(QColor(255, 160, 0), 3))
-        painter.drawEllipse(int(mx) - 18, int(my) - 18, 36, 36)
-        painter.drawLine(w // 2, h // 2, int(mx), int(my))
-        painter.end()
-        self.canvases["capturedCanvas"].set_image(image)
-        self._show_tab("capturedCanvas")
+        self._aim_lookat = metrics.get("cam_center_proj_px")
+        self._aim_last_seen = time.monotonic()  # grace before the next locate
+        if self._aim_active and self._aim_proj:
+            width, height = self._aim_proj
+            self.backend.project(aim.guide_pattern(width, height, self._aim_lookat))
 
     def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
         """Kick off a capture of `surface` through the backend's controller
@@ -1010,10 +1047,9 @@ class MainWindow(QMainWindow):
             self._finish_calibration(capture_dir)
             return
 
-        if self._capture_purpose in ("aim", "aim_locate"):
-            purpose = self._capture_purpose
+        if self._capture_purpose == "aim_locate":
             self._finish_capture_idle()
-            self._finish_aim(capture_dir, purpose)
+            self._finish_aim(capture_dir)
             return
 
         self._finish_capture_idle()
@@ -1056,8 +1092,8 @@ class MainWindow(QMainWindow):
         failed_purpose = self._capture_purpose
         self._finish_capture_idle()
         log.error(f"capture failed: {message}")
-        if failed_purpose in ("aim", "aim_locate"):
-            # Stop the aim loop rather than hammering a failing capture.
+        if failed_purpose == "aim_locate":
+            # Stop the aim guide rather than hammering a failing capture.
             self.sidebar.aim_button.setChecked(False)
 
     def _set_capture_busy(self, busy: bool) -> None:
@@ -1076,8 +1112,8 @@ class MainWindow(QMainWindow):
             self.sidebar.pipeline_button.setText("Running...")
         elif self._capture_purpose == "calibrate":
             self.sidebar.calibrate_button.setText("Calibrating...")
-        elif self._capture_purpose in ("aim", "aim_locate"):
-            pass  # the aim button stays as-is (checkable; unchecking stops the loop)
+        elif self._capture_purpose == "aim_locate":
+            pass  # the aim button stays as-is (checkable; unchecking stops the guide)
         else:
             self.sidebar.capture_button.setText("Capturing...")
 
@@ -1110,24 +1146,28 @@ class MainWindow(QMainWindow):
             "get_calibration": self._cmd_get_calibration,
             "aim_camera": self._cmd_aim_camera,
             "get_aim": self._cmd_get_aim,
+            "quit": self._cmd_quit,
         }
 
+    def _cmd_quit(self, _args: dict):
+        """Close the app gracefully (backend shutdown releases the camera and
+        projector). Prefer this over killing the process: a force-killed app
+        leaves the camera's driver handle poisoned for the next open."""
+        QTimer.singleShot(0, self.close)  # let this response go out first
+        return {"quitting": True}
+
     def _cmd_aim_camera(self, _args: dict):
-        """One aim measurement (asynchronous): project the center marker and
-        measure its offset from the camera center (falling back to absolute
-        phase if the marker is out of view). Poll get_aim for the result."""
+        """One aim measurement (asynchronous): absolute-phase locate of the
+        projector coordinate under the camera center -- works however far off
+        the camera points. Poll get_aim for the result."""
         if self.backend.kind != "hardware":
             raise ValueError("the aim guide requires the hardware backend")
         if self._capture_runner.is_running():
             raise ValueError("a capture is already running")
-
-        def patterns_fn(width: int, height: int):
-            self._aim_proj = (width, height)
-            return [aim.marker_pattern(width, height)]
-
-        self._start_capture(self.sidebar.selected_surface(), purpose="aim",
-                            n_steps=1, subdir="aim", patterns_fn=patterns_fn)
-        return {"aim": "started"}
+        self._start_aim_locate()
+        if not self._capture_runner.is_running():
+            raise ValueError("aim locate did not start")
+        return {"aim": "started", "frames": 16}
 
     def _cmd_get_aim(self, _args: dict):
         """The last aim measurement of this session (offset, pan directions),

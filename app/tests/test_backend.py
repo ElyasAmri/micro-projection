@@ -141,20 +141,23 @@ def test_hardware_capture_and_reconstruct(qapp, tmp_path, monkeypatch):
     backend = create_backend("hardware")
     controller = backend.new_capture_controller()
 
-    outcome = _run_capture(
-        controller, surface="live", n_steps=8, subdir="capture", settle_ms=1
-    )
-    assert outcome.get("code") == 0, f"capture failed: {outcome}"
+    try:
+        outcome = _run_capture(
+            controller, surface="live", n_steps=8, subdir="capture", settle_ms=1
+        )
+        assert outcome.get("code") == 0, f"capture failed: {outcome}"
 
-    frames = sorted(controller.capture_dir.glob("frame_*.png"))
-    assert len(frames) == 8
-    assert controller.n_steps == 8
+        frames = sorted(controller.capture_dir.glob("frame_*.png"))
+        assert len(frames) == 8
+        assert controller.n_steps == 8
 
-    # Reconstruct the (ground-truth-less) real capture: height map, no score.
-    result = backend.reconstruct("live")
-    assert result.height_png.exists()
-    assert "rmse" not in result.metrics  # nothing to score a real target against
-    assert result.metrics["valid_pixels"] > 0
+        # Reconstruct the (ground-truth-less) real capture: height map, no score.
+        result = backend.reconstruct("live")
+        assert result.height_png.exists()
+        assert "rmse" not in result.metrics  # nothing to score a real target against
+        assert result.metrics["valid_pixels"] > 0
+    finally:
+        backend.shutdown()  # stop the persistent camera service thread
 
 
 def test_hardware_multifreq_ladder_capture_and_reconstruct(qapp, tmp_path, monkeypatch):
@@ -164,24 +167,28 @@ def test_hardware_multifreq_ladder_capture_and_reconstruct(qapp, tmp_path, monke
     backend = create_backend("hardware")
     controller = backend.new_capture_controller()
 
-    # Walk a 2-rung ladder through the one controller, each rung into its own
-    # capture_f<i> subdir -- exactly what the UI's multi-frequency pipeline does.
-    ladder = [8.0, 24.0]
-    for i, n in enumerate(ladder):
-        outcome = _run_capture(
-            controller, surface="live", n_steps=8,
-            subdir=backend.multifreq_subdir(i), n_periods=n, settle_ms=1,
-        )
-        assert outcome.get("code") == 0, f"rung {i} failed: {outcome}"
+    try:
+        # Walk a 2-rung ladder through the one controller, each rung into its
+        # own capture_f<i> subdir -- exactly what the UI's multi-frequency
+        # pipeline does.
+        ladder = [8.0, 24.0]
+        for i, n in enumerate(ladder):
+            outcome = _run_capture(
+                controller, surface="live", n_steps=8,
+                subdir=backend.multifreq_subdir(i), n_periods=n, settle_ms=1,
+            )
+            assert outcome.get("code") == 0, f"rung {i} failed: {outcome}"
 
-    for d in backend.multifreq_capture_dirs("live", len(ladder)):
-        assert len(sorted(d.glob("frame_*.png"))) == 8
+        for d in backend.multifreq_capture_dirs("live", len(ladder)):
+            assert len(sorted(d.glob("frame_*.png"))) == 8
 
-    result = backend.reconstruct_multifreq("live", n_periods_ladder=ladder)
-    assert result.height_png.exists()
-    assert "rmse" not in result.metrics  # live target: no ground truth
-    assert result.metrics["valid_pixels"] > 0
-    assert result.metrics["n_periods_ladder"] == ladder
+        result = backend.reconstruct_multifreq("live", n_periods_ladder=ladder)
+        assert result.height_png.exists()
+        assert "rmse" not in result.metrics  # live target: no ground truth
+        assert result.metrics["valid_pixels"] > 0
+        assert result.metrics["n_periods_ladder"] == ladder
+    finally:
+        backend.shutdown()  # stop the persistent camera service thread
 
 
 def test_capture_rejects_concurrent_start(qapp, tmp_path, monkeypatch):
@@ -189,12 +196,15 @@ def test_capture_rejects_concurrent_start(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("MP_CAMERA", "dummy")
     backend = create_backend("hardware")
     controller = backend.new_capture_controller()
-    controller.start(surface="live", n_steps=2, subdir="capture", settle_ms=1)
-    with pytest.raises(RuntimeError):
+    try:
         controller.start(surface="live", n_steps=2, subdir="capture", settle_ms=1)
-    # drain so the worker thread finishes cleanly before the test ends
-    loop = QEventLoop()
-    controller.finished.connect(lambda _c: loop.quit())
-    controller.failed.connect(lambda _m: loop.quit())
-    QTimer.singleShot(20000, loop.quit)
-    loop.exec()
+        with pytest.raises(RuntimeError):
+            controller.start(surface="live", n_steps=2, subdir="capture", settle_ms=1)
+        # drain so the worker thread finishes cleanly before the test ends
+        loop = QEventLoop()
+        controller.finished.connect(lambda _c: loop.quit())
+        controller.failed.connect(lambda _m: loop.quit())
+        QTimer.singleShot(20000, loop.quit)
+        loop.exec()
+    finally:
+        backend.shutdown()  # stop the persistent camera service thread
