@@ -30,6 +30,7 @@ class Sidebar(QWidget):
     camera_settings_requested = Signal()  # open the camera settings dialog
     patterns_requested = Signal()  # open the pattern library dialog
     calibrate_requested = Signal()  # measure the camera angle (box + fringes)
+    aim_requested = Signal(bool)    # toggle the camera-aim measurement loop
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -146,6 +147,19 @@ class Sidebar(QWidget):
         )
         self.calibrate_button.clicked.connect(lambda: self.calibrate_requested.emit())
         layout.addWidget(self.calibrate_button)
+
+        self.aim_button = QPushButton("Aim Camera")
+        self.aim_button.setObjectName("aimButton")
+        self.aim_button.setCheckable(True)
+        self.aim_button.setEnabled(bool(surfaces))
+        self.aim_button.setToolTip(
+            "Guided aiming loop: projects a marker at the field center and "
+            "measures its offset from the camera center every couple of "
+            "seconds. Adjust the mount until the offset reads near zero, "
+            "then click again to stop. Needs the hardware backend."
+        )
+        self.aim_button.toggled.connect(self.aim_requested)
+        layout.addWidget(self.aim_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.

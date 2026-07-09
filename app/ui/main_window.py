@@ -11,7 +11,7 @@ from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings, Qt, QTimer
-from PySide6.QtGui import QImage, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from logbus import get_logger, success
 from version import __version__
 from backend import Backend, SimulationBackend
+from backend import aim
 from backend import calibrate
 from backend import patterns as pattern_lib
 from hardware.camera_config import get_camera_settings, set_camera_settings
@@ -139,6 +140,15 @@ class MainWindow(QMainWindow):
         # capture (geometry needed to evaluate its frames) and the last result.
         self._calibration_spec = None
         self._last_calibration: dict | None = None
+        # Camera-aim guide state: whether the repeat loop is on, the projector
+        # resolution of the in-flight measurement, and the last result.
+        self._aim_active = False
+        self._aim_proj: tuple | None = None
+        self._last_aim: dict | None = None
+        self._aim_timer = QTimer(self)
+        self._aim_timer.setSingleShot(True)
+        self._aim_timer.setInterval(1500)
+        self._aim_timer.timeout.connect(self._start_aim_measure)
 
         # The rig-overview render is its own Blender run (independent of the
         # capture runner, so it never gates or is gated by a capture).
@@ -220,6 +230,7 @@ class MainWindow(QMainWindow):
         self.sidebar.camera_settings_requested.connect(self._on_camera_settings)
         self.sidebar.patterns_requested.connect(self._on_patterns)
         self.sidebar.calibrate_requested.connect(self._on_calibrate)
+        self.sidebar.aim_requested.connect(self._on_aim_toggled)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -826,6 +837,126 @@ class MainWindow(QMainWindow):
         log.info(f"report: {capture_dir / 'calibration.txt'}")
         self._status_left.setText(f"Camera angle: {theta:.1f} deg")
 
+    def _on_aim_toggled(self, checked: bool) -> None:
+        """Start/stop the camera-aim guide loop: project a center marker,
+        measure its offset from the camera center, repeat until unchecked."""
+        if not checked:
+            if self._aim_active:
+                self._aim_active = False
+                self._aim_timer.stop()
+                log.info("aim guide stopped")
+            return
+        if self.backend.kind != "hardware":
+            log.warning("the aim guide drives the physical projector and camera; "
+                        "start the app with MP_BACKEND=hardware")
+            self.sidebar.aim_button.setChecked(False)
+            return
+        self._aim_active = True
+        log.info("aim guide started: adjust the mount until the offset reads "
+                 "near zero, then click Aim Camera again to stop")
+        self._start_aim_measure()
+
+    def _start_aim_measure(self) -> None:
+        """One aim measurement: a single frame of the center marker."""
+        if not self._aim_active:
+            return
+        if self._capture_runner.is_running():
+            self._aim_timer.start()  # another capture is mid-flight; retry shortly
+            return
+
+        def patterns_fn(width: int, height: int):
+            self._aim_proj = (width, height)
+            return [aim.marker_pattern(width, height)]
+
+        try:
+            self._start_capture(self.sidebar.selected_surface(), purpose="aim",
+                                n_steps=1, subdir="aim", patterns_fn=patterns_fn)
+        except Exception as exc:  # noqa: BLE001 - stop the loop on bad state
+            log.error(f"aim measurement failed to start: {exc}")
+            self.sidebar.aim_button.setChecked(False)
+
+    def _start_aim_locate(self) -> None:
+        """The fallback measurement: absolute (single-period) phase stacks that
+        work however far off the camera points."""
+
+        def patterns_fn(width: int, height: int):
+            self._aim_proj = (width, height)
+            return aim.locate_patterns(width, height)
+
+        try:
+            self._start_capture(self.sidebar.selected_surface(), purpose="aim_locate",
+                                n_steps=16, subdir="aim", patterns_fn=patterns_fn)
+        except Exception as exc:  # noqa: BLE001 - stop the loop on bad state
+            log.error(f"aim locate failed to start: {exc}")
+            self.sidebar.aim_button.setChecked(False)
+
+    def _finish_aim(self, capture_dir: Path, purpose: str) -> None:
+        """Evaluate a finished aim capture; fall back from the marker to the
+        absolute-phase method when the marker is not in the camera's view."""
+        try:
+            frames = aim.load_frames(capture_dir)
+            if purpose == "aim":
+                metrics = aim.measure_from_marker(frames[0])
+            else:
+                width, height = self._aim_proj or (0, 0)
+                metrics = aim.measure_from_phase(frames, width, height)
+        except ValueError as exc:
+            if purpose == "aim":
+                log.info(f"marker not found ({exc}); locating by absolute "
+                         "phase (16 frames)...")
+                self._start_aim_locate()
+                return
+            log.error(f"aim measurement failed: {exc}")
+            self.sidebar.aim_button.setChecked(False)
+            return
+        self._last_aim = metrics
+        aim.write_report(capture_dir / "aim.txt", metrics)
+        self._report_aim(metrics, capture_dir)
+        if self._aim_active:
+            self._aim_timer.start()
+
+    def _report_aim(self, metrics: dict, capture_dir: Path) -> None:
+        pan_x, pan_y = metrics["pan"]
+        dx_mm, dy_mm = metrics.get("offset_mm", (None, None))
+        if dx_mm is not None:
+            text = (f"aim offset {metrics['distance_mm']:.2f} mm "
+                    f"({abs(dx_mm):.2f} mm {pan_x}, {abs(dy_mm):.2f} mm {pan_y})")
+            self._settings.setValue("calibration/aim_dx_mm", dx_mm)
+            self._settings.setValue("calibration/aim_dy_mm", dy_mm)
+            self._settings.sync()
+        else:
+            du, dv = metrics.get("offset_proj_px", (0.0, 0.0))
+            text = (f"aim offset ({du:+.0f}, {dv:+.0f}) projector px; "
+                    f"pan the camera {pan_x} and {pan_y}")
+        success(log, text)
+        if metrics.get("marker_touches_border"):
+            log.warning("marker blob touches the camera frame border; the "
+                        "offset is biased until it is fully in view")
+        self._status_left.setText(f"Aim: {text}")
+        if metrics["method"] == "marker":
+            self._show_aim_overlay(capture_dir, metrics)
+
+    def _show_aim_overlay(self, capture_dir: Path, metrics: dict) -> None:
+        """The marker frame with the camera center (crosshair), the detected
+        marker (circle), and the offset between them drawn in."""
+        frames = sorted(capture_dir.glob("frame_*.png"))
+        if not frames:
+            return
+        image = QImage(str(frames[0])).convertToFormat(QImage.Format_RGB32)
+        w, h = image.width(), image.height()
+        dx, dy = metrics["offset_cam_px"]
+        mx, my = w / 2.0 + dx, h / 2.0 + dy  # the marker centroid
+        painter = QPainter(image)
+        painter.setPen(QPen(QColor(0, 200, 255), 3))
+        painter.drawLine(0, h // 2, w, h // 2)
+        painter.drawLine(w // 2, 0, w // 2, h)
+        painter.setPen(QPen(QColor(255, 160, 0), 3))
+        painter.drawEllipse(int(mx) - 18, int(my) - 18, 36, 36)
+        painter.drawLine(w // 2, h // 2, int(mx), int(my))
+        painter.end()
+        self.canvases["capturedCanvas"].set_image(image)
+        self._show_tab("capturedCanvas")
+
     def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
         """Kick off a capture of `surface` through the backend's controller
         (raises on bad state). Returns the controller, which knows where the
@@ -879,6 +1010,12 @@ class MainWindow(QMainWindow):
             self._finish_calibration(capture_dir)
             return
 
+        if self._capture_purpose in ("aim", "aim_locate"):
+            purpose = self._capture_purpose
+            self._finish_capture_idle()
+            self._finish_aim(capture_dir, purpose)
+            return
+
         self._finish_capture_idle()
         if self._capture_purpose == "pipeline":
             success(log, f"captured {self._capture_surface}: {self._capture_runner.n_steps} frames")
@@ -916,8 +1053,12 @@ class MainWindow(QMainWindow):
         self._status_left.setText("Ready")
 
     def _on_capture_failed(self, message: str) -> None:
+        failed_purpose = self._capture_purpose
         self._finish_capture_idle()
         log.error(f"capture failed: {message}")
+        if failed_purpose in ("aim", "aim_locate"):
+            # Stop the aim loop rather than hammering a failing capture.
+            self.sidebar.aim_button.setChecked(False)
 
     def _set_capture_busy(self, busy: bool) -> None:
         self.sidebar.capture_button.setEnabled(not busy)
@@ -935,6 +1076,8 @@ class MainWindow(QMainWindow):
             self.sidebar.pipeline_button.setText("Running...")
         elif self._capture_purpose == "calibrate":
             self.sidebar.calibrate_button.setText("Calibrating...")
+        elif self._capture_purpose in ("aim", "aim_locate"):
+            pass  # the aim button stays as-is (checkable; unchecking stops the loop)
         else:
             self.sidebar.capture_button.setText("Capturing...")
 
@@ -965,7 +1108,33 @@ class MainWindow(QMainWindow):
             "set_camera_settings": self._cmd_set_camera_settings,
             "calibrate_camera": self._cmd_calibrate_camera,
             "get_calibration": self._cmd_get_calibration,
+            "aim_camera": self._cmd_aim_camera,
+            "get_aim": self._cmd_get_aim,
         }
+
+    def _cmd_aim_camera(self, _args: dict):
+        """One aim measurement (asynchronous): project the center marker and
+        measure its offset from the camera center (falling back to absolute
+        phase if the marker is out of view). Poll get_aim for the result."""
+        if self.backend.kind != "hardware":
+            raise ValueError("the aim guide requires the hardware backend")
+        if self._capture_runner.is_running():
+            raise ValueError("a capture is already running")
+
+        def patterns_fn(width: int, height: int):
+            self._aim_proj = (width, height)
+            return [aim.marker_pattern(width, height)]
+
+        self._start_capture(self.sidebar.selected_surface(), purpose="aim",
+                            n_steps=1, subdir="aim", patterns_fn=patterns_fn)
+        return {"aim": "started"}
+
+    def _cmd_get_aim(self, _args: dict):
+        """The last aim measurement of this session (offset, pan directions),
+        or an error if none has completed yet."""
+        if self._last_aim is None:
+            raise ValueError("no aim measurement has completed this session")
+        return self._last_aim
 
     def _cmd_calibrate_camera(self, _args: dict):
         """Start the camera-angle calibration (asynchronous): box + fringe
