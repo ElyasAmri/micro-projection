@@ -73,6 +73,13 @@ class HardwareBackend(Backend):
         """The projector's pixel size (patterns map 1:1 at this resolution)."""
         return self._get_projector().screen_size()
 
+    def apply_camera_settings_live(self) -> None:
+        """Push the shared CameraSettings to the camera if it is already open.
+        A service that was never started needs nothing: settings are applied
+        when it first opens the device."""
+        if self._service is not None:
+            self._service.request_apply_settings()
+
     def new_capture_controller(self, parent=None):
         from hardware.capture import HardwareCapture
 

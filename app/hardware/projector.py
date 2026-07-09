@@ -14,6 +14,8 @@ sinusoid the camera images is exactly the one we generated.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
@@ -22,6 +24,20 @@ from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 from logbus import get_logger
 
 log = get_logger("projector")
+
+
+def projection_level() -> float:
+    """Global output scale (0..1) applied to every projected pattern.
+
+    The rig's fringes saturate the camera even at the shortest flicker-safe
+    exposure (one projector refresh period) with zero gain, so the remaining
+    brightness knob is the projected level itself. `MP_PROJECTOR_LEVEL`
+    scales all patterns; 1.0 (default) projects them as generated."""
+    try:
+        level = float(os.environ.get("MP_PROJECTOR_LEVEL", "1.0"))
+    except ValueError:
+        return 1.0
+    return min(max(level, 0.0), 1.0)
 
 
 def pick_projector_screen(app: QApplication | None = None):
@@ -69,7 +85,12 @@ class ProjectorWindow(QWidget):
     def show_pattern(self, pattern: np.ndarray) -> None:
         """Display an (H,W) uint8 (or RGB) pattern, scaled to fill the window
         with no smoothing (nearest-neighbour), so a full-screen sinusoid stays a
-        sinusoid rather than being blurred by interpolation."""
+        sinusoid rather than being blurred by interpolation. The global
+        projection level (MP_PROJECTOR_LEVEL) is applied here, the one path
+        every projected pattern flows through."""
+        level = projection_level()
+        if level < 1.0:
+            pattern = (pattern.astype(np.float32) * level).astype(np.uint8)
         pixmap = QPixmap.fromImage(_to_qimage(pattern))
         target = self._label.size()
         if target.width() > 0 and target.height() > 0:

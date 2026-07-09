@@ -79,6 +79,40 @@ def test_open_failure_reports_and_raises(qapp):
     assert failures and "no device" in failures[0]
 
 
+class CountingCamera(DummyCamera):
+    """A dummy that counts live settings pushes."""
+
+    def __init__(self) -> None:
+        super().__init__(width=64, height=32)
+        self.applied = 0
+
+    def apply_settings(self) -> None:
+        self.applied += 1
+
+
+def test_request_apply_settings_runs_on_service_thread():
+    camera = CountingCamera()
+    service = CameraService(camera)
+    service.start()
+    try:
+        service.wait_ready()
+        service.request_apply_settings()
+        end = time.monotonic() + 5.0
+        while camera.applied == 0 and time.monotonic() < end:
+            time.sleep(0.01)
+        assert camera.applied == 1
+        # Also honored while a capture holds step mode.
+        service.acquire_step(2)
+        service.request_apply_settings()
+        end = time.monotonic() + 5.0
+        while camera.applied == 1 and time.monotonic() < end:
+            time.sleep(0.01)
+        assert camera.applied == 2
+        service.release_step()
+    finally:
+        service.stop_service()
+
+
 def test_grab_step_after_stop_raises():
     service = _service()
     service.start()

@@ -440,9 +440,17 @@ class MainWindow(QMainWindow):
         """Open the camera settings dialog (modal)."""
         if self._camera_dialog is None:
             self._camera_dialog = CameraSettingsDialog(self)
+            # The camera stays open in the persistent service, so an applied
+            # change must be pushed to the device live, not at the next open.
+            self._camera_dialog.accepted.connect(self._push_live_camera_settings)
         else:  # discard any edits left behind by a previous Cancel
             self._camera_dialog.load_settings(get_camera_settings())
         self._camera_dialog.show()
+
+    def _push_live_camera_settings(self) -> None:
+        push = getattr(self.backend, "apply_camera_settings_live", None)
+        if callable(push):
+            push()
 
     def _on_patterns(self) -> None:
         """Open the pattern library dialog (modal)."""
@@ -1397,6 +1405,7 @@ class MainWindow(QMainWindow):
         updates = {k: (bool(v) if k in flags else float(v)) for k, v in args.items()}
         updated = replace(current, **updates)
         apply_camera_settings(updated)
+        self._push_live_camera_settings()
         if self._camera_dialog is not None:  # keep an open panel in sync
             self._camera_dialog.load_settings(updated)
         return {"camera_settings": asdict(updated)}

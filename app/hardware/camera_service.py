@@ -78,6 +78,7 @@ class CameraService(QThread):
         self._stop = False
         self._step_mode = False
         self._requests: list[_StepRequest] = []
+        self._apply_settings_flag = False
         self._ready = threading.Event()
         self._error: str | None = None
 
@@ -101,6 +102,15 @@ class CameraService(QThread):
                         break
                     request = self._requests.pop(0) if self._requests else None
                     stepping = self._step_mode
+                    apply_settings = self._apply_settings_flag
+                    self._apply_settings_flag = False
+                if apply_settings:
+                    # Device calls stay on this thread; a failure is logged by
+                    # the camera and must not stop the stream.
+                    try:
+                        self._camera.apply_settings()
+                    except Exception as exc:  # noqa: BLE001 - keep streaming
+                        log.warning(f"settings apply failed: {exc}")
                 if request is not None:
                     try:
                         request.deliver(self._camera.grab())
@@ -169,6 +179,13 @@ class CameraService(QThread):
         with self._cond:
             self._requests.append(request)
         return request.wait(timeout_s)
+
+    def request_apply_settings(self) -> None:
+        """Ask the service thread to re-push the shared CameraSettings to the
+        open device (settings changes no longer wait for a reopen)."""
+        with self._cond:
+            self._apply_settings_flag = True
+            self._cond.notify_all()
 
     def latest(self):
         """The most recent stream frame (None before the first grab)."""

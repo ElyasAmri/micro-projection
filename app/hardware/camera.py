@@ -58,6 +58,10 @@ class Camera(ABC):
         """Hint the length of the coming phase-shift sequence. Real cameras
         ignore it; the synthetic camera uses it to phase its frames."""
 
+    def apply_settings(self) -> None:
+        """Push the current shared CameraSettings to an already-open device.
+        Base: no-op (the synthetic and webcam cameras have no such settings)."""
+
     def __enter__(self) -> "Camera":
         self.open()
         return self
@@ -190,6 +194,18 @@ class SpinnakerCamera(Camera):
     def _clamp(node, value: float) -> float:
         """`value` limited to a device node's [GetMin, GetMax] range."""
         return max(node.GetMin(), min(float(value), node.GetMax()))
+
+    def apply_settings(self) -> None:
+        """Re-push the shared CameraSettings to the open device (exposure,
+        gain, gamma, black level are all writable during acquisition). With
+        the persistent camera service the device is opened once, so settings
+        changes must reach it live instead of at the next open."""
+        if self._cam is None:
+            return  # not open; the next open applies them
+        try:
+            self._apply_settings(self._cam, get_camera_settings())
+        except PySpin.SpinnakerException as exc:
+            log.warning(f"live settings apply failed: {exc}")
 
     def grab(self) -> np.ndarray:
         image = self._cam.GetNextImage(2000)  # ms timeout
