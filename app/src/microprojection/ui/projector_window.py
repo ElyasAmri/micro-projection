@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -18,6 +19,12 @@ class ProjectorWindow(QWidget):
 
         self._screen_size = (0, 0)
         self._screen = None
+        # Projector-camera alignment correction, applied to every pattern before
+        # it is shown: an affine warp (2x3) and a clip box (x0, y0, x1, y1) in
+        # projector pixels. Set by the alignment pipeline; None = no correction.
+        self._warp = None
+        self._clip = None
+        self._raw_pattern = None  # last pattern as given, before warp/clip
         self._label = QLabel()
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -63,8 +70,37 @@ class ProjectorWindow(QWidget):
         )
         return True
 
+    def set_warp(self, matrix, clip_box=None):
+        """Apply an affine warp and optional clip box to every projected pattern,
+        for projector-camera alignment. ``matrix`` is a 2x3 affine (or None to
+        clear); ``clip_box`` is (x0, y0, x1, y1) in projector pixels (or None).
+        Re-renders the current pattern so the change is visible at once."""
+        self._warp = None if matrix is None else np.asarray(matrix, dtype=np.float64)
+        self._clip = clip_box
+        if self._raw_pattern is not None:
+            self.update_pattern(self._raw_pattern)
+
+    def _corrected(self, pattern: np.ndarray) -> np.ndarray:
+        """Apply the alignment warp then the clip box, if set."""
+        if self._warp is None and self._clip is None:
+            return pattern
+        out = pattern
+        if self._warp is not None:
+            h, w = out.shape[:2]
+            out = cv2.warpAffine(out, self._warp, (w, h), flags=cv2.INTER_LINEAR,
+                                 borderValue=0)
+        if self._clip is not None:
+            x0, y0, x1, y1 = (int(v) for v in self._clip)
+            clipped = np.zeros_like(out)
+            clipped[y0:y1, x0:x1] = out[y0:y1, x0:x1]
+            out = clipped
+        return out
+
     def update_pattern(self, pattern: np.ndarray):
         """Display a HxW uint8 grayscale or HxWx3 uint8 RGB pattern."""
+        # Keep the raw pattern so set_warp can re-render it without double-warping.
+        self._raw_pattern = pattern
+        pattern = self._corrected(pattern)
         if pattern.ndim == 2:
             h, w = pattern.shape
             data = np.ascontiguousarray(pattern)

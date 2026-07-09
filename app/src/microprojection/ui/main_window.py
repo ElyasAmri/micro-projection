@@ -17,8 +17,10 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QSplitter,
+    QStatusBar,
     QWidget,
 )
 
@@ -46,6 +48,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("MicroProjection. Fringe Projection Profilometry")
         self.resize(1280, 800)
+
+        # Bottom console bar: latest status on the left, the measured projector
+        # alignment angle pinned on the right. Created before anything that can
+        # emit status during setup. Own QStatusBar instance, set explicitly (do
+        # not call self.statusBar(), which would auto-create a second one).
+        self._console = QStatusBar()
+        self._angle_label = QLabel("horizontal angle: --")
+        self._console.addPermanentWidget(self._angle_label)
+        self.setStatusBar(self._console)
 
         # Config and hardware.
         self._config = AppConfig()
@@ -118,6 +129,8 @@ class MainWindow(QMainWindow):
         self._sidebar.noiseFringeRequested.connect(self._acquisition.run_noise_fringe)
         self._sidebar.noiseDarkRequested.connect(self._acquisition.run_noise_dark)
         self._sidebar.fovRequested.connect(self._acquisition.run_fov)
+        self._sidebar.alignRequested.connect(self._acquisition.run_align)
+        self._acquisition.angleMeasured.connect(self._show_angle)
         # Restore the projector first so its refresh rate is known before the
         # camera starts; the camera then starts once with the flicker-safe
         # exposure instead of being restarted right after to apply it.
@@ -132,6 +145,7 @@ class MainWindow(QMainWindow):
         # Main content area: the live camera preview fills the viewport. It
         # pulls the newest frame from the camera controller on its own timer.
         self._content = PreviewView(frame_source=self._camera.latest_frame)
+        self._sidebar.crosshairToggled.connect(self._content.set_crosshair)
 
         # Resizable split between the sidebar and the content area.
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -175,12 +189,13 @@ class MainWindow(QMainWindow):
         self.close()  # closeEvent cleans up; last window closing quits the app
 
     def _status(self, msg: str):
-        """Report status. No status bar in the shell, so log to console.
-
-        Re-point this at the new design's status widget once it exists. (Do
-        NOT call self.statusBar(); it would silently recreate the bottom bar.)
-        """
+        """Report status to the bottom console bar (and stdout for logging)."""
+        self._console.showMessage(msg)
         print(f"[status] {msg}", flush=True)
+
+    def _show_angle(self, degrees: float):
+        """Pin the measured projector alignment angle in the console bar."""
+        self._angle_label.setText(f"horizontal angle: {degrees:.1f} deg")
 
     # Camera.
 

@@ -209,6 +209,11 @@ class PySpinCameraThread(QThread):
 
         frame_count = 0
         fps_timer = time.time()
+        # TEMP PROBE: detect camera-side buffer lag. _t0/_hw0 anchor wall time to
+        # the camera hardware clock on the first frame; if frames start arriving
+        # from a backlog, wall time outruns sensor time and _cam_lag grows.
+        _t0 = _hw0 = None
+        _cam_lag = 0.0
 
         while not self._stop_requested:
             try:
@@ -223,8 +228,18 @@ class PySpinCameraThread(QThread):
                     image.Release()
                     continue
 
+                # TEMP PROBE: camera hardware timestamp (ns) before release.
+                _now = time.time()
+                try:
+                    _hw = image.GetTimeStamp() * 1e-9
+                except Exception:
+                    _hw = None
                 arr = image.GetNDArray().copy()
                 image.Release()
+                if _hw is not None:
+                    if _t0 is None:
+                        _t0, _hw0 = _now, _hw
+                    _cam_lag = (_now - _t0) - (_hw - _hw0)
 
                 capture = CaptureFrame(image=arr, timestamp=time.time())
                 with self._latest_lock:
@@ -237,6 +252,9 @@ class PySpinCameraThread(QThread):
                 elapsed = time.time() - fps_timer
                 if elapsed >= 1.0:
                     self.fps_updated.emit(frame_count / elapsed)
+                    # TEMP PROBE: report accumulated camera-side buffer lag.
+                    print(f"[probe-cam] fps={frame_count / elapsed:.1f} "
+                          f"buffer_lag={_cam_lag * 1000:.0f} ms", flush=True)
                     frame_count = 0
                     fps_timer = time.time()
 

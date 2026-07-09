@@ -15,12 +15,17 @@ newest frame and old frames are simply overwritten, never queued.
 
 Handles both frame shapes the cameras produce: RGB (HxWx3) from OpenCV and raw
 mono (HxW) from PySpin, in 8- or 16-bit.
+
+``set_crosshair`` overlays a centered alignment reticle (the same cross plus
+reference box as the projected crosshair pattern) on the live preview.
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 
@@ -66,6 +71,10 @@ class PreviewView(QWidget):
         self._pixmap: QPixmap | None = None
         # Callable returning the camera's most recent CaptureFrame (or None).
         self._frame_source = frame_source
+        # When set, a centered alignment crosshair is drawn over the preview.
+        self._crosshair = False
+        # TEMP PROBE: count renders to throttle the grab->display age log.
+        self._probe_n = 0
 
         # Render at ~30 Hz, pulling only the newest frame each tick; anything
         # captured in between is overwritten at the source, never queued, so a
@@ -79,12 +88,24 @@ class PreviewView(QWidget):
         """Set the callable the timer pulls frames from."""
         self._frame_source = frame_source
 
+    def set_crosshair(self, enabled: bool) -> None:
+        """Toggle a centered alignment crosshair over the live preview, and
+        repaint at once so it appears/clears without waiting for a new frame."""
+        self._crosshair = bool(enabled)
+        self._rescale()
+
     def _render_latest(self) -> None:
         if self._frame_source is None:
             return
         frame = self._frame_source()
         if frame is None:
             return
+        # TEMP PROBE: grab->display age (GUI-side latency), ~once per second.
+        self._probe_n += 1
+        ts = getattr(frame, "timestamp", None)
+        if ts is not None and self._probe_n % 30 == 0:
+            print(f"[probe-gui] display_age={(time.time() - ts) * 1000:.0f} ms",
+                  flush=True)
         image = _to_qimage(getattr(frame, "image", None))
         if image is None:
             return
@@ -104,10 +125,25 @@ class PreviewView(QWidget):
     def _rescale(self) -> None:
         if self._pixmap is None:
             return
-        self._label.setPixmap(
-            self._pixmap.scaled(
-                self._label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        scaled = self._pixmap.scaled(
+            self._label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        if self._crosshair:
+            self._overlay_crosshair(scaled)
+        self._label.setPixmap(scaled)
+
+    def _overlay_crosshair(self, pix: QPixmap) -> None:
+        """Draw a centered cross plus a reference box on the scaled image, the
+        same reticle as the projected crosshair pattern, for optical-axis
+        alignment. Drawn in display space so it stays centered on the frame."""
+        painter = QPainter(pix)
+        painter.setPen(QPen(QColor(0, 230, 0, 180), 1))
+        w, h = pix.width(), pix.height()
+        cx, cy = w // 2, h // 2
+        painter.drawLine(0, cy, w, cy)
+        painter.drawLine(cx, 0, cx, h)
+        box = min(w, h) // 8
+        painter.drawRect(cx - box, cy - box, 2 * box, 2 * box)
+        painter.end()

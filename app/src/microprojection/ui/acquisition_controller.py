@@ -16,13 +16,20 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
-from microprojection.pipelines import FovPipeline, NoisePipeline, PhaseShiftPipeline
+from microprojection.pipelines import (
+    AlignProjectionPipeline,
+    FovPipeline,
+    NoisePipeline,
+    PhaseShiftPipeline,
+)
 from microprojection.ui.pipeline_progress_dialog import PipelineProgressDialog
 
 
 class AcquisitionController(QObject):
     # user-facing status messages
     status = Signal(str)
+    # horizontal viewing angle measured by the alignment pipeline, in degrees
+    angleMeasured = Signal(float)
 
     def __init__(self, camera, sidebar, window, *,
                  projector_window, settings, projection, parent=None):
@@ -87,6 +94,17 @@ class AcquisitionController(QObject):
             parent=self,
         )
         self._start(pipeline, "Noise test (dark frame)")
+
+    def run_align(self):
+        """Align the projection to the camera: clip, recenter on the crosshair,
+        and stretch horizontally to undo the telecentric viewing angle."""
+        pipeline = AlignProjectionPipeline(
+            self._camera, self._get_projector_window(), self._get_settings(),
+            self._capture_dir("align"),
+            parent=self,
+        )
+        pipeline.angleMeasured.connect(self.angleMeasured)
+        self._start(pipeline, "Align projection")
 
     def run_fov(self):
         """Project a box and shrink it to the camera frame to find the FOV."""

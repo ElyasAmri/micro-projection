@@ -31,6 +31,8 @@ class Sidebar(QWidget):
     projectorSelected = Signal(int)
     # open the projector configuration modal
     projectorSettingsRequested = Signal()
+    # toggle the alignment crosshair overlay on the live preview
+    crosshairToggled = Signal(bool)
     # run the phase-shifting capture pipeline
     phaseShiftRequested = Signal()
     # run the flat-field noise pipeline
@@ -41,6 +43,8 @@ class Sidebar(QWidget):
     noiseDarkRequested = Signal()
     # run the camera field-of-view identification pipeline
     fovRequested = Signal()
+    # run the projector-camera alignment pipeline
+    alignRequested = Signal()
 
     WIDTH = 260
 
@@ -116,6 +120,16 @@ class Sidebar(QWidget):
 
         layout.addLayout(proj_row)
 
+        # Preview overlays. Independent of the hardware selection, so always
+        # available.
+        layout.addWidget(QLabel("View"))
+        self._crosshair_btn = QPushButton("Show crosshair")
+        self._crosshair_btn.setCheckable(True)
+        self._crosshair_btn.setToolTip("Overlay a centered alignment crosshair "
+                                       "on the live preview")
+        self._crosshair_btn.toggled.connect(self.crosshairToggled)
+        layout.addWidget(self._crosshair_btn)
+
         # Acquisition pipelines. Enabled only once both a camera and a projector
         # are selected (the pipelines drive both at once).
         layout.addWidget(QLabel("Acquisition"))
@@ -152,6 +166,13 @@ class Sidebar(QWidget):
         self._fov_btn.setEnabled(False)
         self._fov_btn.clicked.connect(self.fovRequested)
         layout.addWidget(self._fov_btn)
+
+        self._align_btn = QPushButton("Align projection")
+        self._align_btn.setToolTip("Clip and recenter the projection on the "
+                                   "crosshair, stretching for the viewing angle")
+        self._align_btn.setEnabled(False)
+        self._align_btn.clicked.connect(self.alignRequested)
+        layout.addWidget(self._align_btn)
 
         layout.addStretch(1)
 
@@ -270,6 +291,7 @@ class Sidebar(QWidget):
         self._noise_fringe_btn.setEnabled(ready)
         self._noise_dark_btn.setEnabled(ready)
         self._fov_btn.setEnabled(ready)
+        self._align_btn.setEnabled(ready)
 
     def lock_acquisition(self) -> None:
         """Disable the pipeline buttons while a pipeline is running."""
@@ -278,6 +300,7 @@ class Sidebar(QWidget):
         self._noise_fringe_btn.setEnabled(False)
         self._noise_dark_btn.setEnabled(False)
         self._fov_btn.setEnabled(False)
+        self._align_btn.setEnabled(False)
 
     def refresh_acquisition_enabled(self) -> None:
         """Re-enable the pipeline buttons per current readiness (after a run)."""
