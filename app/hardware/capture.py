@@ -89,15 +89,29 @@ class HardwareCapture(CaptureController):
         self._n_periods = n_periods
         self._out_root = out_root
         self._worker: _CaptureWorker | None = None
+        # True from start() until the worker reports finished/failed. The
+        # worker reference itself outlives that (kept for the teardown join in
+        # start()), so "running" is tracked explicitly rather than inferred
+        # from the thread state.
+        self._active = False
 
     def is_running(self) -> bool:
-        return self._worker is not None and self._worker.isRunning()
+        return self._active
 
     def start(self, *, surface: str, n_steps: int, subdir: str,
               n_periods: float | None = None, settle_ms: int | None = None,
-              **_kwargs) -> None:
-        if self.is_running():
+              patterns_fn=None, **_kwargs) -> None:
+        if self._active:
             raise RuntimeError("a capture is already running")
+        if self._worker is not None:
+            # The previous run has reported its result, but its thread may
+            # still be unwinding; join it before opening the camera again.
+            # Spinnaker refuses a reopen while the old session's references
+            # linger (error -1004), and overlapping sessions can crash the
+            # SDK outright.
+            if not self._worker.wait(5000):
+                raise RuntimeError("the previous capture is still shutting down")
+            self._worker = None
         n = self._n_periods if n_periods is None else n_periods
         if settle_ms is None:
             settle_ms = int(os.environ.get("MP_CAPTURE_SETTLE_MS", DEFAULT_SETTLE_MS))
@@ -113,11 +127,19 @@ class HardwareCapture(CaptureController):
         # the fringe maps 1:1 (both must happen on the GUI thread, here).
         window = self._projector.ensure_shown()
         width, height = self._projector.screen_size()
-        patterns = [
-            fringe_pattern(n, phase=(k / n_steps if n_steps else 0.0),
-                           width=width, height=height)
-            for k in range(n_steps)
-        ]
+        if patterns_fn is not None:
+            # An explicit sequence (e.g. calibration: box + two fringe stacks),
+            # built by the caller at the projector's resolution.
+            patterns = list(patterns_fn(width, height))
+            if len(patterns) != n_steps:
+                raise ValueError(
+                    f"patterns_fn produced {len(patterns)} patterns, expected {n_steps}")
+        else:
+            patterns = [
+                fringe_pattern(n, phase=(k / n_steps if n_steps else 0.0),
+                               width=width, height=height)
+                for k in range(n_steps)
+            ]
 
         camera = self._camera_factory(n_periods=n)
         worker = _CaptureWorker(patterns, camera, capture_dir, settle_ms, self)
@@ -127,12 +149,14 @@ class HardwareCapture(CaptureController):
         # Blocking so the worker waits until the pattern is actually displayed.
         worker.show_pattern.connect(window.show_pattern, Qt.BlockingQueuedConnection)
         self._worker = worker
+        self._active = True
         worker.start()
 
     def _on_finished(self, code: int) -> None:
-        self._worker = None
+        # Keep the worker reference: the next start() joins its thread.
+        self._active = False
         self.finished.emit(code)
 
     def _on_failed(self, message: str) -> None:
-        self._worker = None
+        self._active = False
         self.failed.emit(message)

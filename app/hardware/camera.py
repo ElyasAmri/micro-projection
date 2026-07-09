@@ -16,7 +16,9 @@ one with `open_camera()`, which honours `MP_CAMERA` (spinnaker|opencv|dummy|auto
 """
 from __future__ import annotations
 
+import gc
 import os
+import time
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -85,6 +87,21 @@ class SpinnakerCamera(Camera):
     def open(self) -> None:
         if not HAS_PYSPIN:
             raise RuntimeError("PySpin (Spinnaker SDK) is not installed")
+        try:
+            self._open_device()
+        except PySpin.SpinnakerException as exc:
+            # A stale reference (a just-closed session, or a crashed process
+            # whose driver handle has not been reaped) makes Spinnaker refuse
+            # the open with -1004. Release everything, give the driver a
+            # moment, and retry once before giving up.
+            log.warning(f"camera open failed ({exc}); retrying once")
+            self.close()
+            gc.collect()
+            time.sleep(1.0)
+            self._open_device()
+        log.info(f"opened {self.name} (Mono8)")
+
+    def _open_device(self) -> None:
         self._system = PySpin.System.GetInstance()
         self._cam_list = self._system.GetCameras()
         if self.index >= self._cam_list.GetSize():
@@ -99,7 +116,6 @@ class SpinnakerCamera(Camera):
         except Exception:
             self.close()
             raise
-        log.info(f"opened {self.name} (Mono8)")
 
     def _configure(self, cam) -> None:
         cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)
@@ -183,14 +199,27 @@ class SpinnakerCamera(Camera):
                     pass
         finally:
             self._cam = None
+            # Collect any lingering proxy references (e.g. held by exception
+            # tracebacks) before releasing the SDK; Spinnaker refuses to clear
+            # a camera that anything still references (error -1004).
+            gc.collect()
             self._release_system()
 
     def _release_system(self) -> None:
+        # Failures here are logged, not swallowed silently: a refused Clear or
+        # ReleaseInstance leaves the SDK holding the device, which is exactly
+        # the state that breaks the next open.
         if self._cam_list is not None:
-            self._cam_list.Clear()
+            try:
+                self._cam_list.Clear()
+            except Exception as exc:  # noqa: BLE001 - report and continue
+                log.warning(f"camera list clear failed: {exc}")
             self._cam_list = None
         if self._system is not None:
-            self._system.ReleaseInstance()
+            try:
+                self._system.ReleaseInstance()
+            except Exception as exc:  # noqa: BLE001 - report and continue
+                log.warning(f"camera system release failed: {exc}")
             self._system = None
 
 

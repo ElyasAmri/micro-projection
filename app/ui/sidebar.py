@@ -29,6 +29,7 @@ class Sidebar(QWidget):
     rig_requested = Signal()       # render the annotated rig overview (Rig tab)
     camera_settings_requested = Signal()  # open the camera settings dialog
     patterns_requested = Signal()  # open the pattern library dialog
+    calibrate_requested = Signal()  # measure the camera angle (box + fringes)
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -127,6 +128,24 @@ class Sidebar(QWidget):
         self.camera_settings_button.clicked.connect(
             lambda: self.camera_settings_requested.emit())
         layout.addWidget(self.camera_settings_button)
+
+        # -- Calibration: measure the rig geometry with the projector + camera --
+        calibration_header = QLabel("Calibration")
+        calibration_header.setProperty("role", "sectionHeader")
+        layout.addWidget(calibration_header)
+
+        self.calibrate_button = QPushButton("Calibrate Camera Angle")
+        self.calibrate_button.setObjectName("calibrateButton")
+        self.calibrate_button.setEnabled(bool(surfaces))
+        self.calibrate_button.setToolTip(
+            "Measure the camera's viewing angle using the projector: one "
+            "projected square (box-aspect estimate) plus vertical and "
+            "horizontal phase-shifted fringes (phase-gradient estimate). "
+            "Both angles and their difference go to the console; needs the "
+            "hardware backend."
+        )
+        self.calibrate_button.clicked.connect(lambda: self.calibrate_requested.emit())
+        layout.addWidget(self.calibrate_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.

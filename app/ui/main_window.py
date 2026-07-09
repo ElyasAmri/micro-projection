@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from logbus import get_logger, success
 from version import __version__
 from backend import Backend, SimulationBackend
+from backend import calibrate
 from backend import patterns as pattern_lib
 from hardware.camera_config import get_camera_settings, set_camera_settings
 from ui.camera_settings import (
@@ -134,6 +135,10 @@ class MainWindow(QMainWindow):
         self._ladder_dirs: list = []
         self._ladder_n_steps = 8
         self._ladder_kwargs: dict = {}
+        # Camera-angle calibration state: the pattern spec of the in-flight
+        # capture (geometry needed to evaluate its frames) and the last result.
+        self._calibration_spec = None
+        self._last_calibration: dict | None = None
 
         # The rig-overview render is its own Blender run (independent of the
         # capture runner, so it never gates or is gated by a capture).
@@ -214,6 +219,7 @@ class MainWindow(QMainWindow):
         self.sidebar.rig_requested.connect(self._on_render_rig)
         self.sidebar.camera_settings_requested.connect(self._on_camera_settings)
         self.sidebar.patterns_requested.connect(self._on_patterns)
+        self.sidebar.calibrate_requested.connect(self._on_calibrate)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -761,6 +767,65 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
             log.warning(f"cannot start multi-frequency pipeline: {exc}")
 
+    def _on_calibrate(self) -> None:
+        """Measure the camera's viewing angle: capture one projected box plus
+        vertical and horizontal fringe stacks, then compare the box-aspect and
+        phase-gradient estimates (see backend.calibrate)."""
+        if self.backend.kind != "hardware":
+            log.warning("calibration drives the physical projector and camera; "
+                        "start the app with MP_BACKEND=hardware")
+            return
+        surface = self.sidebar.selected_surface()
+
+        def patterns_fn(width: int, height: int):
+            # Built at the projector's real resolution, captured for the
+            # analysis step (box rect, periods) once the frames are in.
+            self._calibration_spec = calibrate.calibration_patterns(width, height)
+            return self._calibration_spec.patterns
+
+        n_frames = 1 + 2 * 8  # box + two 8-step fringe stacks
+        try:
+            self._start_capture(surface, purpose="calibrate", n_steps=n_frames,
+                                subdir="calibration", patterns_fn=patterns_fn)
+        except Exception as exc:  # noqa: BLE001 - surface bad state to the console
+            log.error(f"calibration failed to start: {exc}")
+
+    def _finish_calibration(self, capture_dir: Path) -> None:
+        """Evaluate a finished calibration capture and report both angles."""
+        spec = self._calibration_spec
+        self._calibration_spec = None
+        if spec is None:
+            log.error("calibration finished but its pattern spec is missing")
+            return
+        self._status_left.setText("Calibrating camera angle...")
+        QApplication.processEvents()  # paint the status before the brief blocking run
+        try:
+            metrics = calibrate.run(capture_dir, capture_dir, spec)
+        except Exception as exc:  # noqa: BLE001 - surface any failure to the console
+            log.error(f"calibration analysis failed: {exc}")
+            self._status_left.setText("Ready")
+            return
+        self._last_calibration = metrics
+        # Persist so a later session (or the reconstruction) can pick it up.
+        self._settings.setValue("calibration/theta_phase_deg", metrics["theta_phase_deg"])
+        self._settings.setValue("calibration/tilt_axis_deg", metrics["tilt_axis_deg"])
+        self._settings.sync()
+
+        theta = metrics["theta_phase_deg"]
+        success(log, f"camera angle: {theta:.2f} deg (phase-gradient method)")
+        log.info(f"tilt axis {metrics['tilt_axis_deg']:.1f} deg from camera x-axis; "
+                 f"well-modulated coverage {100.0 * metrics['valid_fraction']:.1f}%")
+        if metrics.get("theta_box_deg") is not None:
+            log.info(f"box-aspect method: {metrics['theta_box_deg']:.2f} deg; "
+                     f"methods differ by {metrics['delta_deg']:.2f} deg")
+            if metrics.get("box_touches_border"):
+                log.warning("box touches the camera frame border; its aspect "
+                            "(and the box angle) is unreliable")
+        else:
+            log.warning(f"box-aspect method failed: {metrics.get('box_error')}")
+        log.info(f"report: {capture_dir / 'calibration.txt'}")
+        self._status_left.setText(f"Camera angle: {theta:.1f} deg")
+
     def _start_capture(self, surface: str, purpose: str, n_steps: int, subdir: str, **kwargs) -> "object":
         """Kick off a capture of `surface` through the backend's controller
         (raises on bad state). Returns the controller, which knows where the
@@ -808,6 +873,12 @@ class MainWindow(QMainWindow):
             self._advance_or_reconstruct_ladder()  # keeps busy until the ladder is done
             return
 
+        if self._capture_purpose == "calibrate":
+            self._finish_capture_idle()
+            success(log, f"captured calibration sequence: {self._capture_runner.n_steps} frames")
+            self._finish_calibration(capture_dir)
+            return
+
         self._finish_capture_idle()
         if self._capture_purpose == "pipeline":
             success(log, f"captured {self._capture_surface}: {self._capture_runner.n_steps} frames")
@@ -852,14 +923,18 @@ class MainWindow(QMainWindow):
         self.sidebar.capture_button.setEnabled(not busy)
         self.sidebar.pipeline_button.setEnabled(not busy)
         self.sidebar.multifreq_button.setEnabled(not busy)
+        self.sidebar.calibrate_button.setEnabled(not busy)
         if not busy:
             self.sidebar.capture_button.setText("Capture")
             self.sidebar.pipeline_button.setText("Run Pipeline")
             self.sidebar.multifreq_button.setText("Run Multi-Freq")
+            self.sidebar.calibrate_button.setText("Calibrate Camera Angle")
         elif self._capture_purpose == "pipeline_mf":
             self.sidebar.multifreq_button.setText("Running...")
         elif self._capture_purpose == "pipeline":
             self.sidebar.pipeline_button.setText("Running...")
+        elif self._capture_purpose == "calibrate":
+            self.sidebar.calibrate_button.setText("Calibrating...")
         else:
             self.sidebar.capture_button.setText("Capturing...")
 
@@ -888,7 +963,25 @@ class MainWindow(QMainWindow):
             "render_rig": self._cmd_render_rig,
             "get_camera_settings": self._cmd_get_camera_settings,
             "set_camera_settings": self._cmd_set_camera_settings,
+            "calibrate_camera": self._cmd_calibrate_camera,
+            "get_calibration": self._cmd_get_calibration,
         }
+
+    def _cmd_calibrate_camera(self, _args: dict):
+        """Start the camera-angle calibration (asynchronous): box + fringe
+        stacks, then both angle estimates. Poll get_calibration for the result."""
+        self._on_calibrate()
+        if not self._capture_runner.is_running():
+            raise ValueError("calibration did not start (hardware backend and an "
+                             "idle capture runner are required)")
+        return {"calibration": "started", "frames": 1 + 2 * 8}
+
+    def _cmd_get_calibration(self, _args: dict):
+        """The last calibration result of this session (theta, tilt axis,
+        scales, both methods), or an error if none has completed yet."""
+        if self._last_calibration is None:
+            raise ValueError("no calibration has completed this session")
+        return self._last_calibration
 
     def _cmd_log(self, args: dict):
         message = str(args.get("message", ""))
