@@ -86,6 +86,16 @@ def test_ring_alone_is_not_the_marker():
         find_marker(frame)
 
 
+def test_guide_pattern_suppresses_ring_near_center():
+    # Near convergence the ring would overlap the bullseye, merge the blobs
+    # in the camera image, and break disc detection; it must be suppressed.
+    bare = guide_pattern(PROJ_W, PROJ_H)
+    near = guide_pattern(PROJ_W, PROJ_H, lookat=(PROJ_W / 2 + 30, PROJ_H / 2))
+    far = guide_pattern(PROJ_W, PROJ_H, lookat=(PROJ_W / 2 + 120, PROJ_H / 2))
+    assert np.array_equal(near, bare)
+    assert not np.array_equal(far, bare)
+
+
 def test_guide_pattern_disc_still_wins_with_lookat_ring():
     # Both the center bullseye and the look-at ring projected: the detector
     # must keep locking onto the disc at the field center.

@@ -149,9 +149,11 @@ class MainWindow(QMainWindow):
         self._aim_proj: tuple | None = None
         self._last_aim: dict | None = None
         self._aim_lookat: tuple | None = None
+        self._aim_projected_lookat: tuple | None = None
         self._aim_last_seen = 0.0
         self._aim_last_process = 0.0
         self._aim_last_project = 0.0
+        self._aim_last_fail_log = 0.0
         self._aim_tab_shown = False
 
         # The rig-overview render is its own Blender run (independent of the
@@ -882,6 +884,7 @@ class MainWindow(QMainWindow):
             width, height = self.backend.projector_size()
             self._aim_proj = (width, height)
             self.backend.project(aim.guide_pattern(width, height, self._aim_lookat))
+            self._aim_projected_lookat = self._aim_lookat
             service = self.backend.camera_service()
             service.frameReady.connect(self._on_live_frame)
         except Exception as exc:  # noqa: BLE001 - surface bad state, stay off
@@ -907,15 +910,15 @@ class MainWindow(QMainWindow):
         marker_xy = None
         try:
             metrics = aim.measure_from_marker(frame)
-        except ValueError:
-            # Disc not in view (or flooded): after a quiet spell, run the
-            # absolute-phase locate to find which way to pan.
-            if (now - self._aim_last_seen > 5.0
-                    and not self._capture_runner.is_running()):
-                self._aim_last_seen = now  # one locate per quiet spell
-                log.info("marker not in view; locating by absolute phase "
-                         "(16 frames)...")
-                self._start_aim_locate()
+        except ValueError as exc:
+            # No usable disc in this frame. No automatic fallback (projecting
+            # fringes mid-adjustment is disruptive; run the maestro aim_camera
+            # command for an absolute-phase locate on demand). Log why and
+            # keep the failing frame on disk so the reason is inspectable.
+            if now - self._aim_last_fail_log > 3.0:
+                self._aim_last_fail_log = now
+                log.info(f"marker not found: {exc}")
+                self._save_aim_debug_frame(frame)
         else:
             self._aim_last_seen = now
             self._last_aim = metrics
@@ -932,10 +935,33 @@ class MainWindow(QMainWindow):
                 self._settings.setValue("calibration/aim_dy_mm", metrics["offset_mm"][1])
             self._update_lookat_from_offset(dx, dy)
         self._display_live_frame(frame, marker_xy)
-        if now - self._aim_last_project > 1.5 and self._aim_proj:
+        # Reproject only when the look-at estimate actually moved: projecting
+        # every tick spams the console and repaints for nothing.
+        if (now - self._aim_last_project > 1.5 and self._aim_proj
+                and self._lookat_moved()):
             self._aim_last_project = now
+            self._aim_projected_lookat = self._aim_lookat
             width, height = self._aim_proj
             self.backend.project(aim.guide_pattern(width, height, self._aim_lookat))
+
+    def _lookat_moved(self, tolerance_px: float = 5.0) -> bool:
+        current, projected = self._aim_lookat, self._aim_projected_lookat
+        if current is None or projected is None:
+            return current is not projected
+        return (abs(current[0] - projected[0]) > tolerance_px
+                or abs(current[1] - projected[1]) > tolerance_px)
+
+    def _save_aim_debug_frame(self, frame) -> None:
+        """The last detection-failure frame, written next to the aim captures
+        so a failing guide session can be diagnosed after the fact."""
+        try:
+            aim_dir = self.backend.capture_dir("live").parent / "aim"
+            aim_dir.mkdir(parents=True, exist_ok=True)
+            h, w = frame.shape[:2]
+            QImage(frame.data, w, h, w, QImage.Format_Grayscale8).save(
+                str(aim_dir / "live_fail.png"))
+        except Exception:  # noqa: BLE001 - diagnostics must never break the guide
+            pass
 
     def _update_lookat_from_offset(self, dx_px: float, dy_px: float) -> None:
         """Estimate the projector coordinate under the camera center from the

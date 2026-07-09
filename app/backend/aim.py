@@ -58,7 +58,11 @@ def guide_pattern(proj_w: int, proj_h: int, lookat: tuple | None = None,
     image[(r2 >= ring_in ** 2) & (r2 <= ring_out ** 2)] = 255
     if lookat is not None:
         lx, ly = lookat
-        if 0 <= lx < proj_w and 0 <= ly < proj_h:
+        # Skip the ring near convergence: overlapping the bullseye would merge
+        # the blobs in the camera image and break disc detection exactly when
+        # the aim is nearly done (the crosshair and readout carry it home).
+        clear_of_center = (lx - cx) ** 2 + (ly - cy) ** 2 >= (4.0 * radius_px) ** 2
+        if 0 <= lx < proj_w and 0 <= ly < proj_h and clear_of_center:
             d2 = (x - lx) ** 2 + (y - ly) ** 2
             # Thin enough that its area stays well below the disc's, so the
             # disc remains the largest blob whenever both are in view.
