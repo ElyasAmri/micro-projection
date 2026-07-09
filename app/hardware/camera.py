@@ -89,11 +89,14 @@ class SpinnakerCamera(Camera):
         try:
             self._open_device()
         except PySpin.SpinnakerException as exc:
-            # Do NOT retry: re-initializing the SDK in-process after a failed
-            # open aborts the whole process (observed live). A -1004 here
-            # means the camera is held elsewhere: another process, or a
-            # killed one whose driver handle has not been reaped yet.
-            self.close()
+            # Do NOT retry, and do NOT release the SDK either: after a failed
+            # open, both re-initializing and Clear/ReleaseInstance abort the
+            # whole process (observed live, faulthandler stacks). Abandon the
+            # references (one leaked handle in a process that never got the
+            # camera) and report cleanly. A -1004 here means the camera is
+            # held elsewhere: another process, or a killed one whose driver
+            # handle has not been reaped yet.
+            self._abandon()
             raise RuntimeError(
                 f"could not open the camera ({exc}); it is likely held by "
                 "another process or by a recently killed one. Close SpinView "
@@ -104,7 +107,7 @@ class SpinnakerCamera(Camera):
         self._system = PySpin.System.GetInstance()
         self._cam_list = self._system.GetCameras()
         if self.index >= self._cam_list.GetSize():
-            self._release_system()
+            self._abandon()
             raise RuntimeError(f"FLIR camera index {self.index} not found")
         cam = self._cam_list[self.index]
         self._cam = cam
@@ -112,9 +115,22 @@ class SpinnakerCamera(Camera):
         try:
             self._configure(cam)
             cam.BeginAcquisition()
+        except PySpin.SpinnakerException:
+            raise  # handled (abandoned) by open()
         except Exception:
             self.close()
             raise
+
+    def _abandon(self) -> None:
+        """Drop all SDK references without releasing them. Only for the
+        failed-open path: Clear/ReleaseInstance on a failed SDK state aborts
+        the process, so the safe move is to leak and report."""
+        log.warning("abandoning the camera SDK handles after a failed open "
+                    "(released at process exit)")
+        self._cam = None
+        self._cam_list = None
+        self._system = None
+        gc.collect()
 
     def _configure(self, cam) -> None:
         cam.AcquisitionMode.SetValue(PySpin.AcquisitionMode_Continuous)

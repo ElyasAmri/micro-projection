@@ -307,9 +307,25 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Persist the current layout on the way out, and let the backend
-        release any hardware (e.g. close the projector window)."""
+        release any hardware (e.g. close the projector window).
+
+        Order matters: stop the aim guide, abort any in-flight capture and
+        pump the event loop until its worker exits (it may be blocked on the
+        projector's blocking call), and only then shut the backend down --
+        closing the camera under a live worker leaves the device's driver
+        handle poisoned for the next process."""
         self._settings.setValue("layout/version", LAYOUT_VERSION)
         self._settings.setValue("layout/state", self.saveState())
+        if self.sidebar.aim_button.isChecked():
+            self.sidebar.aim_button.setChecked(False)
+        runner = self._capture_runner
+        abort = getattr(runner, "abort_worker", None)
+        if callable(abort) and runner.is_running():
+            abort()
+            end = time.monotonic() + 3.0
+            while runner.is_running() and time.monotonic() < end:
+                QApplication.processEvents()
+                time.sleep(0.01)
         shutdown = getattr(self.backend, "shutdown", None)
         if callable(shutdown):
             shutdown()

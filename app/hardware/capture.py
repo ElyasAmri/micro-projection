@@ -57,6 +57,8 @@ class _CaptureWorker(QThread):
             return
         try:
             for k, pattern in enumerate(self._patterns):
+                if self.isInterruptionRequested():
+                    raise RuntimeError("aborted (app closing)")
                 self.show_pattern.emit(pattern)     # blocks until on screen
                 self.msleep(self._settle_ms)        # let display + exposure settle
                 frame = self._service.grab_step()
@@ -147,6 +149,13 @@ class HardwareCapture(CaptureController):
         self._worker = worker
         self._active = True
         worker.start()
+
+    def abort_worker(self) -> None:
+        """Ask an in-flight capture to stop at its next step (app shutdown).
+        The caller must keep pumping the GUI event loop until is_running()
+        clears: the worker may be blocked on the projector's blocking call."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.requestInterruption()
 
     def _on_finished(self, code: int) -> None:
         # Keep the worker reference: the next start() joins its thread.
