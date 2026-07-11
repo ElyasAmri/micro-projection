@@ -146,6 +146,13 @@ class HardwareBackend(Backend):
         worker.start()
         return worker
 
+    def projector_size(self) -> tuple[int, int]:
+        """The physical projector resolution (shows the projector window --
+        callers are about to project anyway)."""
+        projector = self._get_projector()
+        projector.ensure_shown()
+        return projector.screen_size()
+
     def shutdown(self) -> None:
         """Stop the camera service and close the projector (call on app exit)."""
         if self._service is not None:

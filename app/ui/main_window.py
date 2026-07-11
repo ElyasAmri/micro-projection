@@ -28,6 +28,7 @@ from logbus import get_logger, success
 from version import __version__
 from backend import Backend, SimulationBackend
 from backend import aim
+from backend import align
 from backend import calibrate
 from backend import patterns as pattern_lib
 from hardware.camera_config import get_camera_settings, set_camera_settings
@@ -149,6 +150,7 @@ class MainWindow(QMainWindow):
         self._aim_proj: tuple | None = None
         self._last_aim: dict | None = None
         self._diag_worker = None  # one-at-a-time hardware diagnostic (noise test / FOV identify)
+        self._align_warp = None  # (matrix, clip, proj_size) for viewing patterns
         self._aim_lookat: tuple | None = None
         self._aim_projected_lookat: tuple | None = None
         self._aim_last_seen = 0.0
@@ -240,6 +242,7 @@ class MainWindow(QMainWindow):
         self.sidebar.aim_requested.connect(self._on_aim_toggled)
         self.sidebar.camera_noise_requested.connect(self._on_camera_noise)
         self.sidebar.fov_requested.connect(self._on_fov_identify)
+        self.sidebar.align_requested.connect(self._on_align_toggled)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -492,6 +495,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - bad file etc.; report, don't raise into Qt
             log.error(f"pattern generation failed: {exc}")
             return
+        if self._align_warp is not None:
+            # Camera-rectifying warp, viewing patterns only (backend.align).
+            image = align.apply_warp(image, *self._align_warp)
         self.canvases["projectedCanvas"].set_image(gray_to_qimage(image))
         self.backend.project(image)  # push to the physical projector (no-op in sim)
         self._show_tab("projectedCanvas")
@@ -868,6 +874,9 @@ class MainWindow(QMainWindow):
             self._diag_worker = None
             x, y, w, h = result
             self._status_left.setText(f"Camera FOV: {w} x {h} px")
+            # Persist for the alignment warp (and later sessions).
+            self._settings.setValue("fov/box", f"{x},{y},{w},{h}")
+            self._settings.sync()
             success(log, f"camera FOV in projector pixels: {w} x {h} "
                          f"at ({x}, {y}); outline projected")
 
@@ -881,6 +890,43 @@ class MainWindow(QMainWindow):
         worker.failed.connect(failed)
         worker.finished_ok.connect(finish)
         self._diag_worker = worker
+
+    def _on_align_toggled(self, checked: bool) -> None:
+        """Toggle the camera-rectifying warp for *viewing* patterns (see
+        backend.align): recenter on the camera center, 1/cos(theta) stretch,
+        clip to the FOV box. Measurement fringes and the aim guide are never
+        warped -- the analytic carrier and the z-sweep calibration assume the
+        unwarped fringe geometry."""
+        if not checked:
+            self._align_warp = None
+            log.info("projection alignment off (patterns project unwarped)")
+            return
+        if self.backend.kind != "hardware":
+            log.warning("alignment rectifies the physical projection; start "
+                        "the app with MP_BACKEND=hardware")
+            self.sidebar.align_button.setChecked(False)
+            return
+        theta = self._settings.value("calibration/theta_phase_deg", None)
+        box_str = self._settings.value("fov/box", None)
+        if theta is None or box_str is None:
+            missing = ("Calibrate Camera Angle" if theta is None
+                       else "Identify Camera FOV")
+            log.warning(f"alignment needs a stored measurement: run "
+                        f"'{missing}' first")
+            self.sidebar.align_button.setChecked(False)
+            return
+        try:
+            fov_box = tuple(int(v) for v in str(box_str).split(","))
+            proj_size = self.backend.projector_size()
+            matrix, clip = align.build_warp(*proj_size, fov_box, float(theta))
+        except Exception as exc:  # noqa: BLE001 - bad stored state; report it
+            log.error(f"alignment failed: {exc}")
+            self.sidebar.align_button.setChecked(False)
+            return
+        self._align_warp = (matrix, clip, proj_size)
+        success(log, f"projection alignment on: theta {float(theta):.2f} deg "
+                     f"(stretch {matrix[0, 0]:.3f}x), clip {clip}; applies to "
+                     f"viewing patterns only")
 
     def _on_calibrate(self) -> None:
         """Measure the camera's viewing angle: capture one projected box plus

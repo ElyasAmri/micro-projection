@@ -33,6 +33,7 @@ class Sidebar(QWidget):
     aim_requested = Signal(bool)    # toggle the camera-aim measurement loop
     camera_noise_requested = Signal()  # camera temporal-noise qualification
     fov_requested = Signal()  # identify the camera FOV in projector pixels
+    align_requested = Signal(bool)  # toggle the camera-rectifying pattern warp
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -186,6 +187,19 @@ class Sidebar(QWidget):
         )
         self.fov_button.clicked.connect(lambda: self.fov_requested.emit())
         layout.addWidget(self.fov_button)
+
+        self.align_button = QPushButton("Align Projection")
+        self.align_button.setObjectName("alignButton")
+        self.align_button.setCheckable(True)
+        self.align_button.setEnabled(bool(surfaces))
+        self.align_button.setToolTip(
+            "Rectify projected *viewing* patterns to the camera: recenter on "
+            "the camera center, pre-stretch 1/cos(theta), clip to the FOV "
+            "box. Needs a camera-angle calibration and a FOV run first. "
+            "Measurement fringes and the aim guide are never warped."
+        )
+        self.align_button.toggled.connect(self.align_requested)
+        layout.addWidget(self.align_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.
