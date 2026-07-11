@@ -132,6 +132,21 @@ _ROUGH_TEXTURE = (
 )
 
 
+def rough_texture_mm(x_mm, y_mm):
+    """The texture term of `rough` alone (no form). Because it is separable
+    and analytic, roughness.py can evaluate the true texture Sa/Sq/Sz on a
+    dense grid directly -- a filter-free reference the filtered measurements
+    are compared against (see roughness.analytic_reference)."""
+    x = np.asarray(x_mm, dtype=float)
+    y = np.asarray(y_mm, dtype=float)
+    texture = np.zeros_like(x + y)
+    for wavelength_mm, angle_deg, amp_um, phase in _ROUGH_TEXTURE:
+        angle = np.radians(angle_deg)
+        proj = x * np.cos(angle) + y * np.sin(angle)  # distance along the wave's direction
+        texture = texture + (amp_um / 1000.0) * np.cos(2.0 * np.pi * proj / wavelength_mm + phase)
+    return texture
+
+
 def rough_height_mm(x_mm, y_mm):
     """Broad dome (form) + a band-limited sinusoidal texture (roughness). The
     texture's areal Sa/Sq (~tens of um) is what roughness.py recovers after the
@@ -140,12 +155,7 @@ def rough_height_mm(x_mm, y_mm):
     y = np.asarray(y_mm, dtype=float)
     r2 = x ** 2 + y ** 2
     form = ROUGH_FORM_AMPLITUDE_MM * np.exp(-r2 / (2.0 * ROUGH_FORM_SIGMA_MM ** 2))
-    texture = np.zeros_like(x + y)
-    for wavelength_mm, angle_deg, amp_um, phase in _ROUGH_TEXTURE:
-        angle = np.radians(angle_deg)
-        proj = x * np.cos(angle) + y * np.sin(angle)  # distance along the wave's direction
-        texture = texture + (amp_um / 1000.0) * np.cos(2.0 * np.pi * proj / wavelength_mm + phase)
-    return form + texture
+    return form + rough_texture_mm(x, y)
 
 
 # -- Stress surfaces (ported forms from the pre-rewrite sim's synthetic
@@ -214,6 +224,12 @@ def cross_groove_height_mm(x_mm, y_mm):
     groove_y = -depth * np.exp(-((y / width) ** 2))
     return dome + groove_x + groove_y
 
+
+# Separable analytic texture terms, where a specimen has one: the filter-free
+# roughness reference (roughness.analytic_reference) evaluates these directly.
+TEXTURES = {
+    "rough": rough_texture_mm,
+}
 
 SURFACES = {
     "flat": flat_height_mm,

@@ -112,6 +112,32 @@ def denoise_sq(sq_meas_um: float, sigma_h_um: float) -> tuple[float, float]:
     return corrected, snr
 
 
+def analytic_reference(surface: str, samples_per_mm: float = 10.0) -> dict | None:
+    """Filter-free Sa/Sq/Sz of a specimen's *analytic texture term*
+    (surfaces.TEXTURES), densely sampled over the camera field. This is the
+    true texture roughness, independent of the reconstruction grid AND of
+    the Gaussian filter: comparing it against filter-on-truth quantifies the
+    filter's transmission bias, and against filter-on-recon the total
+    measurement bias -- the third reference the two filtered numbers alone
+    can't provide. Returns None for specimens without a separable texture."""
+    texture_fn = surfaces.TEXTURES.get(surface)
+    if texture_fn is None:
+        return None
+    from geometry_constants import H0_MM, W0_MM
+
+    nx = int(W0_MM * samples_per_mm)
+    ny = int(H0_MM * samples_per_mm)
+    x, y = np.meshgrid(np.linspace(-W0_MM / 2, W0_MM / 2, nx),
+                       np.linspace(-H0_MM / 2, H0_MM / 2, ny))
+    t_um = np.asarray(texture_fn(x, y), dtype=float) * 1000.0
+    t_um -= t_um.mean()
+    return {
+        "Sa_analytic_um": float(np.abs(t_um).mean()),
+        "Sq_analytic_um": float(t_um.std()),
+        "Sz_analytic_um": float(t_um.max() - t_um.min()),
+    }
+
+
 def measure(
     height: np.ndarray,
     valid: np.ndarray,
@@ -156,6 +182,9 @@ def measure(
         metrics["Sq_true_um"] = gt_params["Sq_um"]
         metrics["Sa_err_um"] = params["Sa_um"] - gt_params["Sa_um"]
         metrics["Sq_err_um"] = params["Sq_um"] - gt_params["Sq_um"]
+        analytic = analytic_reference(surface)
+        if analytic is not None:
+            metrics.update(analytic)
 
     if fine_capture_dir is not None:
         nm = noise_estimate.run(
@@ -185,6 +214,13 @@ def measure(
         if "Sq_true_um" in metrics:
             line += f" (true Sq={metrics['Sq_true_um']:.2f} um, err {metrics['Sq_err_um']:+.2f} um)"
         print(line)
+        if "Sa_analytic_um" in metrics:
+            # Three references: analytic texture (filter-free truth),
+            # filter-on-truth, filter-on-recon. analytic vs true = the
+            # filter's transmission bias; recon vs true = the reconstruction's.
+            print(f"analytic texture (filter-free): Sa={metrics['Sa_analytic_um']:.2f} um, "
+                  f"Sq={metrics['Sq_analytic_um']:.2f} um, Sz={metrics['Sz_analytic_um']:.2f} um; "
+                  f"filter transmission bias {metrics['Sa_true_um'] - metrics['Sa_analytic_um']:+.2f} um Sa")
         if "roughness_snr" in metrics:
             print(f"random floor {metrics['noise_floor_um']:.2f} um -> "
                   f"Sq(denoised)={metrics['Sq_denoised_um']:.2f} um, random-SNR={metrics['roughness_snr']:.1f}")
