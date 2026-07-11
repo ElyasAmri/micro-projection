@@ -2,7 +2,7 @@
 onto the surface and capture each with the telecentric camera.
 
 Builds the same rig as rig_setup.py (see simulation/rig.py), then steps the
-surface's phase_fraction node through N evenly-spaced values (each a fraction
+projector's phase_fraction node through N evenly-spaced values (each a fraction
 of one cycle), rendering the telecentric camera's view at each step. This is
 the *acquisition* stage only -- phase extraction / unwrapping / height
 reconstruction from this frame stack is a separate step (see reconstruct.py).

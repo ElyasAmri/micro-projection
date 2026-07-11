@@ -6,15 +6,22 @@ the camera tilt angle that matches its width.
 
 The camera is a Blender orthographic camera (parallel rays == telecentric).
 
-The projector is a plain Spot light for illumination; the fringe pattern
-itself is painted onto the *surface's material* as a procedural Wave
-Texture, gated by a rectangular mask -- both driven by the shading point's
-position in the projector's local space (an Object-coordinate perspective
-divide, the standard "gobo" computation). This lives on the material rather
-than the light because Cycles light node trees (Spot and Area, via TexCoord
-Object/Normal/Generated, and Geometry Incoming) do not vary spatially in
-this Blender build -- verified directly, every attempt rendered a flat,
-direction-independent color. Material node trees do support this correctly.
+The projector is a Spot light that *carries the fringe itself* (a true
+gobo): its light node tree perspective-divides the outgoing ray direction
+(TexCoord "Normal", in light-local space) and drives an explicit sine, so
+every ray leaves the lens already carrying its pixel of the pattern -- as
+in the real instrument. Occlusion, self-shadowing, and interreflection of
+the patterned light are then plain Cycles light transport, and any object
+added to the scene receives fringes without material surgery.
+
+An earlier revision painted the fringe onto the *surface's material*
+instead, claiming light node trees "do not vary spatially in this Blender
+build -- verified directly". That claim holds only for edits to the
+auto-generated light node tree: re-verified 2026-07-11, the gobo renders
+correctly (an 8-period probe fringe at exactly the programmed period) once
+the auto-generated tree is *cleared* and TexCoord -> perspective divide ->
+sine -> Emission -> Light Output is built from scratch. The `.energy`
+disconnect noted below is the same auto-tree quirk family.
 
 The mask (from the *unshifted* u, v) and the fringe pattern (from u offset
 by the phase-shift step) are computed separately and multiplied together,
@@ -68,12 +75,15 @@ def look_at(obj, target: Vector) -> None:
 
 
 def add_projector():
-    """Plain spot light: illumination only. The fringe pattern itself is
-    painted onto the surface's material in add_surface(), see module docstring."""
+    """Spot light for the projector. add_surface() replaces its node tree
+    with the fringe gobo (pattern, mask, phase-step handle, and emission
+    strength all live there), see module docstring."""
     light_data = bpy.data.lights.new("Pro4500", type="SPOT")
     light_data.spot_size = math.radians(SPOT_CONE_DEG)
     light_data.spot_blend = 0.2
-    light_data.node_tree.nodes["Emission"].inputs["Strength"].default_value = 0.08
+    # Point source: a nonzero soft size is a disk-shaped lens that blurs the
+    # gobo's footprint edge into a penumbra of partially-modulated pixels.
+    light_data.shadow_soft_size = 0.0
 
     light_obj = bpy.data.objects.new("Projector_PRO4500", light_data)
     bpy.context.collection.objects.link(light_obj)
@@ -104,8 +114,8 @@ def _mask_node(nt, value_socket):
 def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_height_mm,
                 subdivisions: int = SURFACE_GRID_SUBDIVISIONS, z_offset_mm: float = 0.0,
                 size_m: float = SURFACE_SIZE_M):
-    """Add the surface, with the projected fringe pattern computed live in
-    its material. Returns (surface_object, phase_fraction_node) -- update
+    """Add the surface, and install the fringe gobo into the projector's
+    light node tree. Returns (surface_object, phase_fraction_node) -- update
     phase_fraction_node.outputs[0].default_value (a fraction of one cycle,
     0..1) between renders to step through a phase-shifting sequence without
     rebuilding the scene.
@@ -159,20 +169,24 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
 
     mat = bpy.data.materials.new("SurfaceMaterial")
     mat.use_nodes = True
-    nt = mat.node_tree
-    bsdf = nt.nodes.get("Principled BSDF")
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
     bsdf.inputs["Roughness"].default_value = 0.6
     # A specular highlight would otherwise appear as a bright, texture-
     # independent "hotspot" on top of the projected pattern.
     bsdf.inputs["Specular IOR Level"].default_value = 0.0
+    bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
 
-    # Perspective divide of the shading point's position in the projector's
-    # local space -- the standard gobo-projection computation.
+    # The fringe gobo, in the *projector's light* node tree: perspective
+    # divide of the outgoing ray direction (TexCoord "Normal", light-local).
+    # The beam axis is -Z, so u, v come out identical to what the earlier
+    # material-side graph computed from the shading point's position.
+    nt = projector_obj.data.node_tree
+    nt.nodes.clear()
+
     coord = nt.nodes.new("ShaderNodeTexCoord")
-    coord.object = projector_obj
 
     sep = nt.nodes.new("ShaderNodeSeparateXYZ")
-    nt.links.new(coord.outputs["Object"], sep.inputs["Vector"])
+    nt.links.new(coord.outputs["Normal"], sep.inputs["Vector"])
 
     neg_z = nt.nodes.new("ShaderNodeMath")
     neg_z.operation = "MULTIPLY"
@@ -255,7 +269,15 @@ def add_surface(projector_obj, n_periods: float = 8.0, height_fn=surfaces.bump_h
     nt.links.new(masked.outputs[0], to_rgb.inputs["X"])
     nt.links.new(masked.outputs[0], to_rgb.inputs["Y"])
     nt.links.new(masked.outputs[0], to_rgb.inputs["Z"])
-    nt.links.new(to_rgb.outputs["Vector"], bsdf.inputs["Base Color"])
+
+    # Brightness lives on this Emission node; the light's `.energy` is
+    # disconnected from its node tree (see module docstring).
+    emission = nt.nodes.new("ShaderNodeEmission")
+    emission.inputs["Strength"].default_value = 0.08
+    nt.links.new(to_rgb.outputs["Vector"], emission.inputs["Color"])
+
+    out = nt.nodes.new("ShaderNodeOutputLight")
+    nt.links.new(emission.outputs["Emission"], out.inputs["Surface"])
 
     surface.data.materials.append(mat)
     return surface, phase_fraction
