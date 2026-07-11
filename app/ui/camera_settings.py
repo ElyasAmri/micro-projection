@@ -62,6 +62,8 @@ def persist_camera_settings(s: CameraSettings) -> None:
     q.setValue(_PREFIX + "gamma_enabled", s.gamma_enabled)
     q.setValue(_PREFIX + "gamma", s.gamma)
     q.setValue(_PREFIX + "black_level_pct", s.black_level_pct)
+    # QSettings flushes lazily; sync so a kill right after a change loses nothing.
+    q.sync()
 
 
 def apply_camera_settings(s: CameraSettings) -> None:

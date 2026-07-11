@@ -134,6 +134,19 @@ def equivalent_wavelength_mm(n_periods: float, theta_deg: float) -> float:
     return p_eff / math.tan(math.radians(theta_deg))
 
 
+def unwrap_2d_spatial(wrapped: np.ndarray) -> np.ndarray:
+    """Goldstein branch-cut spatial unwrap (scikit-image), for a lone
+    single-frequency capture where no multi-frequency ladder is available.
+    The ladder (unwrap_multifreq) is the primary path; this is the fallback.
+    Lazy import: scikit-image is not a base requirement."""
+    try:
+        from skimage.restoration import unwrap_phase
+    except ImportError as exc:
+        raise ImportError("unwrap_2d_spatial needs scikit-image: "
+                          "pip install scikit-image") from exc
+    return np.asarray(unwrap_phase(wrapped), dtype=np.float64)
+
+
 def unwrap_multifreq(psis: list[np.ndarray], lambdas: list[float]) -> np.ndarray:
     """Coarse-to-fine temporal phase unwrapping -> absolute height (mm).
 
