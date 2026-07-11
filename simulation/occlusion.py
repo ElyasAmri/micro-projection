@@ -58,28 +58,49 @@ def slope_deg(z_mm: np.ndarray, pitch_x_mm: float,
     return np.degrees(np.arctan(np.hypot(gx, gy)))
 
 
-def shadow_fraction(z_mm: np.ndarray, pitch_mm: float, elevation_deg: float,
-                    azimuth: str = "+x") -> float:
-    """Fraction of the field hidden from rays arriving at `elevation_deg`
-    from `azimuth` (one of +x/-x/+y/-y). Directional horizon scan: walking
-    away from the device, the running horizon drops by tan(elevation) per
-    step; a sample below it is shadowed."""
+def shadow_mask(z_mm: np.ndarray, pitch_mm: float, elevation_deg: float,
+                azimuth: str = "+x") -> np.ndarray:
+    """Boolean mask (input orientation) of samples hidden from rays arriving
+    at `elevation_deg` from `azimuth` (one of +x/-x/+y/-y). Directional
+    horizon scan: walking away from the device, the running horizon drops by
+    tan(elevation) per step; a sample below it is shadowed."""
     # x ascends with column and y with row (field_grid), so rays from +x
     # already arrive from the last column; the other azimuths reorient to
-    # match that canonical case.
-    flips = {"+x": lambda a: a, "-x": lambda a: a[:, ::-1],
-             "+y": lambda a: a.T, "-y": lambda a: a.T[:, ::-1]}
+    # match that canonical case, and the mask is reoriented back.
+    flips = {"+x": (lambda a: a, lambda m: m),
+             "-x": (lambda a: a[:, ::-1], lambda m: m[:, ::-1]),
+             "+y": (lambda a: a.T, lambda m: m.T),
+             "-y": (lambda a: a.T[:, ::-1], lambda m: m[:, ::-1].T)}
     if azimuth not in flips:
         raise ValueError(f"azimuth must be one of {sorted(flips)}")
-    # Reorient so rays arrive from the LAST column; scan left-to-right.
-    z = flips[azimuth](np.asarray(z_mm, dtype=float))
+    fwd, back = flips[azimuth]
+    z = fwd(np.asarray(z_mm, dtype=float))
     drop = math.tan(math.radians(elevation_deg)) * pitch_mm
     shadow = np.zeros(z.shape, dtype=bool)
     horizon = z[:, -1].copy()
     for c in range(z.shape[1] - 2, -1, -1):
         horizon = np.maximum(horizon - drop, z[:, c])
         shadow[:, c] = horizon > z[:, c] + 1e-9
-    return float(shadow.mean())
+    return back(shadow)
+
+
+def shadow_fraction(z_mm: np.ndarray, pitch_mm: float, elevation_deg: float,
+                    azimuth: str = "+x") -> float:
+    """Fraction of the field hidden -- see shadow_mask."""
+    return float(shadow_mask(z_mm, pitch_mm, elevation_deg, azimuth).mean())
+
+
+def camera_hidden_mask(z_mm: np.ndarray, world_x_mm: np.ndarray,
+                       pitch_x_mm: float) -> np.ndarray:
+    """Samples hidden from the camera by the terrain itself. The camera views
+    from +world-x at its elevation budget; `world_x_mm` (the x grid, or one
+    row of it) orients the scan -- the reconstruction's pixel_to_world grid
+    runs x DESCENDING with column, the opposite of field_grid, so the
+    azimuth cannot be assumed."""
+    row = np.atleast_2d(np.asarray(world_x_mm))[0]
+    ascending = bool(row[-1] > row[0])
+    return shadow_mask(z_mm, abs(pitch_x_mm), CAMERA_ELEVATION_DEG,
+                       azimuth="+x" if ascending else "-x")
 
 
 def analyze(height_fn, nx: int = 500, ny: int = 380) -> dict:

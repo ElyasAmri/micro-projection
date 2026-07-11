@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 
 import exposure
+import occlusion
 import surfaces
 from geometry_constants import H0_MM, N_PERIODS_LADDER, THETA_DEG, W0_MM, W_PROJ_MM
 
@@ -220,8 +221,19 @@ def _write_and_score(
     if ground_truth_fn is not None:
         ground_truth = ground_truth_fn(world_x, world_y)
         error = height - ground_truth
-        err_valid = error[valid]
-        gt_valid = ground_truth[valid]
+        # Shadow-aware scoring: exclude pixels the camera physically cannot
+        # see (terrain self-occlusion, known exactly for a synthetic
+        # specimen). Bounce light gives them enough modulation to pass the
+        # instrument mask, but their phase is unmeasurable garbage -- scoring
+        # them mixes a physics limit into reconstruction quality. The
+        # instrument mask (valid.npy) is untouched; the oracle mask is saved
+        # alongside it.
+        hidden = occlusion.camera_hidden_mask(ground_truth, world_x, dx_mm)
+        np.save(out_dir / "camera_hidden.npy", hidden)
+        metrics["camera_hidden_pct"] = 100.0 * float(hidden.mean())
+        score = valid & ~hidden
+        err_valid = error[score]
+        gt_valid = ground_truth[score]
         rmse = float(np.sqrt(np.mean(err_valid ** 2)))
         mae = float(np.mean(np.abs(err_valid)))
         max_abs = float(np.max(np.abs(err_valid)))
@@ -231,6 +243,9 @@ def _write_and_score(
 
         if verbose:
             print(f"lambda_eq = {lambda_eq:.3f} mm")
+            if hidden.any():
+                print(f"camera-hidden (excluded from scoring): "
+                      f"{metrics['camera_hidden_pct']:.2f}% of the field")
             print(f"RMSE = {rmse:.4f} mm, MAE = {mae:.4f} mm, max|err| = {max_abs:.4f} mm, R^2 = {r2:.4f}")
 
         gt_span = gt_valid.max() - gt_valid.min()
@@ -241,7 +256,7 @@ def _write_and_score(
         cv2.imwrite(str(out_dir / "height_reconstructed.png"), colorize(np.nan_to_num(height_masked, nan=vmin), vmin, vmax))
         cv2.imwrite(str(out_dir / "height_ground_truth.png"), colorize(np.where(valid, ground_truth, vmin), vmin, vmax))
         err_abs_max = max(float(np.abs(err_valid).max()), 1e-9)
-        err_masked = np.where(valid, error, 0.0)
+        err_masked = np.where(score, error, 0.0)
         cv2.imwrite(str(out_dir / "height_error.png"), colorize(err_masked, -err_abs_max, err_abs_max))
     else:
         # No ground truth (real capture): render the height map over its own

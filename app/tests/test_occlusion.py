@@ -59,3 +59,35 @@ def test_terrace_has_real_steps():
     assert float(np.abs(np.diff(z, axis=1)).max()) >= 0.5 - 1e-9
     # Steps quantize to multiples of the step height.
     assert np.allclose(z / 0.5, np.round(z / 0.5), atol=1e-9)
+
+
+def test_shadow_mask_orientation_roundtrip():
+    # The same physical step must produce the same physical mask whichever
+    # way the grid is oriented; only the scan bookkeeping changes.
+    z = np.zeros((40, 200))
+    z[:, 100:] = 2.0  # high plateau on the high-column side
+    m_px = occlusion.shadow_mask(z, 0.1, 45.0, azimuth="+x")
+    m_mx = occlusion.shadow_mask(z[:, ::-1], 0.1, 45.0, azimuth="-x")
+    assert np.array_equal(m_px, m_mx[:, ::-1])
+    m_py = occlusion.shadow_mask(z.T, 0.1, 45.0, azimuth="+y")
+    assert np.array_equal(m_px, m_py.T)
+    # Rays from +x with the plateau toward +x: the strip just left of the
+    # wall is hidden (h/tan(45) = 20px, exact-distance boundary exclusive);
+    # nothing on the plateau is.
+    assert m_px[:, 81:100].all() and not m_px[:, 100:].any()
+    assert not m_px[:, :80].any()
+
+
+def test_camera_hidden_mask_handles_descending_x():
+    # pixel_to_world's grid runs x DESCENDING with column; the helper must
+    # put the hidden strip on the same *physical* side either way.
+    n = 200
+    x_asc = np.tile(np.linspace(-10, 10, n), (40, 1))
+    z_asc = np.where(x_asc > 0, 2.0, 0.0)  # wall at x=0, high side +x
+    m_asc = occlusion.camera_hidden_mask(z_asc, x_asc, 20.0 / (n - 1))
+    x_desc = x_asc[:, ::-1]
+    m_desc = occlusion.camera_hidden_mask(z_asc[:, ::-1], x_desc, 20.0 / (n - 1))
+    # Same physical mask: hidden strip sits at x slightly < 0 in both.
+    assert np.array_equal(m_asc, m_desc[:, ::-1])
+    assert m_asc[0, np.searchsorted(x_asc[0], -0.5)]
+    assert not m_asc[0, np.searchsorted(x_asc[0], 5.0)]
