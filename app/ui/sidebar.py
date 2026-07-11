@@ -32,6 +32,7 @@ class Sidebar(QWidget):
     calibrate_requested = Signal()  # measure the camera angle (box + fringes)
     aim_requested = Signal(bool)    # toggle the camera-aim measurement loop
     camera_noise_requested = Signal()  # camera temporal-noise qualification
+    fov_requested = Signal()  # identify the camera FOV in projector pixels
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -174,6 +175,17 @@ class Sidebar(QWidget):
         self.camera_noise_button.clicked.connect(
             lambda: self.camera_noise_requested.emit())
         layout.addWidget(self.camera_noise_button)
+
+        self.fov_button = QPushButton("Identify Camera FOV")
+        self.fov_button.setObjectName("fovButton")
+        self.fov_button.setEnabled(bool(surfaces))
+        self.fov_button.setToolTip(
+            "Find the projector pixel region the camera sees: a bright box "
+            "shrinks to fit the camera frame, then the matched outline is "
+            "projected and saved. Needs the hardware backend."
+        )
+        self.fov_button.clicked.connect(lambda: self.fov_requested.emit())
+        layout.addWidget(self.fov_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.

@@ -125,6 +125,27 @@ class HardwareBackend(Backend):
         worker.start()
         return worker
 
+    def start_fov_identify(self, settle_ms: int = 200):
+        """Find the projector pixel region the camera sees (see backend.fov):
+        shrink-to-fit box search, then project the matched outline and write
+        the report. Returns the started FovWorker; the caller owns its signals
+        and must interrupt+wait it before shutdown."""
+        from PySide6.QtCore import Qt
+
+        from backend import fov
+
+        projector = self._get_projector()
+        window = projector.ensure_shown()
+        width, height = projector.screen_size()
+        search = fov.FovSearch(width, height)
+        out_dir = out_root() / "app" / LIVE_TARGET / "fov"
+        worker = fov.FovWorker(search, self.camera_service(), out_dir,
+                               settle_ms=settle_ms)
+        worker.show_pattern.connect(window.show_pattern,
+                                    Qt.BlockingQueuedConnection)
+        worker.start()
+        return worker
+
     def shutdown(self) -> None:
         """Stop the camera service and close the projector (call on app exit)."""
         if self._service is not None:
