@@ -5,12 +5,22 @@ guess -- these functions are that exact answer. Height convention: z
 displacement in millimeters, added on top of the flat measurement plane
 (z=0), as a function of (x_mm, y_mm) surface-plane coordinates.
 
-Every surface here is kept to a max slope well under the rig's shadow-free
-range (checked below, per surface) and a peak |h| well under lambda_eq/2 ~=
-6.8mm (report/math.tex "Expected phase range"), so a single fringe
-frequency resolves all of them unambiguously -- these test coverage of the
-reconstruction math itself (different shapes, signs, symmetry, position),
-not phase unwrapping, which this pipeline doesn't implement yet.
+Two families live here:
+
+* Validation surfaces (flat .. rough): max slope well under the rig's
+  shadow-free budget (checked below, per surface) and peak |h| well under
+  lambda_eq/2 ~= 6.8mm (report/math.tex "Expected phase range"), so a single
+  fringe frequency resolves them unambiguously. These test coverage of the
+  reconstruction math (shapes, signs, symmetry, position); taller/finer
+  ranges are the multi-frequency ladder's job (reconstruct.unwrap_multifreq).
+
+* Stress surfaces (ring_crater, terrace, cross_groove): deliberately steep,
+  stepped, or self-shadowing failure-mode specimens -- they EXCEED the
+  shadow budget on purpose. Reconstruction over them is *expected* to lose
+  pixels to occlusion and modulation masking; occlusion.py quantifies how
+  much, per surface, before any render is spent. Their step discontinuities
+  also need a denser mesh than the default (capture_pipeline
+  --subdivisions), or the camera images an aliased mesh, not the surface.
 
 The footprint is ~87.5 x 54.7mm (report/math.tex "Matching distance"), so
 every feature below is centered with at least ~2 sigma of margin from the
@@ -138,6 +148,73 @@ def rough_height_mm(x_mm, y_mm):
     return form + texture
 
 
+# -- Stress surfaces (ported forms from the pre-rewrite sim's synthetic
+# surfaces, rescaled to this rig's mm coordinates and footprint). These
+# deliberately violate the slope budget -- see the module docstring.
+
+# A steep-walled ring around a shallow bowl. The ring is a radial Gaussian of
+# amplitude A and width w: max wall slope = atan(sqrt(2)*exp(-1/2)*A/w)
+# = atan(0.858 * 3.0 / 1.2) ~= 65 degrees -- past the camera's ~51.3 degree
+# occlusion budget, so the inner wall must self-occlude. The bowl and the
+# off-center skew bump stay gentle so the failure is localized to the ring.
+RING_R0_MM = 15.0
+RING_AMPLITUDE_MM = 3.0
+RING_WIDTH_MM = 1.2
+RING_BOWL_MM = (-2.0, 8.0)          # amplitude, sigma
+RING_SKEW_MM = (0.8, (-8.0, 5.0), 6.0)  # amplitude, center, sigma
+
+
+def ring_crater_height_mm(x_mm, y_mm):
+    x = np.asarray(x_mm, dtype=float)
+    y = np.asarray(y_mm, dtype=float)
+    r = np.sqrt(x ** 2 + y ** 2)
+    ring = RING_AMPLITUDE_MM * np.exp(-((r - RING_R0_MM) / RING_WIDTH_MM) ** 2)
+    bowl_a, bowl_s = RING_BOWL_MM
+    bowl = bowl_a * np.exp(-r ** 2 / (2.0 * bowl_s ** 2))
+    amp, (cx, cy), sigma = RING_SKEW_MM
+    skew = amp * np.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2.0 * sigma ** 2))
+    return ring + bowl + skew
+
+
+# A dome quantized into flat steps: height discontinuities (vertical walls,
+# as machined terraces have) that no slope budget admits. On the discrete
+# render mesh a 0.5mm step across one cell reads as atan(0.5/pitch) -- ~82
+# degrees at the default ~0.07mm pixel pitch.
+TERRACE_DOME_MM = 3.5
+TERRACE_STEP_MM = 0.5
+TERRACE_HALF_EXTENTS_MM = (38.0, 23.0)  # elliptical footprint of the dome
+
+
+def terrace_height_mm(x_mm, y_mm):
+    x = np.asarray(x_mm, dtype=float)
+    y = np.asarray(y_mm, dtype=float)
+    hx, hy = TERRACE_HALF_EXTENTS_MM
+    radial = np.sqrt((x / hx) ** 2 + (y / hy) ** 2)
+    dome = TERRACE_DOME_MM * np.maximum(0.0, 1.0 - radial ** 1.6)
+    return TERRACE_STEP_MM * np.round(dome / TERRACE_STEP_MM)
+
+
+# A broad dome cut by one narrow groove along each axis. The groove walls are
+# Gaussian trenches of amplitude A, width w: max wall slope = atan(0.858*A/w)
+# = atan(0.858 * 1.5 / 0.7) ~= 61.5 degrees. The x-groove's walls face +-x
+# (occluding the camera, which views from +x); the y-groove's walls face +-y
+# (invisible to a +-x horizon scan) -- together they probe direction-dependent
+# occlusion, not just steepness.
+CROSS_DOME_MM = (2.5, 18.0)   # amplitude, sigma (y compressed 0.7x)
+CROSS_GROOVE_MM = (1.5, 0.7)  # depth, width -- both grooves
+
+
+def cross_groove_height_mm(x_mm, y_mm):
+    x = np.asarray(x_mm, dtype=float)
+    y = np.asarray(y_mm, dtype=float)
+    dome_a, dome_s = CROSS_DOME_MM
+    dome = dome_a * np.exp(-(x ** 2 + 0.7 * y ** 2) / (2.0 * dome_s ** 2))
+    depth, width = CROSS_GROOVE_MM
+    groove_x = -depth * np.exp(-((x / width) ** 2))
+    groove_y = -depth * np.exp(-((y / width) ** 2))
+    return dome + groove_x + groove_y
+
+
 SURFACES = {
     "flat": flat_height_mm,
     "bump": bump_height_mm,
@@ -146,4 +223,8 @@ SURFACES = {
     "ridge": ridge_height_mm,
     "twin_bump": twin_bump_height_mm,
     "rough": rough_height_mm,
+    # stress surfaces -- expected to shadow/occlude, see module docstring
+    "ring_crater": ring_crater_height_mm,
+    "terrace": terrace_height_mm,
+    "cross_groove": cross_groove_height_mm,
 }
