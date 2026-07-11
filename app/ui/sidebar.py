@@ -31,6 +31,7 @@ class Sidebar(QWidget):
     patterns_requested = Signal()  # open the pattern library dialog
     calibrate_requested = Signal()  # measure the camera angle (box + fringes)
     aim_requested = Signal(bool)    # toggle the camera-aim measurement loop
+    camera_noise_requested = Signal()  # camera temporal-noise qualification
 
     def __init__(self, surfaces: list[str], header: str = "Simulation",
                  parent: QWidget | None = None) -> None:
@@ -160,6 +161,19 @@ class Sidebar(QWidget):
         )
         self.aim_button.toggled.connect(self.aim_requested)
         layout.addWidget(self.aim_button)
+
+        self.camera_noise_button = QPushButton("Camera Noise Test")
+        self.camera_noise_button.setObjectName("cameraNoiseButton")
+        self.camera_noise_button.setEnabled(bool(surfaces))
+        self.camera_noise_button.setToolTip(
+            "Camera qualification: project a static flat field, grab many "
+            "frames, and check the per-pixel temporal noise against pass/fail "
+            "thresholds (report + heatmap). Distinct from Estimate Noise, "
+            "which analyses reconstruction error. Needs the hardware backend."
+        )
+        self.camera_noise_button.clicked.connect(
+            lambda: self.camera_noise_requested.emit())
+        layout.addWidget(self.camera_noise_button)
 
         # -- Error analysis: noise + auto-exposure swing, and the margin they --
         # impose on the reconstruction.

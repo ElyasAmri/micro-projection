@@ -91,6 +91,40 @@ class HardwareBackend(Backend):
             out_root(), parent
         )
 
+    def start_camera_noise(self, mode: str = "flat", n_frames: int = 200,
+                           thresholds=None):
+        """Camera temporal-noise qualification (see backend.camera_noise):
+        project one static pattern, grab `n_frames` fresh exposures, write the
+        three-check verdict report. Returns the started NoiseWorker; the
+        caller owns its signals and must interrupt+wait it before shutdown."""
+        from PySide6.QtCore import Qt
+
+        from backend import camera_noise, patterns
+
+        projector = self._get_projector()
+        window = projector.ensure_shown()
+        width, height = projector.screen_size()
+        if mode == "fringe":
+            pattern = patterns.generate("fringe_v", width, height,
+                                        n_periods=self.n_periods)
+            desc = f"pattern: fringe ({self.n_periods:g} periods, vertical)"
+        elif mode == "dark":
+            # Projector black isolates sensor read noise / dark current; a
+            # mid-gray field is dominated by DLP PWM dithering.
+            pattern = patterns.generate("solid_black", width, height)
+            desc = "pattern: dark frame (projector black)"
+        else:
+            pattern = patterns.generate("solid_gray", width, height)
+            desc = "pattern: flat field (50% gray)"
+        out_dir = out_root() / "app" / LIVE_TARGET / f"noise_{mode}"
+        worker = camera_noise.NoiseWorker(
+            pattern, self.camera_service(), out_dir, n_frames=n_frames,
+            thresholds=thresholds, pattern_desc=desc)
+        worker.show_pattern.connect(window.show_pattern,
+                                    Qt.BlockingQueuedConnection)
+        worker.start()
+        return worker
+
     def shutdown(self) -> None:
         """Stop the camera service and close the projector (call on app exit)."""
         if self._service is not None:

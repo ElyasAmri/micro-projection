@@ -148,6 +148,7 @@ class MainWindow(QMainWindow):
         self._aim_active = False
         self._aim_proj: tuple | None = None
         self._last_aim: dict | None = None
+        self._noise_worker = None  # camera qualification (backend.camera_noise)
         self._aim_lookat: tuple | None = None
         self._aim_projected_lookat: tuple | None = None
         self._aim_last_seen = 0.0
@@ -237,6 +238,7 @@ class MainWindow(QMainWindow):
         self.sidebar.patterns_requested.connect(self._on_patterns)
         self.sidebar.calibrate_requested.connect(self._on_calibrate)
         self.sidebar.aim_requested.connect(self._on_aim_toggled)
+        self.sidebar.camera_noise_requested.connect(self._on_camera_noise)
         self._dock("Control", "controlDock", self.sidebar, Qt.LeftDockWidgetArea)
 
         # Build the first view alone in the right area, split the console below it
@@ -326,6 +328,15 @@ class MainWindow(QMainWindow):
             abort()
             end = time.monotonic() + 3.0
             while runner.is_running() and time.monotonic() < end:
+                QApplication.processEvents()
+                time.sleep(0.01)
+        noise = self._noise_worker
+        if noise is not None and noise.isRunning():
+            # Same rule as the capture worker: it may be blocked on the
+            # projector's blocking call, so pump events while it unwinds.
+            noise.requestInterruption()
+            end = time.monotonic() + 3.0
+            while noise.isRunning() and time.monotonic() < end:
                 QApplication.processEvents()
                 time.sleep(0.01)
         shutdown = getattr(self.backend, "shutdown", None)
@@ -807,6 +818,38 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:  # noqa: BLE001 - report to console, don't raise into Qt
             log.warning(f"cannot start multi-frequency pipeline: {exc}")
+
+    def _on_camera_noise(self) -> None:
+        """Camera temporal-noise qualification: one static flat field, many
+        fresh frames, three-check verdict (see backend.camera_noise). The
+        fringe/dark modes are reachable programmatically via
+        backend.start_camera_noise(mode=...)."""
+        if self.backend.kind != "hardware":
+            log.warning("the noise test drives the physical projector and "
+                        "camera; start the app with MP_BACKEND=hardware")
+            return
+        if self._noise_worker is not None and self._noise_worker.isRunning():
+            log.warning("a camera noise test is already running")
+            return
+        self._status_left.setText("Camera noise test...")
+
+        def finish(passed: bool | None) -> None:
+            self._noise_worker = None
+            self._status_left.setText("Ready")
+            if passed is True:
+                success(log, "camera noise test: pass")
+            elif passed is False:
+                log.error("camera noise test: FAIL (see report)")
+
+        def failed(msg: str) -> None:
+            log.error(msg)
+            finish(None)
+
+        worker = self.backend.start_camera_noise()
+        worker.line.connect(log.info)
+        worker.failed.connect(failed)
+        worker.finished_ok.connect(finish)
+        self._noise_worker = worker
 
     def _on_calibrate(self) -> None:
         """Measure the camera's viewing angle: capture one projected box plus
