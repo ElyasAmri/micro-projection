@@ -1,0 +1,15 @@
+exceptiongroup==1.3.1
+iniconfig==2.3.0
+-e git+ssh://git@github.com/ElyasAmri/micro-projection.git@21fb8e3e35548076784a0db24803083ffd927737#egg=microprojection&subdirectory=../../../../Users/elyas/workspace/micro-projection/app
+numpy==2.2.6
+opencv-python==4.13.0.92
+packaging==26.2
+pluggy==1.6.0
+Pygments==2.20.0
+PySide6==6.11.1
+PySide6_Addons==6.11.1
+PySide6_Essentials==6.11.1
+pytest==9.1.1
+shiboken6==6.11.1
+tomli==2.4.1
+typing_extensions==4.15.0
